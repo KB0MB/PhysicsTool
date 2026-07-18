@@ -1,0 +1,29 @@
+HKCLTool GUI latest
+===================
+
+Build:
+  dotnet build -c Release
+
+Run:
+  bin\Release\HKCLTool.exe
+
+Modes:
+- Merge mode is the original workflow: open current HKCL/JSON, open reference HKCL/JSON, remove or merge cloth entries.
+- Direct editing is toggled from the top-right checkbox. It hides the reference merge panel and shows direct editor tabs.
+
+Current direct editor:
+- Particles tab: edit fixed state, position X/Y/Z, mass, inverse mass, radius, friction, and collision mask.
+- Selecting a particle shows its relationships: fixed/dynamic state, triangles, standard/stretch/bend links, and local range constraints.
+- Click Apply particle edits, then Save Wii U or Save Switch.
+- Colliders and Constraints tabs are placeholders for the next direct editors.
+
+Current JSON behavior:
+- Export JSON writes compact, self-contained authoring JSON.
+- The readable cloths section is the only visible place for promoted data such as bones, particles, constraints, and colliders.
+- technical.hkxObjectGraphCompressed is a gzip+base64 JSON payload that preserves remaining HKX2 fields needed to rebuild from JSON alone.
+- There is no sourceFile dependency and no expanded duplicate raw object graph.
+
+Smoke tests:
+- Physics_2.hkcl -> compact self-contained JSON -> reopened JSON -> HKCL rebuilt byte-identical when unchanged.
+- Direct particle edit path changed particle 0 mass and saved a valid same-size HKCL with a changed hash.
+- Particle 0 relationship extraction shows triangles, standard links, stretch links, local range, and bend links.
