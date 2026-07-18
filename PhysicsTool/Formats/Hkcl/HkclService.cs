@@ -77,8 +77,9 @@ public sealed class HkclService
             return;
         }
 
-        RequireRoot();
-        File.WriteAllText(path, BuildReadableJson().ToString(Formatting.Indented));
+        // Raw HKX2 JSON is the stable, directly reloadable representation for HKCL.
+        // Keep it as the public export until the authoring schema is complete.
+        File.WriteAllText(path, SerializeRaw(RequireRoot()));
     }
 
     public void SaveHkcl(string path, HkclPlatform platform)

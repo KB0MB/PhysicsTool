@@ -2123,7 +2123,7 @@ public sealed class MainForm : Form
 
         using var dialog = new SaveFileDialog
         {
-            Title = _current.IsBphhb ? "Export readable BPHHB JSON" : _current.IsBphcl ? "Export readable BPHCL JSON" : "Export readable physics JSON",
+            Title = _current.IsBphhb ? "Export BPHHB JSON summary" : _current.IsBphcl ? "Export BPHCL JSON summary" : "Export HKCL JSON",
             Filter = "JSON|*.json|All files|*.*",
             FileName = _current.SuggestFileName(".json")
         };
