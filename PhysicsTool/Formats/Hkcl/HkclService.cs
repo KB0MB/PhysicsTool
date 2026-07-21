@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -22,7 +23,7 @@ public enum HkclPlatform
     Switch
 }
 
-public sealed class HkclService
+public sealed partial class HkclService
 {
     private hkRootLevelContainer? _root;
     private BphclDocumentSummary? _bphcl;
@@ -134,6 +135,18 @@ public sealed class HkclService
             : Path.GetFileNameWithoutExtension(_path);
 
         return baseName + extension;
+    }
+
+    public string GetClothName(int clothIndex)
+    {
+        if (_bphcl != null)
+            return _bphcl.Cloths.ElementAtOrDefault(clothIndex)?.Value<string>("name") ?? $"Cloth {clothIndex}";
+
+        if (_root == null)
+            return $"Cloth {clothIndex}";
+
+        var cloth = GetClothDatas(_root).ElementAtOrDefault(clothIndex);
+        return cloth == null ? $"Cloth {clothIndex}" : GetString(cloth, "name") ?? $"Cloth {clothIndex}";
     }
 
     public IReadOnlyList<string> GetClothSummaries()
@@ -553,33 +566,55 @@ public sealed class HkclService
         var bones = skeleton == null
             ? Array.Empty<object>()
             : GetList(GetValue(skeleton, "bones")) ?? Array.Empty<object>();
-        var referencedCollidables = new HashSet<object>(EnumerateReferencedCollidables(GetClothDatas(root).ElementAtOrDefault(clothIndex)!), ReferenceEquality.Instance);
+        var referencedCollidables = EnumerateReferencedCollidables(GetClothDatas(root).ElementAtOrDefault(clothIndex)!)
+            .Distinct(ReferenceEquality.Instance)
+            .ToList();
         var collidables = GetCollidables(root);
         var result = new List<ColliderEditRow>();
 
-        for (var i = 0; i < collidables.Count; i++)
+        foreach (var collidable in referencedCollidables)
         {
-            var collidable = collidables[i];
-            if (!referencedCollidables.Contains(collidable))
+            var i = IndexOfReference(collidables, collidable);
+            if (i < 0)
                 continue;
             var shape = GetValue(collidable, "shape");
-            var start = GetValue(shape, "start") is Vector4 startVector ? startVector : Vector4.Zero;
-            var end = GetValue(shape, "end") is Vector4 endVector ? endVector : Vector4.Zero;
+            if (shape == null)
+                continue;
+            var shapeType = shape.GetType().Name;
+            var start = shapeType switch
+            {
+                "hclSphereShape" => GetValue(GetValue(shape, "sphere"), "pos") is Vector4 sphere ? sphere : Vector4.Zero,
+                "hclTaperedCapsuleShape" => GetValue(shape, "small") is Vector4 small ? small : Vector4.Zero,
+                _ => GetValue(shape, "start") is Vector4 startVector ? startVector : Vector4.Zero
+            };
+            var end = shapeType switch
+            {
+                "hclSphereShape" => start,
+                "hclTaperedCapsuleShape" => GetValue(shape, "big") is Vector4 big ? big : start,
+                _ => GetValue(shape, "end") is Vector4 endVector ? endVector : start
+            };
             var name = GetString(collidable, "name") ?? $"Collider {i}";
             var boneIndex = ResolveColliderBoneIndex(name, bones, ToInt(GetValue(collidable, "transformIndex"), -1));
+            var transform = GetValue(collidable, "transform") is Matrix4x4 matrix ? matrix : Matrix4x4.Identity;
             result.Add(new ColliderEditRow
             {
                 Index = i,
                 Name = name,
                 BoneIndex = boneIndex,
                 BoneName = boneIndex >= 0 && boneIndex < bones.Count ? GetString(bones[boneIndex], "name") ?? string.Empty : string.Empty,
-                StartX = start.X,
-                StartY = start.Y,
-                StartZ = start.Z,
-                EndX = end.X,
-                EndY = end.Y,
-                EndZ = end.Z,
-                Radius = Convert.ToSingle(GetValue(shape, "radius") ?? 0.0f, CultureInfo.InvariantCulture)
+                StartX = TransformHkclColliderPoint(transform, start).X,
+                StartY = TransformHkclColliderPoint(transform, start).Y,
+                StartZ = TransformHkclColliderPoint(transform, start).Z,
+                EndX = TransformHkclColliderPoint(transform, end).X,
+                EndY = TransformHkclColliderPoint(transform, end).Y,
+                EndZ = TransformHkclColliderPoint(transform, end).Z,
+                Radius = shapeType switch
+                {
+                    "hclSphereShape" => start.W,
+                    "hclTaperedCapsuleShape" => Convert.ToSingle(GetValue(shape, "smallRadius") ?? 0.0f, CultureInfo.InvariantCulture),
+                    _ => Convert.ToSingle(GetValue(shape, "radius") ?? 0.0f, CultureInfo.InvariantCulture)
+                },
+                Transform = transform
             });
         }
 
@@ -596,20 +631,63 @@ public sealed class HkclService
                 continue;
 
             var collidable = collidables[row.Index];
+            var previousBoneIndex = ToInt(GetValue(collidable, "transformIndex"), -1);
+            if (row.BoneIndex >= 0 && row.BoneIndex != previousBoneIndex && !string.IsNullOrWhiteSpace(row.BoneName))
+                row.Name = GetUniqueColliderName(collidables, row.Index, row.BoneName);
+
             SetValue(collidable, "name", row.Name);
             SetValue(collidable, "transformIndex", row.BoneIndex);
+            SetValue(collidable, "transform", row.Transform);
 
             var shape = GetValue(collidable, "shape");
             if (shape == null)
                 continue;
 
-            var start = new Vector4(row.StartX, row.StartY, row.StartZ, 0.0f);
-            var end = new Vector4(row.EndX, row.EndY, row.EndZ, 0.0f);
-            SetValue(shape, "start", start);
-            SetValue(shape, "end", end);
-            SetValue(shape, "radius", row.Radius);
+            var start = InverseTransformHkclColliderPoint(row.Transform, new Vector3(row.StartX, row.StartY, row.StartZ));
+            var end = InverseTransformHkclColliderPoint(row.Transform, new Vector3(row.EndX, row.EndY, row.EndZ));
+            switch (shape.GetType().Name)
+            {
+                case "hclSphereShape":
+                {
+                    var sphere = GetValue(shape, "sphere");
+                    SetValue(sphere, "pos", new Vector4(start.X, start.Y, start.Z, row.Radius));
+                    break;
+                }
+                case "hclTaperedCapsuleShape":
+                    SetValue(shape, "small", start);
+                    SetValue(shape, "big", end);
+                    SetValue(shape, "smallRadius", row.Radius);
+                    UpdateCapsuleDerivedValues(shape, start, end);
+                    break;
+                case "hclPlaneShape":
+                    break;
+                default:
+                    SetValue(shape, "start", start);
+                    SetValue(shape, "end", end);
+                    SetValue(shape, "radius", row.Radius);
+                    UpdateCapsuleDerivedValues(shape, start, end);
+                    break;
+            }
+        }
+    }
 
-            UpdateCapsuleDerivedValues(shape, start, end);
+    private static string GetUniqueColliderName(IReadOnlyList<object> collidables, int currentIndex, string boneName)
+    {
+        var baseName = $"Collidable_{boneName}";
+        var existingNames = collidables
+            .Where((_, index) => index != currentIndex)
+            .Select(collidable => GetString(collidable, "name"))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (!existingNames.Contains(baseName))
+            return baseName;
+
+        for (var suffix = 1; ; suffix++)
+        {
+            var candidate = $"{baseName}_{suffix}";
+            if (!existingNames.Contains(candidate))
+                return candidate;
         }
     }
 
@@ -706,8 +784,8 @@ public sealed class HkclService
             ? vector
             : Vector4.Zero;
         AddListItem(positions, sourceRow == null
-            ? new Vector4(sourcePosition.X + 0.03f, sourcePosition.Y, sourcePosition.Z, sourcePosition.W == 0.0f ? 1.0f : sourcePosition.W)
-            : new Vector4(sourceRow.X + 0.03f, sourceRow.Y, sourceRow.Z, sourceRow.W == 0.0f ? 1.0f : sourceRow.W));
+            ? new Vector4(0.0f, 0.0f, 0.0f, 1.0f)
+            : new Vector4(sourceRow.X, sourceRow.Y, sourceRow.Z, sourceRow.W == 0.0f ? 1.0f : sourceRow.W));
 
         var collisionMasks = GetValue(simData, "staticCollisionMasks") as IList;
         AddListItem(collisionMasks, sourceRow?.CollisionMask ?? 255);
@@ -746,18 +824,18 @@ public sealed class HkclService
         SetValue(template, "name", $"New_Bone_{newIndex}");
         bones.Add(template);
 
-        var parentIndex = sourceRow?.Index ?? ToInt(parents.Cast<object>().ElementAtOrDefault(sourceIndex), -1);
+        var parentIndex = sourceRow?.Index ?? -1;
         AddListItem(parents, parentIndex);
 
         var sourcePose = poses[sourceIndex] is Matrix4x4 matrix ? matrix : Matrix4x4.Identity;
         var offsetPose = sourceRow == null
             ? new Matrix4x4(
-                sourcePose.M11, sourcePose.M12 + 0.03f, sourcePose.M13, sourcePose.M14,
-                sourcePose.M21, sourcePose.M22, sourcePose.M23, sourcePose.M24,
-                sourcePose.M31, sourcePose.M32, sourcePose.M33, sourcePose.M34,
-                sourcePose.M41, sourcePose.M42, sourcePose.M43, sourcePose.M44)
+                0.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f,
+                1.0f, 1.0f, 1.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f)
             : new Matrix4x4(
-                sourceRow.X, sourceRow.Y + 0.03f, sourceRow.Z, sourcePose.M14,
+                sourceRow.X, sourceRow.Y, sourceRow.Z, sourcePose.M14,
                 sourceRow.RotationX, sourceRow.RotationY, sourceRow.RotationZ, sourceRow.RotationW,
                 sourceRow.ScaleX, sourceRow.ScaleY, sourceRow.ScaleZ, sourcePose.M34,
                 sourcePose.M41, sourcePose.M42, sourcePose.M43, sourcePose.M44);
@@ -784,7 +862,7 @@ public sealed class HkclService
         if (shape != null)
         {
             var start = sourceRow == null ? Vector4.Zero : new Vector4(sourceRow.StartX, sourceRow.StartY, sourceRow.StartZ, 0.0f);
-            var end = sourceRow == null ? new Vector4(0.0f, 0.08f, 0.0f, 0.0f) : new Vector4(sourceRow.EndX, sourceRow.EndY + 0.02f, sourceRow.EndZ, 0.0f);
+            var end = sourceRow == null ? new Vector4(0.0f, 0.08f, 0.0f, 0.0f) : new Vector4(sourceRow.EndX, sourceRow.EndY, sourceRow.EndZ, 0.0f);
             SetValue(shape, "start", start);
             SetValue(shape, "end", end);
             SetValue(shape, "radius", sourceRow?.Radius ?? 0.05f);
@@ -797,6 +875,29 @@ public sealed class HkclService
         var simData = GetFirst(GetValue(cloth, "simClothDatas"));
         var perInstance = GetValue(simData, "perInstanceCollidables") as IList;
         AddListItem(perInstance, template);
+
+        // Editor rows store collider endpoints in world space, while an HKCL
+        // shape stores them in its transform-local space. Reuse the normal
+        // serializer for copies so a pasted collider stays exactly in place.
+        if (sourceRow != null)
+        {
+            var copiedRow = new ColliderEditRow
+            {
+                Index = newIndex,
+                Name = GetString(template, "name") ?? sourceRow.Name,
+                BoneIndex = boneIndex,
+                BoneName = boneName,
+                StartX = sourceRow.StartX,
+                StartY = sourceRow.StartY,
+                StartZ = sourceRow.StartZ,
+                EndX = sourceRow.EndX,
+                EndY = sourceRow.EndY,
+                EndZ = sourceRow.EndZ,
+                Radius = sourceRow.Radius,
+                Transform = sourceRow.Transform
+            };
+            UpdateColliderRows(new[] { copiedRow });
+        }
         return newIndex;
     }
     public void DeleteParticle(int clothIndex, int particleIndex)
@@ -804,9 +905,10 @@ public sealed class HkclService
         var root = RequireRoot();
         var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex) ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
         var simData = GetFirst(GetValue(cloth, "simClothDatas")) ?? throw new InvalidOperationException("No simulation cloth data found.");
-        if (ParticleIsReferenced(simData, cloth, particleIndex))
-            throw new InvalidOperationException("That particle is used by triangles or constraints. Delete the links/triangles first, then delete the particle.");
+        if (ParticleIsUsedByTriangle(simData, particleIndex))
+            throw new InvalidOperationException("That particle belongs to a virtual cloth triangle. Delete its triangle/deformation mapping first; automatic removal would break the mesh-to-bone data.");
 
+        RemoveParticleConstraintReferences(simData, cloth, particleIndex);
         RemoveParticleFromSimulation(simData, particleIndex);
         ReindexFixedParticles(simData, particleIndex);
     }
@@ -851,23 +953,38 @@ public sealed class HkclService
         if (colliderIndex < 0 || colliderIndex >= collidables.Count)
             throw new ArgumentOutOfRangeException(nameof(colliderIndex));
 
-        var target = collidables[colliderIndex];
-        foreach (var cloth in GetClothDatas(root))
+        var target = collidables[colliderIndex]
+            ?? throw new InvalidOperationException("The selected collider slot is empty.");
+        var selectedCloth = GetClothDatas(root).ElementAtOrDefault(clothIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
+
+        // Delete from this cloth first. A global hclCollidable can be shared
+        // by another cloth, in which case removing it from the container would
+        // silently break that other cloth's physics.
+        RemoveCollidableReferences(selectedCloth, target);
+        var stillReferenced = GetClothDatas(root)
+            .Any(cloth => EnumerateReferencedCollidables(cloth).Any(collidable => ReferenceEquals(collidable, target)));
+        if (!stillReferenced)
+            collidables.RemoveAt(colliderIndex);
+    }
+
+    private static void RemoveCollidableReferences(object cloth, object target)
+    {
+        RemoveFromList(GetValue(cloth, "perInstanceCollidables") as IList, target);
+        foreach (var simData in GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>())
+            RemoveFromList(GetValue(simData, "perInstanceCollidables") as IList, target);
+    }
+
+    private static void RemoveFromList(IList? list, object target)
+    {
+        if (list == null)
+            return;
+
+        for (var index = list.Count - 1; index >= 0; index--)
         {
-            foreach (var simData in GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>())
-            {
-                if (GetValue(simData, "perInstanceCollidables") is not IList perInstance)
-                    continue;
-
-                for (var i = perInstance.Count - 1; i >= 0; i--)
-                {
-                    if (ReferenceEquals(perInstance[i], target))
-                        perInstance.RemoveAt(i);
-                }
-            }
+            if (ReferenceEquals(list[index], target))
+                list.RemoveAt(index);
         }
-
-        collidables.RemoveAt(colliderIndex);
     }
 
     public void LinkParticles(int clothIndex, IReadOnlyList<int> particleIndices)
@@ -893,27 +1010,56 @@ public sealed class HkclService
         throw new InvalidOperationException("Select exactly 2 particles for a link, or exactly 3 particles for a triangle.");
     }
 
-    private static bool ParticleIsReferenced(object simData, object cloth, int particleIndex)
+    private static bool ParticleIsUsedByTriangle(object simData, int particleIndex)
     {
         var triangles = GetList(GetValue(simData, "triangleIndices")) ?? Array.Empty<object>();
-        if (triangles.Any(x => ToInt(x, -1) == particleIndex))
-            return true;
+        return triangles.Any(x => ToInt(x, -1) == particleIndex);
+    }
 
+    private static void RemoveParticleConstraintReferences(object simData, object cloth, int particleIndex)
+    {
         var constraints = GetList(GetValue(simData, "staticConstraintSets"))
             ?? GetList(GetValue(cloth, "constraintSets"))
             ?? Array.Empty<object>();
         foreach (var constraint in constraints)
         {
-            var links = GetList(GetValue(constraint, "links"));
-            if (links != null && links.Any(link => ToInt(GetValue(link, "particleA"), -1) == particleIndex || ToInt(GetValue(link, "particleB"), -1) == particleIndex))
-                return true;
+            if (GetValue(constraint, "links") is IList links)
+            {
+                for (var index = links.Count - 1; index >= 0; index--)
+                {
+                    var link = links[index];
+                    var a = ToInt(GetValue(link, "particleA"), -1);
+                    var b = ToInt(GetValue(link, "particleB"), -1);
+                    if (a == particleIndex || b == particleIndex)
+                    {
+                        links.RemoveAt(index);
+                        continue;
+                    }
 
-            var locals = GetList(GetValue(constraint, "localConstraints"));
-            if (locals != null && locals.Any(local => ToInt(GetValue(local, "particleIndex"), -1) == particleIndex))
-                return true;
+                    if (a > particleIndex)
+                        SetValue(link, "particleA", a - 1);
+                    if (b > particleIndex)
+                        SetValue(link, "particleB", b - 1);
+                }
+            }
+
+            if (GetValue(constraint, "localConstraints") is IList locals)
+            {
+                for (var index = locals.Count - 1; index >= 0; index--)
+                {
+                    var local = locals[index];
+                    var referenced = ToInt(GetValue(local, "particleIndex"), -1);
+                    if (referenced == particleIndex)
+                    {
+                        locals.RemoveAt(index);
+                        continue;
+                    }
+
+                    if (referenced > particleIndex)
+                        SetValue(local, "particleIndex", referenced - 1);
+                }
+            }
         }
-
-        return false;
     }
 
     private static void RemoveParticleFromSimulation(object simData, int particleIndex)
@@ -1098,13 +1244,24 @@ public sealed class HkclService
     public string DescribeMergePreflight(HkclService reference, int clothIndex, int templateClothIndex = 0)
     {
         if (_root != null && reference._bphcl?.NativeDocument is { } sourceDocument)
-            return DescribeBphclToHkclPreflight(sourceDocument, clothIndex, templateClothIndex);
+            return GetBphclToHkclConversionPreflight(sourceDocument, clothIndex, templateClothIndex).ToDisplayText();
 
         if (_bphcl != null && reference._bphcl != null)
             return GetBphclMergePreflight(reference, clothIndex).ToDisplayText();
 
         return "The selected physics files use the same native format. " +
                "The selected cloth will be copied with its paired skeleton and referenced colliders.";
+    }
+
+    internal BphclToHkclConversionPreflight GetBphclToHkclConversionPreflight(
+        HkclService reference,
+        int sourceClothIndex,
+        int templateClothIndex)
+    {
+        if (_root == null || reference._bphcl?.NativeDocument is not { } sourceDocument)
+            throw new InvalidOperationException("BPHCL -> HKCL preflight requires an HKCL target and a BPHCL source.");
+
+        return GetBphclToHkclConversionPreflight(sourceDocument, sourceClothIndex, templateClothIndex);
     }
 
     internal NativeBphclMergePreflight GetBphclMergePreflight(HkclService reference, int clothIndex)
@@ -1114,7 +1271,7 @@ public sealed class HkclService
         return NativeBphclMergePreflight.Analyze(target, source, clothIndex);
     }
 
-    private string DescribeBphclToHkclPreflight(
+    private BphclToHkclConversionPreflight GetBphclToHkclConversionPreflight(
         NativeBphclDocument sourceDocument,
         int sourceClothIndex,
         int templateClothIndex)
@@ -1129,33 +1286,30 @@ public sealed class HkclService
         var templateSkeleton = GetSkeletons(root).ElementAtOrDefault(templateClothIndex);
 
         var templateName = GetString(template, "name") ?? $"cloth {templateClothIndex}";
-        var lines = new List<string>
-        {
-            "BPHCL -> HKCL conversion preflight",
-            string.Empty,
-            $"Source: {StripBphclPrefix(sourceCloth.Name)}",
-            $"HKCL template: {templateName}",
-            string.Empty
-        };
-        var ready = true;
+        var passed = new List<string>();
+        var blocked = new List<string>();
+        var notes = new List<string>();
 
-        void Check(bool passed, string description)
+        void Check(bool succeeded, string description)
         {
-            lines.Add((passed ? "OK" : "Needs template") + ": " + description);
-            ready &= passed;
+            if (succeeded)
+                passed.Add(description);
+            else
+                blocked.Add(description);
         }
 
         Check(sourceCloth.SimClothCount == 1,
             $"one simulation cloth (source has {sourceCloth.SimClothCount})");
         if (sourceSimulation == null)
         {
-            lines.Add("Needs template: source has no readable simulation data.");
-            ready = false;
+            blocked.Add("source has no readable simulation data");
         }
         else
         {
-            Check(sourceSimulation.Particles.Count == GetParticleCount(template),
-                $"particle count ({sourceSimulation.Particles.Count} source / {GetParticleCount(template)} template)");
+            notes.Add(
+                sourceSimulation.Particles.Count == GetParticleCount(template)
+                    ? $"particle topology has {sourceSimulation.Particles.Count} particles"
+                    : $"particle topology will be rebuilt ({sourceSimulation.Particles.Count} source / {GetParticleCount(template)} template particles)");
         }
 
         var templateBones = templateSkeleton is null
@@ -1164,18 +1318,13 @@ public sealed class HkclService
         var sourceBoneNames = sourceSkeleton?.Bones
             .Select(bone => StripBphclPrefix(bone.Name))
             .ToArray() ?? Array.Empty<string>();
+        Check(sourceSkeleton != null, "source skeleton is readable");
+        Check(templateBones.Count > 0, "HKCL template provides a skeleton shell");
         var templateBoneNames = templateBones
-            .Select(bone => GetString(bone, "name") ?? string.Empty)
+            .Select(bone => StripBphclPrefix(GetString(bone, "name") ?? string.Empty))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var missingBones = sourceBoneNames
-            .Where(name => !templateBoneNames.Contains(name))
-            .ToArray();
-        Check(sourceSkeleton != null && sourceBoneNames.Length == templateBones.Count,
-            $"bone count ({sourceBoneNames.Length} source / {templateBones.Count} template)");
-        Check(missingBones.Length == 0,
-            missingBones.Length == 0
-                ? "every source bone name exists in the template"
-                : $"missing bone names: {string.Join(", ", missingBones.Take(6))}{(missingBones.Length > 6 ? ", ..." : string.Empty)}");
+        if (!sourceBoneNames.All(templateBoneNames.Contains))
+            notes.Add("source bone names differ; the converter will rebuild the template skeleton shell from BPHCL names, parents, and reference poses");
 
         var sourceColliders = sourceSimulation == null
             ? Array.Empty<NativeBphclCollider>()
@@ -1185,11 +1334,17 @@ public sealed class HkclService
         var templateColliderCount = EnumerateReferencedCollidables(template)
             .Distinct(ReferenceEquality.Instance)
             .Count();
-        Check(sourceColliders.Length == templateColliderCount,
-            $"referenced colliders ({sourceColliders.Length} source / {templateColliderCount} template)");
+        Check(sourceColliders.Length == 0 || templateColliderCount > 0,
+            sourceColliders.Length == 0
+                ? "source does not use colliders"
+                : $"HKCL template provides collider shell(s) ({templateColliderCount})");
+        if (sourceColliders.Length != templateColliderCount)
+        {
+            notes.Add($"source uses {sourceColliders.Length} collider(s); conversion will create that count from the available HKCL collider shell(s)");
+        }
         var unsupportedShapes = sourceColliders
             .Select(collider => collider.Shape.TypeName)
-            .Where(type => type is not ("hclCapsuleShape" or "hclSphereShape" or "hclPlaneShape"))
+            .Where(type => type is not ("hclCapsuleShape" or "hclTaperedCapsuleShape" or "hclSphereShape" or "hclPlaneShape"))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         Check(unsupportedShapes.Length == 0,
@@ -1199,24 +1354,24 @@ public sealed class HkclService
 
         if (sourceSimulation != null)
         {
+            Check(HasMatchingBphclTopologyTemplate(sourceCloth, sourceSimulation, template),
+                "matching buffer, virtual-triangle, and operator shell layout");
             var targetSimulation = GetFirst(GetValue(template, "simClothDatas"));
             var targetSets = GetList(GetValue(targetSimulation, "staticConstraintSets"))
                 ?? GetList(GetValue(template, "constraintSets"))
                 ?? Array.Empty<object>();
-            foreach (var sourceSet in sourceSimulation.ConstraintSets.Where(set => set.Links.Count > 0))
-            {
-                var matches = targetSets.Any(set =>
-                    string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal) &&
-                    (GetList(GetValue(set, "links"))?.Count ?? 0) == sourceSet.Links.Count);
-                Check(matches, $"{sourceSet.ClassName} link layout ({sourceSet.Links.Count} links)");
-            }
+            Check(targetSets.Count > 0, "writable HKCL constraint-set collection");
+            var importedSets = sourceSimulation.ConstraintSets.Count(set => set.Links.Count > 0);
+            if (importedSets > 0)
+                notes.Add($"conversion will create or replace {importedSets} constraint-set record group(s) from BPHCL");
         }
 
-        lines.Add(string.Empty);
-        lines.Add(ready
-            ? "Ready: conversion will clone the template and replace its skeleton, particles, matching collider values, and matching constraint links."
-            : "Not ready: choose a closer HKCL template. No conversion will be attempted until every check is OK.");
-        return string.Join(Environment.NewLine, lines);
+        return new BphclToHkclConversionPreflight(
+            StripBphclPrefix(sourceCloth.Name),
+            templateName,
+            passed,
+            blocked,
+            notes);
     }
 
     public string MergeClothFrom(HkclService reference, int clothIndex, int templateClothIndex = 0)
@@ -1278,13 +1433,44 @@ public sealed class HkclService
             ?? throw new InvalidOperationException("The selected BPHCL cloth has no matching skeleton.");
 
         var templates = GetClothDatas(root).ToList();
-        var template = templates.ElementAtOrDefault(templateClothIndex)
-            ?? throw new InvalidOperationException("Select an HKCL cloth to use as the conversion template.");
-        var templateSkeleton = GetSkeletons(root).ElementAtOrDefault(templateClothIndex)
-            ?? throw new InvalidOperationException("The selected HKCL template has no matching skeleton.");
+        var skeletons = GetSkeletons(root).ToList();
+        if (templateClothIndex < 0 || templateClothIndex >= templates.Count)
+            throw new InvalidOperationException("Select an HKCL cloth to use as the conversion template.");
 
-        var templateParticleCount = GetParticleCount(template);
-        var templateBones = GetList(GetValue(templateSkeleton, "bones")) ?? Array.Empty<object>();
+        // A cloth's particle count is only one part of its topology. The
+        // skinning blocks and gather/copy operator payloads also encode the
+        // vertex layout. Do not produce a mixed BPHCL/HKCL graph until those
+        // payloads can be rebuilt from native BPHCL data.
+        var selectedTemplate = templates[templateClothIndex];
+        var selectedSkeleton = skeletons.ElementAtOrDefault(templateClothIndex);
+        var selectedParticleCount = GetParticleCount(selectedTemplate);
+
+        // The particle count alone is not a topology match. Triangle indices
+        // feed directly into SimpleMeshBoneDeform; retaining a template's
+        // triangles while importing source particle/skin data can send output
+        // bones arbitrarily far from the actor. Always rebuild this source-
+        // owned virtual cloth mesh before applying its particle values.
+        var reconstructParticleTopology = true;
+        // The BPHCL transform-set/deformer path indexes this skeleton
+        // positionally. Preserve the source count exactly even when a BotW
+        // shell contains an extra name such as Arm_1_L; keeping the extra
+        // slot causes the imported simulation to remain static in-game.
+        var reconstructSkeleton = selectedSkeleton is object skeletonShell
+            ? (GetList(GetValue(skeletonShell, "bones"))?.Count ?? 0) != sourceSkeleton.BoneCount
+            : false;
+        // Conversion replaces exactly the HKCL cloth selected in the UI. An
+        // earlier automatic fallback could silently pick another compatible
+        // shell, leaving the user with a valid binary attached to the wrong
+        // actor entry. The shared preflight now blocks an incompatible choice
+        // before this method is allowed to modify the object graph.
+        var template = templates[templateClothIndex];
+        var templateSkeleton = skeletons.ElementAtOrDefault(templateClothIndex)
+            ?? throw new InvalidOperationException("The compatible HKCL template has no matching skeleton.");
+        // A transform-set count is part of the cloth's internal topology.
+        // When TotK and BotW shells differ, retain the selected HKCL object's
+        // serialization classes but rebuild its skeleton shell to the source
+        // count. This avoids leaving a source deformer bound to a phantom
+        // template transform.
         var sourceColliders = sourceDocument.Colliders
             .Where(collider => sourceSimulation.CollidableItemIndices.Contains(collider.ItemIndex))
             .ToList();
@@ -1294,19 +1480,13 @@ public sealed class HkclService
 
         if (sourceCloth.SimClothCount != 1)
             throw new InvalidOperationException("This first BPHCL -> HKCL pass supports one simulation cloth per imported unit.");
-        if (sourceSimulation.Particles.Count != templateParticleCount)
-            throw new InvalidOperationException($"Particle count does not match the template ({sourceSimulation.Particles.Count} BPHCL vs {templateParticleCount} HKCL). Choose a closer HKCL template.");
-        if (sourceSkeleton.Bones.Count != templateBones.Count)
-            throw new InvalidOperationException($"Bone count does not match the template ({sourceSkeleton.Bones.Count} BPHCL vs {templateBones.Count} HKCL). This strict conversion pass only supports exact skeleton templates.");
-        if (sourceColliders.Count != templateColliders.Count)
-            throw new InvalidOperationException($"Referenced collider count does not match the template ({sourceColliders.Count} BPHCL vs {templateColliders.Count} HKCL). This strict conversion pass needs a one-to-one collider template.");
-        var boneMap = BuildBphclBoneMap(sourceSkeleton, templateBones);
+        ValidateBphclTopologyTemplate(sourceCloth, sourceSimulation, template);
         ValidateBphclConstraintTemplate(sourceSimulation, template);
-        if (sourceColliders.Any(collider => collider.Shape.TypeName is not ("hclCapsuleShape" or "hclSphereShape" or "hclPlaneShape")))
+        if (sourceColliders.Any(collider => collider.Shape.TypeName is not ("hclCapsuleShape" or "hclTaperedCapsuleShape" or "hclSphereShape" or "hclPlaneShape")))
         {
             var unsupported = sourceColliders
                 .Select(collider => collider.Shape.TypeName)
-                .Where(type => type is not ("hclCapsuleShape" or "hclSphereShape" or "hclPlaneShape"))
+                .Where(type => type is not ("hclCapsuleShape" or "hclTaperedCapsuleShape" or "hclSphereShape" or "hclPlaneShape"))
                 .Distinct();
             throw new InvalidOperationException($"This conversion pass cannot create these BPHCL collider shape(s) yet: {string.Join(", ", unsupported)}.");
         }
@@ -1319,47 +1499,602 @@ public sealed class HkclService
         if (sourceColliders.Count > 0 && colliderTemplates.Count == 0)
             throw new InvalidOperationException("The selected HKCL template has no collider object to use as a serialization template.");
 
+        var boneMap = reconstructSkeleton
+            ? PrepareBphclSkeletonShell(convertedSkeleton, sourceSkeleton)
+            : BuildBphclBoneMap(sourceSkeleton, GetList(GetValue(convertedSkeleton, "bones")) ?? Array.Empty<object>());
         ApplyBphclSkeleton(convertedSkeleton, sourceSkeleton, boneMap);
-        ApplyBphclParticles(convertedCloth, sourceSimulation);
-        var convertedColliders = CreateBphclColliders(convertedCloth, colliderTemplates, sourceColliders, sourceSkeleton, boneMap);
-        var constraintNotes = ApplyBphclConstraintLinks(convertedCloth, sourceSimulation);
+        if (reconstructParticleTopology)
+            RebuildBphclParticleTopology(convertedCloth, sourceSimulation);
+        ApplyBphclSimulationSettings(convertedCloth, sourceSimulation);
 
-        SetValue(convertedCloth, "name", StripBphclPrefix(sourceCloth.Name));
+        // BotW and TotK use different particle-mass and stiffness scales.
+        // Particle count is the current compatibility fallback, not a proven
+        // universal conversion rule: paired vanilla files also show authored
+        // per-cloth factors. Keep positions and rest lengths untouched while
+        // a reliable scale model is reverse engineered.
+        var bphclSolverScale = Math.Max(1, sourceSimulation.Particles.Count);
+        ApplyBphclParticles(convertedCloth, sourceSimulation, bphclSolverScale);
+        var topologyNotes = ApplyBphclBufferAndOperatorLayout(
+            convertedCloth,
+            sourceCloth,
+            boneMap,
+            preserveTemplateTransformSetShape: !reconstructSkeleton);
+        var convertedColliders = CreateBphclColliders(convertedCloth, colliderTemplates, sourceColliders, sourceSkeleton, convertedSkeleton, boneMap);
+        var colliderMapNote = ApplyBphclCollidableTransformMap(
+            convertedCloth,
+            sourceSimulation.CollidableTransformMap,
+            sourceColliders.Count,
+            boneMap);
+        // BPHCL and HKCL do not expose identical constraint-set layouts.
+        // Keep the verified HKCL sets (including local-range and transition
+        // data) and patch only matching source records into them. Creating
+        // empty constraint classes from partially decoded BPHCL data can
+        // disable the entire BotW cloth container at runtime.
+        var constraintNotes = ApplyBphclConstraintLinks(
+            convertedCloth,
+            sourceSimulation,
+            preserveTemplateLayout: true,
+            stiffnessScale: bphclSolverScale);
+        var executionNotes = ApplyBphclConstraintExecution(convertedCloth, sourceSimulation, sourceCloth.Operators);
+        var deformerNotes = ApplyBphclSimpleMeshBoneDeform(convertedCloth, sourceCloth.SimpleMeshBoneDeformers, boneMap);
+
+        // BPHCL -> HKCL is a template replacement. Preserve the selected
+        // HKCL object's exact internal name and index; the actor parameter
+        // may use a Link: name while the binary HKCL itself does not. BPHCL
+        // source labels can also be mesh-facing rather than cloth-facing.
+        // Skeleton bone names remain unprefixed so they match the BotW model.
+        SetValue(convertedCloth, "name", GetString(template, "name") ?? StripBphclPrefix(sourceCloth.Name));
         SetValue(convertedSkeleton, "name", StripBphclPrefix(sourceSkeleton.Name));
 
-        GetMutableClothDatas(root).Add(convertedCloth);
-        GetMutableSkeletons(root).Add(convertedSkeleton);
+        SetListItem(GetMutableClothDatas(root), templateClothIndex, convertedCloth);
+        SetListItem(GetMutableSkeletons(root), templateClothIndex, convertedSkeleton);
         var targetCollidables = GetMutableCollidables(root);
-        foreach (var collidable in convertedColliders)
-            targetCollidables.Add(collidable);
+        ReplaceTemplateColliderSlots(
+            root,
+            templateClothIndex,
+            targetCollidables,
+            templateColliders,
+            convertedColliders);
+        // Reattach after the objects are rooted in the container. BotW reads
+        // colliders from hclSimClothData, rather than the legacy cloth-level
+        // list, so this is deliberately performed at simulation level.
+        ReplaceClothCollidableReferences(convertedCloth, convertedColliders);
 
         var notes = new List<string>
         {
-            "Strict BPHCL -> HKCL conversion created from the selected matching HKCL template.",
-            "Skeleton, particles, one-to-one colliders, and verified matching link values were copied.",
-            "Template deformers, buffers, triangle topology, local ranges, transform sets, and operators were retained."
+            "BPHCL -> HKCL conversion replaced the selected HKCL template in place, preserving its internal name and index.",
+            "Skeleton, particles, one-to-one colliders, buffers, and verified matching link values were copied.",
+            "The source object-space skinning, copy/gather routing, and simple bone-output mapping were rebuilt from BPHCL data."
         };
+        if (reconstructParticleTopology)
+            notes.Insert(0, $"Rebuilt the virtual cloth topology from the source ({selectedParticleCount} template particles -> {sourceSimulation.Particles.Count} BPHCL particles; {sourceSimulation.TriangleCount} source triangles).");
+        if (reconstructSkeleton)
+            notes.Insert(1, "The cloth skeleton was rebuilt from the BPHCL source names, parents, and reference poses so its transform layout matches exactly.");
         notes.AddRange(constraintNotes);
+        notes.AddRange(executionNotes);
+        notes.AddRange(topologyNotes);
+        notes.AddRange(deformerNotes);
+        notes.Add(colliderMapNote);
         return string.Join(" ", notes);
+    }
+
+    private static void ReplaceTemplateColliderSlots(
+        object root,
+        int templateClothIndex,
+        IList containerCollidables,
+        IReadOnlyList<object> templateColliders,
+        IReadOnlyList<object> convertedColliders)
+    {
+        // A template replacement must replace its rooted collider shells too.
+        // Appending clones leaves an unused duplicate in hclClothContainer;
+        // the vanilla self-conversion test exposes that as five collidables
+        // where the untouched pair has four. Do not replace a shell shared by
+        // another cloth: that cloth still owns the original object.
+        var otherCloths = GetClothDatas(root)
+            .Where((_, index) => index != templateClothIndex)
+            .ToArray();
+        var hasSharedShell = templateColliders.Any(templateCollider =>
+            otherCloths.Any(cloth => EnumerateReferencedCollidables(cloth)
+                .Any(collidable => ReferenceEquals(collidable, templateCollider))));
+
+        if (hasSharedShell)
+        {
+            foreach (var collider in convertedColliders)
+                AddListItem(containerCollidables, collider);
+            return;
+        }
+
+        var replacementCount = Math.Min(templateColliders.Count, convertedColliders.Count);
+        for (var index = 0; index < replacementCount; index++)
+        {
+            var containerIndex = IndexOfReference(containerCollidables.Cast<object>().ToArray(), templateColliders[index]);
+            if (containerIndex >= 0)
+                SetListItem(containerCollidables, containerIndex, convertedColliders[index]);
+            else
+                AddListItem(containerCollidables, convertedColliders[index]);
+        }
+
+        // A source can use fewer colliders than its template. Remove only the
+        // now-unreferenced tail shells; no other cloth can reference them here.
+        for (var index = templateColliders.Count - 1; index >= replacementCount; index--)
+        {
+            var containerIndex = IndexOfReference(containerCollidables.Cast<object>().ToArray(), templateColliders[index]);
+            if (containerIndex >= 0)
+                containerCollidables.RemoveAt(containerIndex);
+        }
+
+        for (var index = replacementCount; index < convertedColliders.Count; index++)
+            AddListItem(containerCollidables, convertedColliders[index]);
+    }
+
+    private static bool HasMatchingBphclTopologyTemplate(
+        NativeBphclCloth source,
+        NativeBphclSimCloth sourceSimulation,
+        object template)
+    {
+        var buffers = GetList(GetValue(template, "bufferDefinitions")) ?? Array.Empty<object>();
+        if (buffers.Count != source.BufferDefinitions.Count ||
+            buffers.Where((buffer, index) => !string.Equals(buffer.GetType().Name, source.BufferDefinitions[index].ClassName, StringComparison.Ordinal)).Any())
+            return false;
+
+        var targetSimulation = GetFirst(GetValue(template, "simClothDatas"));
+        if ((GetList(GetValue(targetSimulation, "triangleIndices"))?.Count ?? 0) / 3 != sourceSimulation.TriangleCount)
+            return false;
+
+        var targetOperators = GetList(GetValue(template, "operators")) ?? Array.Empty<object>();
+        return targetOperators.Count == source.Operators.Count &&
+               !targetOperators.Where((target, index) =>
+                   !string.Equals(target.GetType().Name, source.Operators[index].ClassName, StringComparison.Ordinal)).Any();
+    }
+
+    private static void ValidateBphclTopologyTemplate(
+        NativeBphclCloth source,
+        NativeBphclSimCloth sourceSimulation,
+        object template)
+    {
+        if (source.Operators.Any(@operator =>
+                string.Equals(@operator.ClassName, "hclBoneSpaceSkinPOperator", StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                "This BPHCL cloth uses hclBoneSpaceSkinPOperator. PhysicsTool currently reconstructs the object-space skinning path only, so it will not export an incomplete HKCL conversion.");
+        }
+
+        var buffers = GetList(GetValue(template, "bufferDefinitions")) ?? Array.Empty<object>();
+        if (buffers.Count != source.BufferDefinitions.Count)
+            throw new InvalidOperationException(
+                $"The HKCL template has {buffers.Count} buffers but the BPHCL source has {source.BufferDefinitions.Count}. Choose a same-layout template.");
+
+        for (var index = 0; index < buffers.Count; index++)
+        {
+            if (!string.Equals(buffers[index].GetType().Name, source.BufferDefinitions[index].ClassName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"HKCL buffer {index} is {buffers[index].GetType().Name}, but the BPHCL source needs {source.BufferDefinitions[index].ClassName}. Choose a same-layout template.");
+            }
+        }
+
+        var targetSimulation = GetFirst(GetValue(template, "simClothDatas"));
+        var targetTriangleCount = (GetList(GetValue(targetSimulation, "triangleIndices"))?.Count ?? 0) / 3;
+        if (targetTriangleCount != sourceSimulation.TriangleCount)
+        {
+            throw new InvalidOperationException(
+                $"The HKCL template has {targetTriangleCount} virtual triangles but the BPHCL source has {sourceSimulation.TriangleCount}. Choose a same-layout template.");
+        }
+
+        var targetOperators = GetList(GetValue(template, "operators")) ?? Array.Empty<object>();
+        if (targetOperators.Count != source.Operators.Count ||
+            targetOperators.Where((target, index) => !string.Equals(target.GetType().Name, source.Operators[index].ClassName, StringComparison.Ordinal)).Any())
+        {
+            throw new InvalidOperationException(
+                "The HKCL template does not use the same operator sequence as the BPHCL source. Choose a same-layout template.");
+        }
+
+        if (source.ObjectSpaceSkins.Count > 0 &&
+            targetOperators.Count(op => string.Equals(op.GetType().Name, "hclObjectSpaceSkinPOperator", StringComparison.Ordinal)) != source.ObjectSpaceSkins.Count)
+        {
+            throw new InvalidOperationException(
+                "The HKCL template does not provide the required object-space skinning operator shell.");
+        }
+    }
+
+    private static IReadOnlyList<string> ApplyBphclBufferAndOperatorLayout(
+        object cloth,
+        NativeBphclCloth source,
+        IReadOnlyDictionary<int, int> sourceToTargetBone,
+        bool preserveTemplateTransformSetShape)
+    {
+        var targetBuffers = GetList(GetValue(cloth, "bufferDefinitions")) ?? Array.Empty<object>();
+        for (var index = 0; index < targetBuffers.Count; index++)
+        {
+            var sourceBuffer = source.BufferDefinitions[index];
+            var target = targetBuffers[index];
+            // BotW's first scratch buffer uses the HKCL template's internal
+            // cloth name. Link: belongs to actor parameters, not this name.
+            var name = index == 0
+                ? GetString(target, "name") ?? StripBphclPrefix(sourceBuffer.MeshName)
+                : sourceBuffer.BufferName;
+            SetValue(target, "name", name);
+            SetValue(target, "type", sourceBuffer.Type);
+            SetValue(target, "subType", sourceBuffer.SubType);
+            SetValue(target, "numVertices", sourceBuffer.VertexCount);
+            SetValue(target, "numTriangles", sourceBuffer.TriangleCount);
+        }
+
+        var targetSets = GetList(GetValue(cloth, "transformSetDefinitions")) ?? Array.Empty<object>();
+        if (targetSets.Count != source.TransformSetDefinitions.Count)
+            throw new InvalidOperationException("The HKCL template transform-set count changed during conversion.");
+        for (var index = 0; index < targetSets.Count; index++)
+        {
+            var sourceSet = source.TransformSetDefinitions[index];
+            SetValue(targetSets[index], "type", sourceSet.Type);
+            if (!preserveTemplateTransformSetShape)
+            {
+                SetValue(targetSets[index], "name", StripBphclPrefix(sourceSet.Name));
+                SetValue(targetSets[index], "numTransforms", sourceSet.TransformCount);
+            }
+        }
+
+        var targetOperators = GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>();
+        foreach (var sourceOperator in source.Operators)
+        {
+            var target = targetOperators[sourceOperator.Index];
+            switch (sourceOperator.ClassName)
+            {
+                case "hclCopyVerticesOperator":
+                    SetValue(target, "inputBufferIdx", sourceOperator.InputBufferIndex ?? 0);
+                    SetValue(target, "outputBufferIdx", sourceOperator.OutputBufferIndex ?? 0);
+                    SetValue(target, "numberOfVertices", sourceOperator.VertexCount ?? 0);
+                    SetValue(target, "startVertexIn", sourceOperator.StartVertexIn ?? 0);
+                    SetValue(target, "startVertexOut", sourceOperator.StartVertexOut ?? 0);
+                    break;
+                case "hclGatherAllVerticesOperator":
+                    SetValue(target, "inputBufferIdx", sourceOperator.InputBufferIndex ?? 0);
+                    SetValue(target, "outputBufferIdx", sourceOperator.OutputBufferIndex ?? 0);
+                    ReplaceList(EnsureMutableObjectList(target, "vertexInputFromVertexOutput", "gather map"), sourceOperator.VertexInputFromVertexOutput);
+                    break;
+                case "hclMoveParticlesOperator":
+                    ApplyBphclMoveParticlesOperator(target, sourceOperator);
+                    break;
+                case "hclSimulateOperator":
+                    ApplyBphclSimulateOperator(target, sourceOperator);
+                    break;
+            }
+        }
+
+        foreach (var sourceSkin in source.ObjectSpaceSkins)
+        {
+            var target = targetOperators[sourceSkin.OperatorIndex];
+            ApplyBphclObjectSpaceSkin(target, sourceSkin, sourceToTargetBone);
+        }
+
+        foreach (var sourceSkin in source.BoneSpaceSkins)
+        {
+            var target = targetOperators[sourceSkin.OperatorIndex];
+            ApplyBphclBoneSpaceSkin(target, sourceSkin, sourceToTargetBone);
+        }
+
+        return new[]
+        {
+            $"Rebuilt {source.BufferDefinitions.Count} buffer definition(s), {source.TransformSetDefinitions.Count} transform set(s), {source.ObjectSpaceSkins.Count} object-space skinning operator(s), and {source.BoneSpaceSkins.Count} bone-space skinning operator(s)."
+        };
+    }
+
+    private static void ApplyBphclMoveParticlesOperator(object target, NativeBphclOperatorLayout source)
+    {
+        SetValue(target, "simClothIndex", source.SimulationClothIndex ?? 0);
+        SetValue(target, "refBufferIdx", source.ReferenceBufferIndex ?? 0);
+
+        if (source.VertexParticlePairs.Count == 0)
+            return;
+
+        var pairs = EnsureMutableObjectList(target, "vertexParticlePairs", "vertex-to-particle anchors");
+        var prototype = pairs.Count > 0 ? pairs[0] : null;
+        var pairType = prototype?.GetType()
+            ?? GetListElementType(pairs)
+            ?? FindHavokType(target.GetType().Assembly, "hclMoveParticlesOperatorVertexParticlePair")
+            ?? throw new InvalidOperationException(
+                "PhysicsTool could not locate the HKX2 vertex-to-particle pair class.");
+
+        pairs.Clear();
+        foreach (var sourcePair in source.VertexParticlePairs)
+        {
+            var pair = prototype == null
+                ? Activator.CreateInstance(pairType)
+                : CloneForCurrentGraph(prototype);
+            if (pair == null)
+                throw new InvalidOperationException("PhysicsTool could not create a vertex-to-particle pair.");
+            SetValue(pair, "vertexIndex", sourcePair.VertexIndex);
+            SetValue(pair, "particleIndex", sourcePair.ParticleIndex);
+            AddListItem(pairs, pair);
+        }
+    }
+
+    private static void ApplyBphclSimulateOperator(object target, NativeBphclOperatorLayout source)
+    {
+        SetValue(target, "simClothIndex", source.SimulationClothIndex ?? 0);
+        if (source.SimulateConfigs.Count == 0)
+            return;
+
+        // TotK stores one config per state; BotW's older generated class
+        // exposes the active config directly on the operator. The template's
+        // constraint-execution references remain intact, while these solver
+        // controls are safe one-to-one values.
+        var sourceConfig = source.SimulateConfigs[0];
+        SetValue(target, "subSteps", sourceConfig.SubSteps);
+        SetValue(target, "numberOfSolveIterations", sourceConfig.NumberOfSolveIterations);
+        SetValue(target, "adaptConstraintStiffness", sourceConfig.AdaptConstraintStiffness);
+    }
+
+    private static void ApplyBphclObjectSpaceSkin(
+        object target,
+        NativeBphclObjectSpaceSkin source,
+        IReadOnlyDictionary<int, int> sourceToTargetBone)
+    {
+        ReplaceList(EnsureMutableObjectList(target, "boneFromSkinMeshTransforms", "bone-from-skin matrices"), source.BoneFromSkinMeshTransforms);
+        ReplaceList(
+            EnsureMutableObjectList(target, "transformSubset", "object-space transform subset"),
+            source.TransformSubset.Select(sourceIndex =>
+            {
+                if (!sourceToTargetBone.TryGetValue(sourceIndex, out var targetIndex))
+                    throw new InvalidOperationException($"The BPHCL object-space skin references source bone {sourceIndex}, which is absent from the HKCL skeleton shell.");
+                return checked((ushort)targetIndex);
+            }));
+        SetValue(target, "outputBufferIndex", source.OutputBufferIndex);
+        SetValue(target, "transformSetIndex", source.TransformSetIndex);
+
+        var deformer = GetValue(target, "objectSpaceDeformer")
+            ?? throw new InvalidOperationException("The HKCL object-space skin operator has no deformer.");
+        ApplyBphclObjectSpaceDeformer(deformer, source.Deformer);
+        SetValue(target, "objectSpaceDeformer", deformer);
+        // TotK stores object-space positions as hkPackedVector3 values. BotW's
+        // matching operator consumes unpacked Vector4 positions instead. The
+        // fourth signed-short is an exponent, not a homogeneous W component.
+        // Decode it into Vector4 values with W = 1 and leave localPs empty.
+        ReplacePackedPositionBlocks(target, "localPs", "hclObjectSpaceDeformerLocalBlockP", Array.Empty<NativeBphclPackedPositionBlock>());
+        var unpackedPositions = source.LocalUnpackedPs.Count > 0
+            ? source.LocalUnpackedPs
+            : UnpackBphclObjectSpacePositions(source.LocalPs);
+        ReplacePositionBlocks(target, "localUnpackedPs", "hclObjectSpaceDeformerLocalBlockUnpackedP", unpackedPositions);
+    }
+
+    private static void ApplyBphclObjectSpaceDeformer(object target, NativeBphclObjectSpaceDeformer source)
+    {
+        var assembly = target.GetType().Assembly;
+        ReplacePackedBlendBlocks(target, "eightBlendEntries", "hclObjectSpaceDeformerEightBlendEntryBlock", 8, source.EightBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "sevenBlendEntries", "hclObjectSpaceDeformerSevenBlendEntryBlock", 7, source.SevenBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "sixBlendEntries", "hclObjectSpaceDeformerSixBlendEntryBlock", 6, source.SixBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "fiveBlendEntries", "hclObjectSpaceDeformerFiveBlendEntryBlock", 5, source.FiveBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "fourBlendEntries", "hclObjectSpaceDeformerFourBlendEntryBlock", 4, source.FourBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "threeBlendEntries", "hclObjectSpaceDeformerThreeBlendEntryBlock", 3, source.ThreeBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "twoBlendEntries", "hclObjectSpaceDeformerTwoBlendEntryBlock", 2, source.TwoBlendEntries, assembly);
+        ReplacePackedBlendBlocks(target, "oneBlendEntries", "hclObjectSpaceDeformerOneBlendEntryBlock", 1, source.OneBlendEntries, assembly);
+        ReplaceList(EnsureMutableObjectList(target, "controlBytes", "object-space deformer controls"), source.ControlBytes);
+        SetValue(target, "startVertexIndex", source.StartVertexIndex);
+        SetValue(target, "endVertexIndex", source.EndVertexIndex);
+        SetValue(target, "partialWrite", source.PartialWrite);
+    }
+
+    private static void ApplyBphclBoneSpaceSkin(
+        object target,
+        NativeBphclBoneSpaceSkin source,
+        IReadOnlyDictionary<int, int> sourceToTargetBone)
+    {
+        ReplaceList(
+            EnsureMutableObjectList(target, "transformSubset", "bone-space transform subset"),
+            source.TransformSubset.Select(sourceIndex =>
+            {
+                if (!sourceToTargetBone.TryGetValue(sourceIndex, out var targetIndex))
+                    throw new InvalidOperationException($"The BPHCL bone-space skin references source bone {sourceIndex}, which is absent from the HKCL skeleton shell.");
+                return checked((ushort)targetIndex);
+            }));
+        SetValue(target, "outputBufferIndex", source.OutputBufferIndex);
+        SetValue(target, "transformSetIndex", source.TransformSetIndex);
+
+        var deformer = GetValue(target, "boneSpaceDeformer")
+            ?? throw new InvalidOperationException("The HKCL bone-space skin operator has no deformer.");
+        ApplyBphclBoneSpaceDeformer(deformer, source.Deformer);
+        SetValue(target, "boneSpaceDeformer", deformer);
+        ReplacePositionBlocks(target, "localPs", "hclBoneSpaceDeformerLocalBlockP", source.LocalPs);
+        ReplacePositionBlocks(target, "localUnpackedPs", "hclBoneSpaceDeformerLocalBlockUnpackedP", source.LocalUnpackedPs);
+    }
+
+    private static void ApplyBphclBoneSpaceDeformer(object target, NativeBphclBoneSpaceDeformer source)
+    {
+        var assembly = target.GetType().Assembly;
+        ReplaceBoneSpaceBlendBlocks(target, "fourBlendEntries", "hclBoneSpaceDeformerFourBlendEntryBlock", 4, 4, 16, source.FourBlendEntries, assembly);
+        ReplaceBoneSpaceBlendBlocks(target, "threeBlendEntries", "hclBoneSpaceDeformerThreeBlendEntryBlock", 3, 5, 15, source.ThreeBlendEntries, assembly);
+        ReplaceBoneSpaceBlendBlocks(target, "twoBlendEntries", "hclBoneSpaceDeformerTwoBlendEntryBlock", 2, 8, 16, source.TwoBlendEntries, assembly);
+        ReplaceBoneSpaceBlendBlocks(target, "oneBlendEntries", "hclBoneSpaceDeformerOneBlendEntryBlock", 1, 16, 16, source.OneBlendEntries, assembly);
+        ReplaceList(EnsureMutableObjectList(target, "controlBytes", "bone-space deformer controls"), source.ControlBytes);
+        SetValue(target, "startVertexIndex", source.StartVertexIndex);
+        SetValue(target, "endVertexIndex", source.EndVertexIndex);
+        SetValue(target, "batchSizeSpu", source.BatchSizeSpu == 0 ? (ushort)512 : source.BatchSizeSpu);
+        SetValue(target, "partialWrite", source.PartialWrite);
+    }
+
+    private static void ReplaceBoneSpaceBlendBlocks(
+        object target,
+        string memberName,
+        string typeName,
+        int blendCount,
+        int vertexCount,
+        int boneCount,
+        IReadOnlyList<NativeBphclPackedArray> sourceArrays,
+        Assembly assembly)
+    {
+        var targetBlocks = EnsureMutableObjectList(target, memberName, memberName);
+        targetBlocks.Clear();
+        var type = FindHavokType(assembly, typeName)
+            ?? throw new InvalidOperationException($"PhysicsTool could not locate {typeName}.");
+        var requiredBytes = checked((vertexCount + boneCount) * sizeof(ushort));
+
+        foreach (var source in sourceArrays)
+        {
+            if (source.ElementSize < requiredBytes)
+            {
+                throw new InvalidDataException(
+                    $"{source.ElementType} is {source.ElementSize} bytes, but {typeName} requires at least {requiredBytes} bytes.");
+            }
+
+            for (var blockIndex = 0; blockIndex < source.Count; blockIndex++)
+            {
+                var block = Activator.CreateInstance(type)
+                    ?? throw new InvalidOperationException($"PhysicsTool could not create {typeName}.");
+                var blockOffset = checked(blockIndex * source.ElementSize);
+                for (var index = 0; index < vertexCount; index++)
+                    SetValue(block, $"vertexIndices_{index}", ReadUInt16(source.Bytes, blockOffset + index * sizeof(ushort)));
+
+                var boneOffset = blockOffset + vertexCount * sizeof(ushort);
+                for (var index = 0; index < boneCount; index++)
+                    SetValue(block, $"boneIndices_{index}", ReadUInt16(source.Bytes, boneOffset + index * sizeof(ushort)));
+                AddListItem(targetBlocks, block);
+            }
+        }
+    }
+
+    private static void ReplacePackedBlendBlocks(
+        object target,
+        string memberName,
+        string typeName,
+        int blendCount,
+        IReadOnlyList<NativeBphclPackedArray> sourceArrays,
+        Assembly assembly)
+    {
+        var targetBlocks = EnsureMutableObjectList(target, memberName, memberName);
+        targetBlocks.Clear();
+        var type = FindHavokType(assembly, typeName)
+            ?? throw new InvalidOperationException($"PhysicsTool could not locate {typeName}.");
+
+        foreach (var source in sourceArrays)
+        {
+            for (var blockIndex = 0; blockIndex < source.Count; blockIndex++)
+            {
+                var block = Activator.CreateInstance(type)
+                    ?? throw new InvalidOperationException($"PhysicsTool could not create {typeName}.");
+                var blockOffset = checked(blockIndex * source.ElementSize);
+                for (var index = 0; index < 16; index++)
+                    SetValue(block, $"vertexIndices_{index}", ReadUInt16(source.Bytes, blockOffset + index * 2));
+
+                var boneOffset = blockOffset + 32;
+                for (var index = 0; index < blendCount * 16; index++)
+                    SetValue(block, $"boneIndices_{index}", ReadUInt16(source.Bytes, boneOffset + index * 2));
+
+                // One-blend entries only store a vertex index and one bone
+                // index per vertex. Weight bytes start with the two-blend
+                // block type, where each vertex needs an actual blend ratio.
+                if (blendCount > 1)
+                {
+                    var weightOffset = boneOffset + blendCount * 32;
+                    for (var index = 0; index < blendCount * 16; index++)
+                        SetValue(block, $"boneWeights_{index}", source.Bytes[weightOffset + index]);
+                }
+                AddListItem(targetBlocks, block);
+            }
+        }
+    }
+
+    private static void ReplacePositionBlocks(
+        object target,
+        string memberName,
+        string typeName,
+        IReadOnlyList<NativeBphclPositionBlock> sourceBlocks)
+    {
+        var targetBlocks = EnsureMutableObjectList(target, memberName, memberName);
+        targetBlocks.Clear();
+        if (sourceBlocks.Count == 0)
+            return;
+        var type = FindHavokType(target.GetType().Assembly, typeName)
+            ?? throw new InvalidOperationException($"PhysicsTool could not locate {typeName}.");
+        foreach (var source in sourceBlocks)
+        {
+            var block = Activator.CreateInstance(type)
+                ?? throw new InvalidOperationException($"PhysicsTool could not create {typeName}.");
+            for (var index = 0; index < source.Positions.Count; index++)
+                SetValue(block, $"localPosition_{index}", source.Positions[index]);
+            AddListItem(targetBlocks, block);
+        }
+    }
+
+    private static void ReplacePackedPositionBlocks(
+        object target,
+        string memberName,
+        string typeName,
+        IReadOnlyList<NativeBphclPackedPositionBlock> sourceBlocks)
+    {
+        var targetBlocks = EnsureMutableObjectList(target, memberName, memberName);
+        targetBlocks.Clear();
+        if (sourceBlocks.Count == 0)
+            return;
+        var type = FindHavokType(target.GetType().Assembly, typeName)
+            ?? throw new InvalidOperationException($"PhysicsTool could not locate {typeName}.");
+        foreach (var source in sourceBlocks)
+        {
+            var block = Activator.CreateInstance(type)
+                ?? throw new InvalidOperationException($"PhysicsTool could not create {typeName}.");
+            for (var index = 0; index < source.Positions.Count; index++)
+                SetValue(block, $"localPosition_{index}", source.Positions[index]);
+            AddListItem(targetBlocks, block);
+        }
+    }
+
+    private static IReadOnlyList<NativeBphclPositionBlock> UnpackBphclObjectSpacePositions(
+        IReadOnlyList<NativeBphclPackedPositionBlock> sourceBlocks)
+    {
+        const int packedComponentsPerPosition = 4;
+        const int positionsPerBlock = 16;
+
+        var unpackedBlocks = new List<NativeBphclPositionBlock>(sourceBlocks.Count);
+        foreach (var source in sourceBlocks)
+        {
+            if (source.Positions.Count != positionsPerBlock * packedComponentsPerPosition)
+            {
+                throw new InvalidDataException(
+                    $"BPHCL packed object-space position block has {source.Positions.Count} values; expected {positionsPerBlock * packedComponentsPerPosition}.");
+            }
+
+            var positions = new Vector4[positionsPerBlock];
+            for (var positionIndex = 0; positionIndex < positionsPerBlock; positionIndex++)
+            {
+                var offset = positionIndex * packedComponentsPerPosition;
+                // hkPackedVector3 stores three signed mantissas followed by a
+                // fixed-point exponent. Paired vanilla BotW/TotK cloths show:
+                // value = mantissa * 2^(exponent / 128 - 111).
+                var scale = MathF.Pow(2f, source.Positions[offset + 3] / 128f - 111f);
+                positions[positionIndex] = new Vector4(
+                    source.Positions[offset] * scale,
+                    source.Positions[offset + 1] * scale,
+                    source.Positions[offset + 2] * scale,
+                    1f);
+            }
+
+            unpackedBlocks.Add(new NativeBphclPositionBlock(positions));
+        }
+
+        return unpackedBlocks;
+    }
+
+    private static void ReplaceList(IList target, IEnumerable source)
+    {
+        target.Clear();
+        foreach (var item in source)
+            AddListItem(target, item);
+    }
+
+    private static ushort ReadUInt16(IReadOnlyList<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset + 2 > bytes.Count)
+            throw new InvalidDataException("BPHCL packed blend block ended unexpectedly.");
+        return BinaryPrimitives.ReadUInt16LittleEndian(new[] { bytes[offset], bytes[offset + 1] });
     }
 
     private static void ValidateBphclConstraintTemplate(NativeBphclSimCloth source, object template)
     {
         var targetSimulation = GetFirst(GetValue(template, "simClothDatas"));
-        var targetSets = GetList(GetValue(targetSimulation, "staticConstraintSets"))
-            ?? GetList(GetValue(template, "constraintSets"))
-            ?? Array.Empty<object>();
-
-        foreach (var sourceSet in source.ConstraintSets.Where(set => set.Links.Count > 0))
+        if (GetValue(targetSimulation, "staticConstraintSets") is not IList &&
+            GetValue(template, "constraintSets") is not IList)
         {
-            var matches = targetSets.Any(set =>
-                string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal) &&
-                (GetList(GetValue(set, "links"))?.Count ?? 0) == sourceSet.Links.Count);
-            if (!matches)
-            {
-                throw new InvalidOperationException(
-                    $"Constraint layout does not match the template for {sourceSet.ClassName} ({sourceSet.Links.Count} link(s)). Choose the exact HKCL counterpart before converting.");
-            }
+            throw new InvalidOperationException(
+                "The HKCL template has no writable constraint-set collection. It cannot host imported BPHCL constraints.");
         }
     }
 
@@ -1368,7 +2103,7 @@ public sealed class HkclService
         IReadOnlyList<object> templateBones)
     {
         var targetByName = templateBones
-            .Select((bone, index) => (Name: GetString(bone, "name") ?? string.Empty, Index: index))
+            .Select((bone, index) => (Name: StripBphclPrefix(GetString(bone, "name") ?? string.Empty), Index: index))
             .GroupBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().Index, StringComparer.OrdinalIgnoreCase);
         var map = new Dictionary<int, int>();
@@ -1428,7 +2163,89 @@ public sealed class HkclService
         }
     }
 
-    private static void ApplyBphclParticles(object cloth, NativeBphclSimCloth source)
+    private static void RebuildBphclParticleTopology(object cloth, NativeBphclSimCloth source)
+    {
+        var simulation = GetFirst(GetValue(cloth, "simClothDatas"))
+            ?? throw new InvalidOperationException("The HKCL template has no simulation data to rebuild.");
+        var particles = GetMutableList(GetValue(simulation, "particleDatas"), "particleDatas");
+        var previousParticleCount = particles.Count;
+        ResizeObjectList(particles, source.Particles.Count, "particleDatas");
+
+        var pose = GetFirst(GetValue(simulation, "simClothPoses"));
+        ResizeParallelList(GetValue(pose, "positions") as IList, source.Particles.Count, Vector4.Zero);
+        ResizeParallelList(GetValue(simulation, "staticCollisionMasks") as IList, source.Particles.Count, 255);
+        ResizeParallelList(GetValue(simulation, "perParticlePinchDetectionEnabledFlags") as IList, source.Particles.Count, false);
+
+        // These arrays are per-particle only when they matched the original
+        // template count. Leave unrelated arrays intact rather than guessing
+        // their semantics from their length alone.
+        var pinchingData = GetValue(simulation, "collidablePinchingDatas") as IList;
+        if (pinchingData?.Count == previousParticleCount)
+            ResizeParallelList(pinchingData, source.Particles.Count, pinchingData.Count > 0 ? pinchingData[0] : null);
+
+        var triangleIndices = GetValue(simulation, "triangleIndices") as IList
+            ?? throw new InvalidOperationException("The HKCL template has no writable triangle-index list.");
+        triangleIndices.Clear();
+        foreach (var index in source.TriangleIndices)
+            AddListItem(triangleIndices, index);
+
+        var triangleFlips = GetValue(simulation, "triangleFlips") as IList;
+        triangleFlips?.Clear();
+        if (triangleFlips != null)
+        {
+            foreach (var flip in source.TriangleFlips)
+                AddListItem(triangleFlips, flip);
+        }
+    }
+
+    private static IReadOnlyDictionary<int, int> PrepareBphclSkeletonShell(
+        object skeleton,
+        NativeBphclSkeleton source)
+    {
+        var bones = GetMutableList(GetValue(skeleton, "bones"), "bones");
+        var parents = GetValue(skeleton, "parentIndices") as IList
+            ?? throw new InvalidOperationException("The HKCL template skeleton has no editable parent list.");
+        var poses = GetValue(skeleton, "referencePose") as IList
+            ?? throw new InvalidOperationException("The HKCL template skeleton has no editable reference-pose list.");
+        if (bones.Count == 0)
+            throw new InvalidOperationException("The HKCL template skeleton has no bone entry to clone.");
+
+        // BPHCL owns this cloth skeleton. Its count must match exactly: an
+        // extra template bone leaves Havok with a different transform layout
+        // than the source transform-set and deformer data expects.
+        var shellCount = source.Bones.Count;
+        ResizeObjectList(bones, shellCount, "bones");
+        ResizeParallelList(parents, shellCount, -1);
+        ResizeParallelList(poses, shellCount, Matrix4x4.Identity);
+
+        return source.Bones.ToDictionary(bone => bone.Index, bone => bone.Index);
+    }
+
+    private static void ResizeObjectList(IList list, int count, string displayName)
+    {
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count));
+        if (list.Count == 0 && count > 0)
+            throw new InvalidOperationException($"The HKCL template has no {displayName} entry to clone.");
+
+        while (list.Count > count)
+            list.RemoveAt(list.Count - 1);
+        while (list.Count < count)
+            list.Add(CloneForCurrentGraph(list[list.Count - 1]!));
+    }
+
+    private static void ResizeParallelList(IList? list, int count, object? defaultValue)
+    {
+        if (list == null)
+            return;
+
+        while (list.Count > count)
+            list.RemoveAt(list.Count - 1);
+        while (list.Count < count)
+            AddListItem(list, defaultValue);
+    }
+
+    private static void ApplyBphclParticles(object cloth, NativeBphclSimCloth source, float solverScale)
     {
         var templateRows = GetParticleRowsForCloth(cloth);
         var rows = source.Particles.Select((particle, index) =>
@@ -1442,16 +2259,83 @@ public sealed class HkclService
                 Y = particle.Position.Y,
                 Z = particle.Position.Z,
                 W = particle.Position.W,
-                Mass = particle.Mass,
-                InverseMass = particle.InverseMass,
+                Mass = particle.Mass * solverScale,
+                InverseMass = solverScale > 0.0f
+                    ? particle.InverseMass / solverScale
+                    : particle.InverseMass,
                 Radius = particle.Radius,
                 Friction = particle.Friction,
-                // Collision masks are not exposed by the native BPHCL reader yet.
-                CollisionMask = template.CollisionMask
+                CollisionMask = index < source.StaticCollisionMasks.Count
+                    ? checked((int)source.StaticCollisionMasks[index])
+                    : template.CollisionMask
             };
         });
 
         ApplyParticleRows(cloth, rows);
+    }
+
+    private static void ApplyBphclSimulationSettings(object cloth, NativeBphclSimCloth source)
+    {
+        var simulation = GetFirst(GetValue(cloth, "simClothDatas"))
+            ?? throw new InvalidOperationException("The HKCL template has no simulation data.");
+        var simulationInfo = GetValue(simulation, "simulationInfo") ?? simulation;
+
+        // These are direct equivalents in both formats. Earlier conversion
+        // passes left the BotW template's gravity and damping in place, which
+        // made the imported particle constraints run under mixed settings.
+        SetValue(simulationInfo, "gravity", source.SimulationInfo.Gravity);
+        SetValue(simulationInfo, "globalDampingPerSecond", source.SimulationInfo.GlobalDampingPerSecond);
+
+        // These fields are stored on hclSimClothData itself. Newer BPHCL
+        // files additionally expose simOpIds; retain that list whenever the
+        // older HKCL class version has a matching field.
+        SetValue(simulation, "doNormals", source.Runtime.DoNormals);
+        if (GetValue(simulation, "simOpIds") is IList simulationOperatorIds)
+            ReplaceList(simulationOperatorIds, source.SimulationOperatorIds);
+        SetValue(simulation, "transferMotionEnabled", source.Runtime.TransferMotionEnabled);
+        SetValue(simulation, "landscapeCollisionEnabled", source.Runtime.LandscapeCollisionEnabled);
+        SetValue(simulation, "numLandscapeCollidableParticles", source.Runtime.NumLandscapeCollidableParticles);
+        SetValue(simulation, "pinchDetectionEnabled", source.Runtime.PinchDetectionEnabled);
+        SetValue(simulation, "minPinchedParticleIndex", source.Runtime.MinPinchedParticleIndex);
+        SetValue(simulation, "maxPinchedParticleIndex", source.Runtime.MaxPinchedParticleIndex);
+        SetValue(simulation, "maxCollisionPairs", source.Runtime.MaxCollisionPairs);
+
+        var transfer = GetValue(simulation, "transferMotionData");
+        if (transfer != null)
+        {
+            var sourceTransfer = source.Runtime.TransferMotionData;
+            SetValue(transfer, "transformSetIndex", sourceTransfer.TransformSetIndex);
+            SetValue(transfer, "transformIndex", sourceTransfer.TransformIndex);
+            SetValue(transfer, "transferTranslationMotion", sourceTransfer.TransferTranslationMotion);
+            SetValue(transfer, "minTranslationSpeed", sourceTransfer.MinTranslationSpeed);
+            SetValue(transfer, "maxTranslationSpeed", sourceTransfer.MaxTranslationSpeed);
+            SetValue(transfer, "minTranslationBlend", sourceTransfer.MinTranslationBlend);
+            SetValue(transfer, "maxTranslationBlend", sourceTransfer.MaxTranslationBlend);
+            SetValue(transfer, "transferRotationMotion", sourceTransfer.TransferRotationMotion);
+            SetValue(transfer, "minRotationSpeed", sourceTransfer.MinRotationSpeed);
+            SetValue(transfer, "maxRotationSpeed", sourceTransfer.MaxRotationSpeed);
+            SetValue(transfer, "minRotationBlend", sourceTransfer.MinRotationBlend);
+            SetValue(transfer, "maxRotationBlend", sourceTransfer.MaxRotationBlend);
+        }
+
+        var landscape = GetValue(simulation, "landscapeCollisionData");
+        if (landscape != null)
+        {
+            var sourceLandscape = source.Runtime.LandscapeCollisionData;
+            SetValue(landscape, "landscapeRadius", sourceLandscape.LandscapeRadius);
+            SetValue(landscape, "enableStuckParticleDetection", sourceLandscape.EnableStuckParticleDetection);
+            SetValue(landscape, "stuckParticlesStretchFactorSq", sourceLandscape.StuckParticlesStretchFactorSq);
+            SetValue(landscape, "pinchDetectionEnabled", sourceLandscape.PinchDetectionEnabled);
+            SetValue(landscape, "pinchDetectionPriority", sourceLandscape.PinchDetectionPriority);
+            SetValue(landscape, "pinchDetectionRadius", sourceLandscape.PinchDetectionRadius);
+            SetValue(landscape, "collisionTolerance", sourceLandscape.CollisionTolerance);
+        }
+
+        var pinchFlags = EnsureMutableObjectList(
+            simulation,
+            "perParticlePinchDetectionEnabledFlags",
+            "per-particle pinch flags");
+        ReplaceList(pinchFlags, source.Runtime.PerParticlePinchDetectionEnabledFlags);
     }
 
     private static IReadOnlyList<object> CreateBphclColliders(
@@ -1459,63 +2343,155 @@ public sealed class HkclService
         IReadOnlyList<object> colliderTemplates,
         IReadOnlyList<NativeBphclCollider> sourceColliders,
         NativeBphclSkeleton skeleton,
-        IReadOnlyDictionary<int, int> sourceToTargetBone)
+        object targetSkeleton,
+        IReadOnlyDictionary<int, int> sourceToTargetBone,
+        IReadOnlyList<int>? activeColliderItemIndices = null)
     {
         var references = GetPrimaryMutableCollidableReferences(cloth);
         references.Clear();
         var result = new List<object>(sourceColliders.Count);
+        var collidersBySourceItem = new Dictionary<int, object>();
 
         for (var index = 0; index < sourceColliders.Count; index++)
         {
             var source = sourceColliders[index];
-            var target = CloneForCurrentGraph(colliderTemplates[index % colliderTemplates.Count]);
+            var target = colliderTemplates.Count > 0
+                ? CloneForCurrentGraph(colliderTemplates[index % colliderTemplates.Count])
+                : new hclCollidable();
             var targetShape = CreateHkclColliderShape(target, source.Shape);
 
+            var worldTransform = new Matrix4x4(
+                source.AxisX.X, source.AxisX.Y, source.AxisX.Z, source.AxisX.W,
+                source.AxisY.X, source.AxisY.Y, source.AxisY.Z, source.AxisY.W,
+                source.AxisZ.X, source.AxisZ.Y, source.AxisZ.Z, source.AxisZ.W,
+                source.Translation.X, source.Translation.Y, source.Translation.Z, source.Translation.W);
+
             SetValue(target, "name", StripBphclPrefix(source.Name));
-            SetValue(target, "transform", new Matrix4x4(
-                source.AxisX.X, source.AxisX.Y, source.AxisX.Z, 0.0f,
-                source.AxisY.X, source.AxisY.Y, source.AxisY.Z, 0.0f,
-                source.AxisZ.X, source.AxisZ.Y, source.AxisZ.Z, 0.0f,
-                source.Translation.X, source.Translation.Y, source.Translation.Z, 1.0f));
             SetValue(target, "shape", targetShape);
             ApplyBphclColliderShape(targetShape, source.Shape);
 
             var sourceBoneIndex = ResolveColliderBoneIndex(StripBphclPrefix(source.Name), skeleton.Bones);
             if (sourceBoneIndex >= 0 && sourceToTargetBone.TryGetValue(sourceBoneIndex, out var targetBoneIndex))
-                SetValue(target, "transformIndex", targetBoneIndex);
+            {
+                // BPHCL exposes a collider rest transform in model space. Keep
+                // its authored offset from the source bone, then reapply that
+                // offset to the matching HKCL bone. This preserves the collider
+                // in the same rest-pose location while giving HKCL a valid bone
+                // binding for animated updates.
+                var sourceBoneWorld = GetBphclBoneWorldTransform(skeleton, sourceBoneIndex);
+                var targetBoneWorld = GetHkclBoneWorldTransform(targetSkeleton, targetBoneIndex);
+                if (!Matrix4x4.Invert(sourceBoneWorld, out var sourceBoneInverse))
+                    throw new InvalidOperationException($"Could not invert source bone {sourceBoneIndex} while baking collider {source.Name}.");
 
-            AddListItem(references, target);
+                var localToBone = worldTransform * sourceBoneInverse;
+                worldTransform = localToBone * targetBoneWorld;
+                SetValue(target, "transformIndex", targetBoneIndex);
+            }
+            SetValue(target, "transform", worldTransform);
+
             result.Add(target);
+            collidersBySourceItem.Add(source.ItemIndex, target);
+        }
+
+        // The transform map addresses the per-instance collider list by its
+        // own reference order, not by the global collidable-container order.
+        // Those orders happen to agree in simple files, but diverge in larger
+        // hair setups with shared capsules and head planes.
+        var referenceOrder = activeColliderItemIndices ?? sourceColliders
+            .Select(collider => collider.ItemIndex)
+            .ToArray();
+        foreach (var itemIndex in referenceOrder)
+        {
+            if (!collidersBySourceItem.TryGetValue(itemIndex, out var target))
+            {
+                throw new InvalidOperationException(
+                    $"The BPHCL simulation references collider ITEM {itemIndex}, but it was not available for conversion.");
+            }
+            AddListItem(references, target);
         }
 
         return result;
     }
 
+    private static string ApplyBphclCollidableTransformMap(
+        object cloth,
+        NativeBphclCollidableTransformMap source,
+        int sourceColliderCount,
+        IReadOnlyDictionary<int, int> sourceToTargetBone)
+    {
+        var simulation = (GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>()).FirstOrDefault()
+            ?? throw new InvalidOperationException("The HKCL template has no simulation cloth for the collider transform map.");
+        var targetMap = GetValue(simulation, "collidableTransformMap")
+            ?? throw new InvalidOperationException("The HKCL template has no collidable transform map.");
+
+        if (source.TransformIndices.Count != sourceColliderCount || source.Offsets.Count != sourceColliderCount)
+        {
+            throw new InvalidOperationException(
+                $"BPHCL collider transform-map count does not match its active colliders " +
+                $"({source.TransformIndices.Count} indices, {source.Offsets.Count} offsets, {sourceColliderCount} colliders).");
+        }
+
+        var targetIndices = source.TransformIndices.Select(sourceIndex =>
+        {
+            if (sourceIndex > int.MaxValue || !sourceToTargetBone.TryGetValue((int)sourceIndex, out var targetIndex))
+            {
+                throw new InvalidOperationException(
+                    $"The BPHCL collider transform map references source bone {sourceIndex}, which is not present in the HKCL template mapping.");
+            }
+            return targetIndex;
+        }).ToArray();
+
+        if (!SetValue(targetMap, "transformSetIndex", source.TransformSetIndex))
+            throw new InvalidOperationException("PhysicsTool could not set the HKCL collider transform-set index.");
+        ReplaceList(EnsureMutableObjectList(targetMap, "transformIndices", "collider transform indices"), targetIndices);
+        ReplaceList(EnsureMutableObjectList(targetMap, "offsets", "collider transform offsets"), source.Offsets);
+
+        return $"Copied the {sourceColliderCount}-entry BPHCL collider transform map and remapped it to the HKCL skeleton.";
+    }
+
     private static IList GetPrimaryMutableCollidableReferences(object cloth)
     {
-        IList? primary = null;
-        if (GetValue(cloth, "perInstanceCollidables") is IList direct)
-        {
-            direct.Clear();
-            primary = direct;
-        }
+        IList? direct = GetValue(cloth, "perInstanceCollidables") as IList;
+        var simulationLists = new List<IList>();
 
         foreach (var simulation in GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>())
         {
-            if (GetValue(simulation, "perInstanceCollidables") is not IList references)
-                continue;
-            references.Clear();
-            primary ??= references;
+            if (GetValue(simulation, "perInstanceCollidables") is IList references)
+                simulationLists.Add(references);
         }
 
-        return primary ?? throw new InvalidOperationException("The HKCL template has no mutable per-instance collider reference list.");
+        return simulationLists.FirstOrDefault()
+            ?? direct
+            ?? throw new InvalidOperationException("The HKCL template has no mutable per-instance collider reference list.");
+    }
+
+    private static void ReplaceClothCollidableReferences(object cloth, IReadOnlyList<object> collidables)
+    {
+        var direct = GetValue(cloth, "perInstanceCollidables") as IList;
+        var simulationLists = (GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>())
+            .Select(simulation => GetValue(simulation, "perInstanceCollidables") as IList)
+            .Where(list => list != null)
+            .Cast<IList>()
+            .ToList();
+
+        direct?.Clear();
+        foreach (var list in simulationLists)
+            list.Clear();
+
+        // BotW HKCL stores active collider references on the simulation.
+        // The cloth-level list remains a compatibility fallback for older files.
+        var destination = simulationLists.FirstOrDefault() ?? direct
+            ?? throw new InvalidOperationException("The HKCL template has no mutable per-instance collider reference list.");
+        foreach (var collidable in collidables)
+            AddListItem(destination, collidable);
     }
 
     private static object CreateHkclColliderShape(object targetCollider, NativeBphclColliderShape source)
     {
-        var templateShape = GetValue(targetCollider, "shape")
-            ?? throw new InvalidOperationException("The HKCL collider template has no shape.");
-        var targetType = templateShape.GetType().Assembly
+        // A fresh-document conversion has no collider shell yet. Resolve the
+        // generated shape class from hclCollidable's HKX2 assembly rather than
+        // borrowing it from an existing template shape.
+        var targetType = targetCollider.GetType().Assembly
             .GetTypes()
             .FirstOrDefault(type => string.Equals(type.Name, source.TypeName, StringComparison.Ordinal));
         if (targetType == null)
@@ -1535,6 +2511,13 @@ public sealed class HkclService
                 SetValue(target, "radius", source.Radius);
                 UpdateCapsuleDerivedValues(target, source.Start, source.End);
                 break;
+            case "hclTaperedCapsuleShape":
+                SetValue(target, "small", source.Start);
+                SetValue(target, "big", source.End);
+                SetValue(target, "smallRadius", source.Radius);
+                SetValue(target, "bigRadius", source.EndRadius);
+                UpdateCapsuleDerivedValues(target, source.Start, source.End);
+                break;
             case "hclSphereShape":
             {
                 var sphere = GetValue(target, "sphere")
@@ -1550,29 +2533,109 @@ public sealed class HkclService
         }
     }
 
-    private static IReadOnlyList<string> ApplyBphclConstraintLinks(object cloth, NativeBphclSimCloth source)
+    private static IReadOnlyList<string> ApplyBphclConstraintLinks(
+        object cloth,
+        NativeBphclSimCloth source,
+        bool preserveTemplateLayout,
+        float stiffnessScale)
     {
-        var targetSimulation = GetFirst(GetValue(cloth, "simClothDatas"));
-        var targetSets = GetList(GetValue(targetSimulation, "staticConstraintSets"))
-            ?? GetList(GetValue(cloth, "constraintSets"))
-            ?? Array.Empty<object>();
+        var targetSets = GetMutableConstraintSets(cloth);
         var notes = new List<string>();
 
-        foreach (var sourceSet in source.ConstraintSets.Where(set => set.Links.Count > 0))
+        if (!preserveTemplateLayout)
         {
-            var targetSet = targetSets.FirstOrDefault(set =>
-                string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal) &&
-                (GetList(GetValue(set, "links"))?.Count ?? 0) == sourceSet.Links.Count);
+            targetSets.Clear();
+            if (GetFirst(GetValue(cloth, "simClothDatas")) is { } simulation &&
+                GetValue(simulation, "antiPinchConstraintSets") is IList antiPinchSets)
+            {
+                antiPinchSets.Clear();
+            }
+        }
+
+        foreach (var sourceSet in source.ConstraintSets)
+        {
+            var createdTargetSet = false;
+            var targetSet = targetSets.Cast<object?>().FirstOrDefault(set =>
+                set != null && string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal));
             if (targetSet == null)
             {
-                notes.Add($"{sourceSet.ClassName} links were left template-owned because their layout did not match.");
+                // BotW's generated HKX2 classes support this set even when
+                // the selected shell did not need one. It is an essential
+                // solver stage in several TotK hair layouts, so retain the
+                // otherwise verified BotW transition/local-range data while
+                // adding this missing source-owned constraint class.
+                var canAppendCompatibleSet = string.Equals(
+                    sourceSet.ClassName,
+                    "hclBendStiffnessConstraintSet",
+                    StringComparison.Ordinal);
+                if (preserveTemplateLayout && !canAppendCompatibleSet)
+                {
+                    notes.Add($"Kept the HKCL template layout; skipped unsupported BPHCL {sourceSet.ClassName}.");
+                    continue;
+                }
+
+                targetSet = CreateHavokConstraintSet(cloth, targetSets, sourceSet.ClassName);
+                createdTargetSet = true;
+                notes.Add($"Added {sourceSet.ClassName} from the BPHCL source.");
+            }
+            SetValue(targetSet, "name", string.IsNullOrWhiteSpace(sourceSet.Name) ? sourceSet.ClassName : sourceSet.Name);
+            // The concrete C# class identifies the broad constraint family,
+            // but Havok also serializes these source-owned identifiers on the
+            // hclConstraintSet base record. Fresh files previously left all
+            // of them at their constructor defaults.
+            SetValue(targetSet, "constraintId", sourceSet.ConstraintId);
+            SetValue(targetSet, "constraintType", sourceSet.ConstraintType);
+            var usesLocalConstraints = string.Equals(sourceSet.ClassName, "hclLocalRangeConstraintSet", StringComparison.Ordinal);
+            var usesTransitionParticles = string.Equals(sourceSet.ClassName, "hclTransitionConstraintSet", StringComparison.Ordinal);
+            var sourceRecords = usesLocalConstraints
+                ? sourceSet.LocalConstraints
+                : usesTransitionParticles
+                    ? sourceSet.TransitionParticles
+                    : sourceSet.Links;
+            var recordMember = usesLocalConstraints
+                ? "localConstraints"
+                : usesTransitionParticles
+                    ? "perParticleData"
+                    : "links";
+            var targetLinks = EnsureMutableObjectList(targetSet, recordMember, $"{sourceSet.ClassName}.{recordMember}");
+
+            if (preserveTemplateLayout && !createdTargetSet && targetLinks.Count != sourceRecords.Count)
+            {
+                notes.Add($"Kept the HKCL template {sourceSet.ClassName} records because BPHCL exposes {sourceRecords.Count} but HKCL needs {targetLinks.Count}.");
                 continue;
             }
 
-            var targetLinks = GetList(GetValue(targetSet, "links")) ?? Array.Empty<object>();
-            for (var index = 0; index < sourceSet.Links.Count; index++)
+            if (targetLinks.Count != sourceRecords.Count)
             {
-                var sourceLink = sourceSet.Links[index];
+                var prototype = targetLinks.Count > 0 ? targetLinks[0] : null;
+                var linkType = prototype?.GetType()
+                    ?? GetListElementType(targetLinks)
+                    ?? FindHavokType(cloth.GetType().Assembly, usesLocalConstraints
+                        ? "hclLocalRangeConstraintSetLocalConstraint"
+                        : usesTransitionParticles
+                            ? "hclTransitionConstraintSetPerParticle"
+                        : sourceSet.ClassName + "Link");
+                if (linkType == null)
+                {
+                    throw new InvalidOperationException(
+                        $"PhysicsTool could not locate the generated HKX2 constraint record class for {sourceSet.ClassName}.");
+                }
+
+                targetLinks.Clear();
+                for (var index = 0; index < sourceRecords.Count; index++)
+                {
+                    var link = prototype == null
+                        ? Activator.CreateInstance(linkType)
+                        : CloneForCurrentGraph(prototype);
+                    targetLinks.Add(link ?? throw new InvalidOperationException(
+                        $"PhysicsTool could not create a {sourceSet.ClassName} constraint record."));
+                }
+                notes.Add($"Created {sourceRecords.Count} {sourceSet.ClassName} record(s) from BPHCL data.");
+            }
+
+            for (var index = 0; index < sourceRecords.Count; index++)
+            {
+                var sourceLink = sourceRecords[index];
                 var targetLink = targetLinks[index];
                 if (sourceLink.ParticleA is int particleA)
                     SetValue(targetLink, "particleA", particleA);
@@ -1580,11 +2643,232 @@ public sealed class HkclService
                     SetValue(targetLink, "particleB", particleB);
 
                 foreach (var value in sourceLink.Values)
-                    SetValue(targetLink, value.Key, value.Value);
+                    SetValue(
+                        targetLink,
+                        value.Key,
+                        NormalizeBphclConstraintValue(sourceSet.ClassName, value.Key, value.Value, stiffnessScale));
+
+                // TotK's LocalConstraint calls this shapeRadius; BotW's
+                // equivalent record calls it maximumDistance. Leaving the
+                // template value here makes the converted particle positions
+                // fight unrelated local-range limits at runtime.
+                if (usesLocalConstraints &&
+                    sourceLink.Values.TryGetValue("shapeRadius", out var shapeRadius))
+                {
+                    SetValue(targetLink, "maximumDistance", shapeRadius);
+                }
             }
+
+            foreach (var value in sourceSet.Values)
+                SetValue(
+                    targetSet,
+                    value.Key,
+                    NormalizeBphclConstraintValue(sourceSet.ClassName, value.Key, value.Value, stiffnessScale));
         }
 
         return notes;
+    }
+
+    private static object NormalizeBphclConstraintValue(
+        string constraintSetName,
+        string memberName,
+        object value,
+        float stiffnessScale)
+    {
+        // The paired Armor_184 files show that BotW scales only the standard
+        // and bend-link stiffness terms by particle count. Stretch links and
+        // the local-range set use fixed solver values (normally 1.0); scaling
+        // those to 30 makes the solver explode immediately.
+        var needsNormalization =
+            string.Equals(constraintSetName, "hclStandardLinkConstraintSet", StringComparison.Ordinal) &&
+            string.Equals(memberName, "stiffness", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(constraintSetName, "hclBendLinkConstraintSet", StringComparison.Ordinal) &&
+            memberName.EndsWith("stiffness", StringComparison.OrdinalIgnoreCase);
+        if (!needsNormalization)
+            return value;
+
+        return value switch
+        {
+            float single => single * stiffnessScale,
+            double number => number * stiffnessScale,
+            _ => value
+        };
+    }
+
+    private static IReadOnlyList<string> ApplyBphclConstraintExecution(
+        object cloth,
+        NativeBphclSimCloth sourceSimulation,
+        IReadOnlyList<NativeBphclOperatorLayout> sourceOperators)
+    {
+        var sourceOperator = sourceOperators.FirstOrDefault(op =>
+            string.Equals(op.ClassName, "hclSimulateOperator", StringComparison.Ordinal));
+        var sourceExecution = sourceOperator?.SimulateConfigs.FirstOrDefault()?.ConstraintExecution;
+        if (sourceExecution is null || sourceExecution.Count == 0)
+            return Array.Empty<string>();
+
+        var targetOperator = (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
+            .FirstOrDefault(op => string.Equals(op.GetType().Name, "hclSimulateOperator", StringComparison.Ordinal));
+        if (targetOperator is null)
+            throw new InvalidOperationException("The HKCL template has no hclSimulateOperator to receive BPHCL constraint execution.");
+
+        var targetSets = GetMutableConstraintSets(cloth).Cast<object>().ToList();
+        var targetByClass = targetSets
+            .Select((set, index) => (set, index))
+            .ToDictionary(entry => entry.set.GetType().Name, entry => entry.index, StringComparer.Ordinal);
+        var sourceToTarget = new Dictionary<int, int>();
+        foreach (var sourceSet in sourceSimulation.ConstraintSets)
+        {
+            if (targetByClass.TryGetValue(sourceSet.ClassName, out var targetIndex))
+            {
+                sourceToTarget[sourceSet.Index] = targetIndex;
+                continue;
+            }
+
+        }
+
+        var translated = new List<int>(sourceExecution.Count);
+        foreach (var sourceValue in sourceExecution)
+        {
+            if (sourceValue < 0)
+            {
+                translated.Add(sourceValue);
+                continue;
+            }
+
+            if (!sourceToTarget.TryGetValue(sourceValue, out var targetValue))
+            {
+                throw new InvalidOperationException(
+                    $"The BPHCL solver executes constraint set {sourceValue}, but the HKCL template has no compatible set for it.");
+            }
+            translated.Add(targetValue);
+        }
+
+        ReplaceList(EnsureMutableObjectList(targetOperator, "constraintExecution", "constraint execution"), translated);
+        return new[]
+        {
+            $"Translated the BPHCL solver constraint execution order to HKCL: [{string.Join(", ", translated)}]."
+        };
+    }
+
+    private static IReadOnlyList<string> ApplyBphclSimpleMeshBoneDeform(
+        object cloth,
+        IReadOnlyList<NativeBphclSimpleMeshBoneDeform> sourceDeformers,
+        IReadOnlyDictionary<int, int> sourceToTargetBone)
+    {
+        if (sourceDeformers.Count == 0)
+            return Array.Empty<string>();
+
+        var target = (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
+            .FirstOrDefault(op => string.Equals(op.GetType().Name, "hclSimpleMeshBoneDeformOperator", StringComparison.Ordinal));
+        if (target == null)
+            throw new InvalidOperationException("The HKCL template has no hclSimpleMeshBoneDeformOperator to receive the BPHCL bone-output mapping.");
+
+        // BotW's simple bone deform stage is singular for the bone-chain
+        // cloths currently supported by the converter.
+        var source = sourceDeformers[0];
+        SetValue(target, "inputBufferIdx", source.InputBufferIndex);
+        SetValue(target, "outputTransformSetIdx", source.OutputTransformSetIndex);
+        SetValue(target, "boneAxis", source.BoneAxis);
+
+        var pairs = EnsureMutableObjectList(target, "triangleBonePairs", "triangle bone pairs");
+        var pairPrototype = pairs.Count > 0 ? pairs[0] : null;
+        var pairType = pairPrototype?.GetType()
+            ?? GetListElementType(pairs)
+            ?? FindHavokType(cloth.GetType().Assembly, "hclSimpleMeshBoneDeformOperatorTriangleBonePair")
+            ?? throw new InvalidOperationException("PhysicsTool could not locate the HKCL triangle-bone pair type.");
+        pairs.Clear();
+        foreach (var sourcePair in source.TriangleBonePairs)
+        {
+            var pair = pairPrototype == null
+                ? Activator.CreateInstance(pairType)
+                : CloneForCurrentGraph(pairPrototype);
+            if (pair == null)
+                throw new InvalidOperationException("PhysicsTool could not create an HKCL triangle-bone pair.");
+            var sourceBoneIndex = sourcePair.BoneOffset / 64;
+            if (!sourceToTargetBone.TryGetValue(sourceBoneIndex, out var targetBoneIndex))
+            {
+                throw new InvalidOperationException(
+                    $"The BPHCL bone-output mapping references source bone {sourceBoneIndex}, which is absent from the selected HKCL skeleton template.");
+            }
+
+            // Havok stores a bone index in 64-byte transform slots here.
+            SetValue(pair, "boneOffset", targetBoneIndex * 64);
+            SetValue(pair, "triangleOffset", sourcePair.TriangleOffset);
+            AddListItem(pairs, pair);
+        }
+
+        var localTransforms = EnsureMutableObjectList(target, "localBoneTransforms", "local bone transforms");
+        localTransforms.Clear();
+        foreach (var sourceTransform in source.LocalBoneTransforms)
+            AddListItem(localTransforms, sourceTransform);
+
+        return new[]
+        {
+            $"Rebuilt SimpleMeshBoneDeform with {source.TriangleBonePairs.Count} triangle-to-bone pair(s) and {source.LocalBoneTransforms.Count} local bone transform(s)."
+        };
+    }
+
+    private static IList GetMutableConstraintSets(object cloth)
+    {
+        var simulation = GetFirst(GetValue(cloth, "simClothDatas"));
+        if (GetValue(simulation, "staticConstraintSets") is IList staticSets)
+            return staticSets;
+        if (GetValue(cloth, "constraintSets") is IList sets)
+            return sets;
+
+        throw new InvalidOperationException("The converted HKCL cloth has no writable constraint-set collection.");
+    }
+
+    private static object CreateHavokConstraintSet(object cloth, IList targetSets, string className)
+    {
+        var type = FindHavokType(cloth.GetType().Assembly, className)
+            ?? throw new InvalidOperationException(
+                $"PhysicsTool could not locate the generated HKX2 class {className} required by this BPHCL cloth.");
+        var instance = Activator.CreateInstance(type)
+            ?? throw new InvalidOperationException($"PhysicsTool could not create {className}.");
+        AddListItem(targetSets, instance);
+        return instance;
+    }
+
+    private static IList EnsureMutableObjectList(object owner, string name, string displayName)
+    {
+        if (GetValue(owner, name) is IList existing)
+            return existing;
+
+        var type = owner.GetType();
+        var candidates = new[] { name, "m_" + name };
+        var memberType = candidates
+            .Select(candidate => type.GetField(candidate, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.FieldType
+                ?? type.GetProperty(candidate, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.PropertyType)
+            .FirstOrDefault(candidate => candidate != null);
+        var elementType = memberType == null ? null : GetCollectionElementType(memberType);
+        if (elementType == null)
+            throw new InvalidOperationException($"PhysicsTool could not determine the link type for {displayName}.");
+
+        var concreteType = memberType is { IsInterface: false, IsAbstract: false }
+            ? memberType
+            : typeof(List<>).MakeGenericType(elementType);
+        var list = Activator.CreateInstance(concreteType) as IList
+            ?? throw new InvalidOperationException($"PhysicsTool could not create the list for {displayName}.");
+        if (!SetValue(owner, name, list))
+            throw new InvalidOperationException($"PhysicsTool could not assign the list for {displayName}.");
+        return list;
+    }
+
+    private static Type? FindHavokType(Assembly assembly, string className)
+    {
+        try
+        {
+            return assembly.GetTypes().FirstOrDefault(type =>
+                string.Equals(type.Name, className, StringComparison.Ordinal) &&
+                !type.IsAbstract);
+        }
+        catch (ReflectionTypeLoadException exception)
+        {
+            return exception.Types.FirstOrDefault(type => type != null &&
+                string.Equals(type.Name, className, StringComparison.Ordinal) &&
+                !type.IsAbstract);
+        }
     }
 
     private static int ResolveColliderBoneIndex(string colliderName, IReadOnlyList<NativeBphclBone> bones)
@@ -1614,6 +2898,9 @@ public sealed class HkclService
 
     private static string StripBphclPrefix(string name) =>
         name.StartsWith("Link:", StringComparison.OrdinalIgnoreCase) ? name[5..] : name;
+
+    private static string EnsureLinkPrefix(string name) =>
+        name.StartsWith("Link:", StringComparison.OrdinalIgnoreCase) ? name : "Link:" + name;
 
     private hkRootLevelContainer RequireRoot()
     {
@@ -2334,13 +3621,12 @@ public sealed class HkclService
 
     private static void AddPreviewColliders(ParticlePreviewData preview, hkRootLevelContainer root, object cloth)
     {
-        var referencedCollidables = new HashSet<object>(EnumerateReferencedCollidables(cloth), ReferenceEquality.Instance);
         var collidables = GetCollidables(root);
 
-        for (var i = 0; i < collidables.Count; i++)
+        foreach (var collidable in EnumerateReferencedCollidables(cloth).Distinct(ReferenceEquality.Instance))
         {
-            var collidable = collidables[i];
-            if (!referencedCollidables.Contains(collidable))
+            var i = IndexOfReference(collidables, collidable);
+            if (i < 0)
                 continue;
             var shape = GetValue(collidable, "shape");
             if (shape == null)
@@ -2420,10 +3706,16 @@ public sealed class HkclService
 
     private static int ResolveColliderBoneIndex(string? colliderName, IEnumerable<(int Index, string Name)> bones, int fallbackIndex)
     {
+        var boneEntries = bones.ToList();
+        // HKCL's transformIndex is an explicit binding. Collider names are
+        // only a useful recovery rule for older/unbound data.
+        if (fallbackIndex >= 0 && boneEntries.Any(bone => bone.Index == fallbackIndex))
+            return fallbackIndex;
+
         if (string.IsNullOrWhiteSpace(colliderName))
             return fallbackIndex;
 
-        var byName = bones
+        var byName = boneEntries
             .Where(b => !string.IsNullOrWhiteSpace(b.Name))
             .GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Index, StringComparer.OrdinalIgnoreCase);
@@ -2481,6 +3773,80 @@ public sealed class HkclService
             transform.M11 * local.X + transform.M21 * local.Y + transform.M31 * local.Z + transform.M41,
             transform.M12 * local.X + transform.M22 * local.Y + transform.M32 * local.Z + transform.M42,
             transform.M13 * local.X + transform.M23 * local.Y + transform.M33 * local.Z + transform.M43);
+    }
+
+    private static Matrix4x4 GetHkclBoneWorldTransform(object skeleton, int boneIndex)
+    {
+        if (boneIndex < 0)
+            return Matrix4x4.Identity;
+
+        var parents = GetList(GetValue(skeleton, "parentIndices")) ?? Array.Empty<object>();
+        var poses = GetList(GetValue(skeleton, "referencePose")) ?? Array.Empty<object>();
+        var chain = new Stack<int>();
+        var visited = new HashSet<int>();
+        var current = boneIndex;
+
+        while (current >= 0 && current < poses.Count && visited.Add(current))
+        {
+            chain.Push(current);
+            current = ToInt(parents.ElementAtOrDefault(current), -1);
+        }
+
+        var world = Matrix4x4.Identity;
+        while (chain.Count > 0)
+            world = PoseToLocalMatrix(poses[chain.Pop()]) * world;
+        return world;
+    }
+
+    private static Matrix4x4 GetBphclBoneWorldTransform(NativeBphclSkeleton skeleton, int boneIndex)
+    {
+        if (boneIndex < 0)
+            return Matrix4x4.Identity;
+
+        var bones = skeleton.Bones.ToDictionary(bone => bone.Index);
+        var chain = new Stack<NativeBphclBone>();
+        var visited = new HashSet<int>();
+        var currentIndex = boneIndex;
+        while (currentIndex >= 0 && visited.Add(currentIndex) && bones.TryGetValue(currentIndex, out var bone))
+        {
+            chain.Push(bone);
+            currentIndex = bone.ParentIndex;
+        }
+
+        var world = Matrix4x4.Identity;
+        while (chain.Count > 0)
+        {
+            var bone = chain.Pop();
+            var rotation = new Quaternion(bone.Rotation.X, bone.Rotation.Y, bone.Rotation.Z, bone.Rotation.W);
+            rotation = rotation.LengthSquared() < 0.000001f ? Quaternion.Identity : Quaternion.Normalize(rotation);
+            var local = Matrix4x4.CreateFromQuaternion(rotation)
+                * Matrix4x4.CreateTranslation(bone.Translation.X, bone.Translation.Y, bone.Translation.Z);
+            world = local * world;
+        }
+
+        return world;
+    }
+
+    private static Vector4 InverseTransformHkclColliderPoint(Matrix4x4 transform, Vector3 world)
+    {
+        // hclCollidable uses an hkTransform-style 3x4 basis. Its fourth
+        // column is not a conventional Matrix4x4 homogeneous column, so do
+        // not invert the complete matrix here.
+        var basis = new Matrix4x4(
+            transform.M11, transform.M12, transform.M13, 0.0f,
+            transform.M21, transform.M22, transform.M23, 0.0f,
+            transform.M31, transform.M32, transform.M33, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f);
+        if (!Matrix4x4.Invert(basis, out var inverse))
+            throw new InvalidOperationException("Collider transform cannot be inverted.");
+
+        var translated = world - new Vector3(transform.M41, transform.M42, transform.M43);
+        // HKCL uses row-vector transforms: local * basis + translation = world.
+        return new Vector4(
+            inverse.M11 * translated.X + inverse.M21 * translated.Y + inverse.M31 * translated.Z,
+            inverse.M12 * translated.X + inverse.M22 * translated.Y + inverse.M32 * translated.Z,
+            inverse.M13 * translated.X + inverse.M23 * translated.Y + inverse.M33 * translated.Z,
+            0.0f);
     }
 
     private static Vector3 TransformHkclColliderDirection(Matrix4x4 transform, Vector3 direction)
@@ -2805,6 +4171,17 @@ public sealed class HkclService
         return GetMutableList(GetValue(container, "collidables"), "collidables");
     }
 
+    private static int IndexOfReference(IReadOnlyList<object> values, object target)
+    {
+        for (var index = 0; index < values.Count; index++)
+        {
+            if (ReferenceEquals(values[index], target))
+                return index;
+        }
+
+        return -1;
+    }
+
     private static IEnumerable<object> EnumerateReferencedCollidables(object cloth)
     {
         // Older files can keep the list directly on hclClothData, while BotW
@@ -2974,13 +4351,19 @@ public sealed class HkclService
 
     private static Type? GetListElementType(IList list)
     {
-        var type = list.GetType();
+        return GetCollectionElementType(list.GetType());
+    }
+
+    private static Type? GetCollectionElementType(Type type)
+    {
         if (type.IsArray)
             return type.GetElementType();
 
         return type.GetInterfaces()
             .Concat(new[] { type })
-            .FirstOrDefault(x => x.IsGenericType && x.GetGenericTypeDefinition() == typeof(IList<>))
+            .FirstOrDefault(x => x.IsGenericType &&
+                (x.GetGenericTypeDefinition() == typeof(IList<>) ||
+                 x.GetGenericTypeDefinition() == typeof(IEnumerable<>)))
             ?.GetGenericArguments()[0];
     }
 

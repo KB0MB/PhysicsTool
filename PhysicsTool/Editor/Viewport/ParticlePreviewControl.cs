@@ -7,6 +7,8 @@ using System.Windows.Forms;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.WinForms;
+using SysMat4 = System.Numerics.Matrix4x4;
+using SysQuat = System.Numerics.Quaternion;
 using SysVec3 = System.Numerics.Vector3;
 
 namespace HKCLTool;
@@ -46,36 +48,44 @@ public sealed class ParticleSelectionEventArgs : EventArgs
 
 public sealed class ParticleMoveEventArgs : EventArgs
 {
-    public ParticleMoveEventArgs(SysVec3 delta)
+    public ParticleMoveEventArgs(SysVec3 delta, bool localAxis)
     {
         Delta = delta;
+        LocalAxis = localAxis;
     }
 
     public SysVec3 Delta { get; }
+    public bool LocalAxis { get; }
 }
 
 public sealed class ParticleScaleEventArgs : EventArgs
 {
-    public ParticleScaleEventArgs(float factor, SysVec3? axis)
+    public ParticleScaleEventArgs(float factor, SysVec3? axis, bool localAxis, bool radiusOnly)
     {
         Factor = factor;
         Axis = axis;
+        LocalAxis = localAxis;
+        RadiusOnly = radiusOnly;
     }
 
     public float Factor { get; }
     public SysVec3? Axis { get; }
+    public bool LocalAxis { get; }
+    public bool RadiusOnly { get; }
 }
 
 public sealed class ParticleRotateEventArgs : EventArgs
 {
-    public ParticleRotateEventArgs(float radians, SysVec3 axis)
+    public ParticleRotateEventArgs(float radians, SysVec3 axis, bool localAxis)
     {
         Radians = radians;
         Axis = axis;
+        LocalAxis = localAxis;
     }
 
     public float Radians { get; }
     public SysVec3 Axis { get; }
+    public bool LocalAxis { get; }
 }
 
 public sealed class MirrorRequestedEventArgs : EventArgs
@@ -115,6 +125,10 @@ public sealed class ParticlePreviewControl : GLControl
     public event EventHandler<ParticleScaleEventArgs>? ParticlesScaled;
     public event EventHandler<ParticleRotateEventArgs>? ParticlesRotated;
     public event EventHandler<MirrorRequestedEventArgs>? MirrorRequested;
+    public event EventHandler? MirrorModeChanged;
+    public event EventHandler? CopyRequested;
+    public event EventHandler? PasteRequested;
+    public event EventHandler? PasteMirroredRequested;
     public event EventHandler? LinkRequested;
     public event EventHandler? DeleteRequested;
     public event EventHandler? ParticleMoveEnded;
@@ -130,6 +144,9 @@ public sealed class ParticlePreviewControl : GLControl
     private ParticleTransformMode _armedTransformMode = ParticleTransformMode.None;
     private ParticleTransformMode _activeTransformMode = ParticleTransformMode.None;
     private Vector3? _axisConstraint;
+    private Keys _axisConstraintKey = Keys.None;
+    private bool _localAxisConstraint;
+    private bool _colliderRadiusScale;
     private Rectangle _selectionRectangle;
     private readonly HashSet<int> _selectedParticleIndices = new();
     private float _yaw = -0.55f;
@@ -152,6 +169,7 @@ public sealed class ParticlePreviewControl : GLControl
     private int _uPointSize;
     private int _uRoundPoints;
     private readonly ContextMenuStrip _viewportMenu;
+    private bool _mirrorModeEnabled;
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -168,6 +186,21 @@ public sealed class ParticlePreviewControl : GLControl
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public PreviewPickKind PickKind { get; set; } = PreviewPickKind.Particle;
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool MirrorModeEnabled
+    {
+        get => _mirrorModeEnabled;
+        set
+        {
+            if (_mirrorModeEnabled == value)
+                return;
+
+            _mirrorModeEnabled = value;
+            MirrorModeChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -220,7 +253,7 @@ public sealed class ParticlePreviewControl : GLControl
         if (resetCamera || data == null)
             ResetCameraToData();
         else
-            UpdateSceneBounds();
+            UpdateSceneBounds(updateGrid: false);
         Invalidate();
     }
 
@@ -241,6 +274,81 @@ public sealed class ParticlePreviewControl : GLControl
         }
 
         Invalidate();
+    }
+
+    // Bone edits happen repeatedly while a modal G/R/S transform is active.
+    // Rebuilding the entire HKCL/BPHCL preview here made those transforms crawl,
+    // so update the viewport's already-loaded skeleton instead.
+    public void UpdateBonePreviewRows(IReadOnlyList<BoneEditRow> rows)
+    {
+        if (_data == null)
+            return;
+
+        var rowsByIndex = rows.ToDictionary(row => row.Index);
+        var worldMatrices = new Dictionary<int, SysMat4>();
+        foreach (var bone in _data.Bones)
+        {
+            if (!rowsByIndex.ContainsKey(bone.Index))
+                continue;
+
+            var world = GetBoneWorldMatrix(bone.Index, rowsByIndex, worldMatrices, new HashSet<int>());
+            bone.Position = new SysVec3(world.M41, world.M42, world.M43);
+            bone.AxisX = NormalizeOrDefault(SysVec3.TransformNormal(SysVec3.UnitX, world), SysVec3.UnitX);
+            bone.AxisY = NormalizeOrDefault(SysVec3.TransformNormal(SysVec3.UnitY, world), SysVec3.UnitY);
+            bone.AxisZ = NormalizeOrDefault(SysVec3.TransformNormal(SysVec3.UnitZ, world), SysVec3.UnitZ);
+        }
+
+        Invalidate();
+    }
+
+    public void UpdateColliderPreviewRows(IEnumerable<ColliderEditRow> rows)
+    {
+        if (_data == null)
+            return;
+
+        var previewRows = _data.Colliders.ToDictionary(collider => collider.Index);
+        foreach (var row in rows)
+        {
+            if (!previewRows.TryGetValue(row.Index, out var collider))
+                continue;
+
+            collider.Start = new SysVec3(row.StartX, row.StartY, row.StartZ);
+            collider.End = new SysVec3(row.EndX, row.EndY, row.EndZ);
+            collider.Radius = row.Radius;
+        }
+
+        Invalidate();
+    }
+
+    private static SysMat4 GetBoneWorldMatrix(
+        int boneIndex,
+        IReadOnlyDictionary<int, BoneEditRow> rows,
+        IDictionary<int, SysMat4> cache,
+        ISet<int> visiting)
+    {
+        if (boneIndex < 0 || !rows.TryGetValue(boneIndex, out var bone))
+            return SysMat4.Identity;
+        if (cache.TryGetValue(boneIndex, out var cached))
+            return cached;
+        if (!visiting.Add(boneIndex))
+            return SysMat4.Identity;
+
+        var parentWorld = GetBoneWorldMatrix(bone.ParentIndex, rows, cache, visiting);
+        visiting.Remove(boneIndex);
+
+        var rotation = new SysQuat(bone.RotationX, bone.RotationY, bone.RotationZ, bone.RotationW);
+        rotation = rotation.LengthSquared() < 0.000001f ? SysQuat.Identity : SysQuat.Normalize(rotation);
+        var local = SysMat4.CreateScale(bone.ScaleX, bone.ScaleY, bone.ScaleZ)
+            * SysMat4.CreateFromQuaternion(rotation)
+            * SysMat4.CreateTranslation(bone.X, bone.Y, bone.Z);
+        var world = local * parentWorld;
+        cache[boneIndex] = world;
+        return world;
+    }
+
+    private static SysVec3 NormalizeOrDefault(SysVec3 value, SysVec3 fallback)
+    {
+        return value.LengthSquared() < 0.000001f ? fallback : SysVec3.Normalize(value);
     }
 
     protected override void OnLoad(EventArgs e)
@@ -321,15 +429,6 @@ public sealed class ParticlePreviewControl : GLControl
             _boxSelecting = true;
             _selectionRectangle = Rectangle.Empty;
         }
-        else if (e.Button == MouseButtons.Right
-            && PickKind == PreviewPickKind.Particle
-            && TryPickParticleAt(e.Location, out var particleIndex)
-            && _selectedParticleIndices.Contains(particleIndex))
-        {
-            _movingParticles = true;
-            _activeTransformMode = ParticleTransformMode.Move;
-            ParticleMoveStarted?.Invoke(this, EventArgs.Empty);
-        }
 
         Capture = _rotating || _panning || _boxSelecting || _movingParticles;
         Focus();
@@ -371,19 +470,19 @@ public sealed class ParticlePreviewControl : GLControl
             if (_activeTransformMode == ParticleTransformMode.Scale)
             {
                 var factor = MathF.Exp((dy - dx) * 0.01f);
-                ParticlesScaled?.Invoke(this, new ParticleScaleEventArgs(factor, ToSysAxis(_axisConstraint)));
+                ParticlesScaled?.Invoke(this, new ParticleScaleEventArgs(factor, ToSysAxis(_axisConstraint), _localAxisConstraint, _colliderRadiusScale));
             }
             else if (_activeTransformMode == ParticleTransformMode.Rotate)
             {
                 var axis = _axisConstraint ?? GetCameraBasis().Forward;
-                ParticlesRotated?.Invoke(this, new ParticleRotateEventArgs(dx * 0.012f, new SysVec3(axis.X, axis.Y, axis.Z)));
+                ParticlesRotated?.Invoke(this, new ParticleRotateEventArgs(dx * 0.012f, ToSysVector(axis), _localAxisConstraint));
             }
             else
             {
                 var delta = right * (dx * worldPerPixel) - up * (dy * worldPerPixel);
                 if (_axisConstraint.HasValue)
                     delta = _axisConstraint.Value * Vector3.Dot(delta, _axisConstraint.Value);
-                ParticlesMoved?.Invoke(this, new ParticleMoveEventArgs(new SysVec3(delta.X, delta.Y, delta.Z)));
+                ParticlesMoved?.Invoke(this, new ParticleMoveEventArgs(ToSysVector(delta), _localAxisConstraint));
             }
         }
         else if (_boxSelecting)
@@ -411,6 +510,8 @@ public sealed class ParticlePreviewControl : GLControl
             _activeTransformMode = ParticleTransformMode.None;
             _armedTransformMode = ParticleTransformMode.None;
             _axisConstraint = null;
+            _axisConstraintKey = Keys.None;
+            _localAxisConstraint = false;
         }
         Capture = false;
 
@@ -444,7 +545,7 @@ public sealed class ParticlePreviewControl : GLControl
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        _orthoHeight = Math.Clamp(_orthoHeight * (e.Delta > 0 ? 0.88f : 1.14f), 0.02f, 25.0f);
+        _orthoHeight = Math.Clamp(_orthoHeight * (e.Delta > 0 ? 0.88f : 1.14f), 0.02f, 50.0f);
         Invalidate();
     }
 
@@ -455,19 +556,27 @@ public sealed class ParticlePreviewControl : GLControl
         {
             if (e.KeyCode == Keys.X)
             {
-                _axisConstraint = Vector3.UnitX;
+                SetAxisConstraint(Keys.X, Vector3.UnitX);
                 Invalidate();
                 e.Handled = true;
             }
             else if (e.KeyCode == Keys.Y)
             {
-                _axisConstraint = Vector3.UnitY;
+                SetAxisConstraint(Keys.Y, Vector3.UnitY);
                 Invalidate();
                 e.Handled = true;
             }
             else if (e.KeyCode == Keys.Z)
             {
-                _axisConstraint = Vector3.UnitZ;
+                SetAxisConstraint(Keys.Z, Vector3.UnitZ);
+                Invalidate();
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.S &&
+                     PickKind == PreviewPickKind.Collider &&
+                     _activeTransformMode == ParticleTransformMode.Scale)
+            {
+                _colliderRadiusScale = true;
                 Invalidate();
                 e.Handled = true;
             }
@@ -493,7 +602,7 @@ public sealed class ParticlePreviewControl : GLControl
             return;
         }
 
-        if (_selectedParticleIndices.Count == 0)
+        if (!HasTransformSelection())
             return;
 
         if (e.KeyCode == Keys.G)
@@ -523,6 +632,9 @@ public sealed class ParticlePreviewControl : GLControl
         _armedTransformMode = mode;
         _activeTransformMode = mode;
         _axisConstraint = null;
+        _axisConstraintKey = Keys.None;
+        _localAxisConstraint = false;
+        _colliderRadiusScale = false;
         _lastMouse = PointToClient(Cursor.Position);
         _mouseDown = _lastMouse;
         _rotating = false;
@@ -544,12 +656,12 @@ public sealed class ParticlePreviewControl : GLControl
         if (_activeTransformMode == ParticleTransformMode.Scale)
         {
             var factor = MathF.Exp((dy - dx) * 0.01f);
-            ParticlesScaled?.Invoke(this, new ParticleScaleEventArgs(factor, ToSysAxis(_axisConstraint)));
+            ParticlesScaled?.Invoke(this, new ParticleScaleEventArgs(factor, ToSysAxis(_axisConstraint), _localAxisConstraint, _colliderRadiusScale));
         }
         else if (_activeTransformMode == ParticleTransformMode.Rotate)
         {
             var axis = _axisConstraint ?? GetCameraBasis().Forward;
-            ParticlesRotated?.Invoke(this, new ParticleRotateEventArgs(dx * 0.012f, new SysVec3(axis.X, axis.Y, axis.Z)));
+            ParticlesRotated?.Invoke(this, new ParticleRotateEventArgs(dx * 0.012f, ToSysVector(axis), _localAxisConstraint));
         }
         else
         {
@@ -557,7 +669,7 @@ public sealed class ParticlePreviewControl : GLControl
             var delta = right * (dx * worldPerPixel) - up * (dy * worldPerPixel);
             if (_axisConstraint.HasValue)
                 delta = _axisConstraint.Value * Vector3.Dot(delta, _axisConstraint.Value);
-            ParticlesMoved?.Invoke(this, new ParticleMoveEventArgs(new SysVec3(delta.X, delta.Y, delta.Z)));
+            ParticlesMoved?.Invoke(this, new ParticleMoveEventArgs(ToSysVector(delta), _localAxisConstraint));
         }
     }
 
@@ -569,6 +681,9 @@ public sealed class ParticlePreviewControl : GLControl
         _activeTransformMode = ParticleTransformMode.None;
         _armedTransformMode = ParticleTransformMode.None;
         _axisConstraint = null;
+        _axisConstraintKey = Keys.None;
+        _localAxisConstraint = false;
+        _colliderRadiusScale = false;
         Capture = false;
         if (commit)
             ParticleMoveEnded?.Invoke(this, EventArgs.Empty);
@@ -601,8 +716,24 @@ public sealed class ParticlePreviewControl : GLControl
         StyleMenuItem(delete);
         delete.Click += (_, _) => DeleteRequested?.Invoke(this, EventArgs.Empty);
 
+        var copy = new ToolStripMenuItem("Copy");
+        StyleMenuItem(copy);
+        copy.Click += (_, _) => CopyRequested?.Invoke(this, EventArgs.Empty);
+
+        var paste = new ToolStripMenuItem("Paste");
+        StyleMenuItem(paste);
+        paste.Click += (_, _) => PasteRequested?.Invoke(this, EventArgs.Empty);
+
+        var pasteMirrored = new ToolStripMenuItem("Paste X-Flipped");
+        StyleMenuItem(pasteMirrored);
+        pasteMirrored.Click += (_, _) => PasteMirroredRequested?.Invoke(this, EventArgs.Empty);
+
         menu.Items.Add(global);
         menu.Items.Add(local);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(copy);
+        menu.Items.Add(paste);
+        menu.Items.Add(pasteMirrored);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(delete);
         return menu;
@@ -825,25 +956,38 @@ public sealed class ParticlePreviewControl : GLControl
         _orthoHeight = Math.Max(0.2f, _sceneRadius * 2.4f);
     }
 
-    private void UpdateSceneBounds()
+    private void UpdateSceneBounds(bool updateGrid = true)
     {
         if (_data == null)
             return;
 
+        var previousRadius = _sceneRadius;
         var points = _data.Particles.Select(p => ToGl(p.Position))
             .Concat(_data.Bones.Select(b => ToGl(b.Position)))
             .Concat(_data.Colliders.Select(c => ToGl(c.Start)))
             .Concat(_data.Colliders.Select(c => ToGl(c.End)))
+            .Where(IsFinite)
             .ToList();
 
         if (points.Count == 0)
             return;
 
         _baseCenter = new Vector3(points.Average(p => p.X), points.Average(p => p.Y), points.Average(p => p.Z));
-        _viewRoot = _data.HasViewRoot ? ToGl(_data.ViewRoot) : _baseCenter;
+        // The viewport has its own fixed world origin. It must not follow a
+        // skeleton's Root bone, otherwise moving that bone drags the grid and
+        // axes along with the armature.
+        _viewRoot = Vector3.Zero;
         _sceneRadius = Math.Max(0.05f, points.Max(p => (p - _viewRoot).Length));
-        _gridStep = FixedGridStep(_sceneRadius) * 4.0f;
-        _gridExtent = Math.Max(_sceneRadius * 3.5f, _gridStep * 20.0f);
+        if (updateGrid)
+        {
+            _gridStep = FixedGridStep(_sceneRadius) * 4.0f;
+            _gridExtent = Math.Max(_sceneRadius * 3.5f, _gridStep * 20.0f);
+        }
+
+        // A large manual coordinate edit should remain visible instead of
+        // leaving the camera framed around the old, much smaller scene.
+        if (_sceneRadius > previousRadius * 1.5f)
+            _orthoHeight = Math.Max(_orthoHeight, _sceneRadius * 2.4f);
     }
 
     private void PickAt(Point location)
@@ -1041,15 +1185,19 @@ public sealed class ParticlePreviewControl : GLControl
 
     private static SysVec3? ToSysAxis(Vector3? axis)
     {
-        return axis.HasValue ? new SysVec3(axis.Value.X, axis.Value.Y, axis.Value.Z) : null;
+        return axis.HasValue ? ToSysVector(axis.Value) : null;
     }
+
+    private static SysVec3 ToSysVector(Vector3 vector) => new(-vector.X, vector.Y, vector.Z);
 
     private Matrix4 GetMvp()
     {
         var aspect = Math.Max(1.0f, Width) / Math.Max(1.0f, Height);
-        var projection = Matrix4.CreateOrthographic(_orthoHeight * aspect, _orthoHeight, -100.0f, 100.0f);
+        var eyeDistance = Math.Max(3.0f, _sceneRadius * 5.0f);
+        var clipRange = Math.Max(100.0f, eyeDistance + _sceneRadius * 4.0f + 10.0f);
+        var projection = Matrix4.CreateOrthographic(_orthoHeight * aspect, _orthoHeight, -clipRange, clipRange);
         var (forward, _, up) = GetCameraBasis();
-        var eye = _target - forward * Math.Max(3.0f, _sceneRadius * 5.0f);
+        var eye = _target - forward * eyeDistance;
         var view = Matrix4.LookAt(eye, _target, up);
         return view * projection;
     }
@@ -1225,7 +1373,7 @@ public sealed class ParticlePreviewControl : GLControl
         if (lines.Count > 0)
             DrawSingleColor(PrimitiveType.Lines, lines, new Vector4(0.0f, 0.72f, 0.90f, 0.78f), mvp, 1.4f, 1.0f, false);
         if (selectedLines.Count > 0)
-            DrawSingleColor(PrimitiveType.Lines, selectedLines, new Vector4(1.0f, 1.0f, 1.0f, 1.0f), mvp, 2.8f, 1.0f, false);
+            DrawSingleColor(PrimitiveType.Lines, selectedLines, new Vector4(1.0f, 1.0f, 1.0f, 1.0f), mvp, 4.0f, 1.0f, false);
     }
 
     private static void AddCapsuleGuide(List<Vector3> lines, Vector3 start, Vector3 end, float radius)
@@ -1351,13 +1499,10 @@ public sealed class ParticlePreviewControl : GLControl
 
     private void DrawTransformAxis(Matrix4 mvp)
     {
-        if (_data == null || _activeTransformMode == ParticleTransformMode.None || !_axisConstraint.HasValue || _selectedParticleIndices.Count == 0)
+        if (_data == null || _activeTransformMode == ParticleTransformMode.None || !_axisConstraint.HasValue)
             return;
 
-        var selected = _data.Particles
-            .Where(p => _selectedParticleIndices.Contains(p.Index))
-            .Select(p => ToGl(p.Position))
-            .ToList();
+        var selected = GetTransformSelectionPositions();
         if (selected.Count == 0)
             return;
 
@@ -1548,6 +1693,70 @@ public sealed class ParticlePreviewControl : GLControl
         return 0.25f;
     }
 
+    private static bool IsFinite(Vector3 point) =>
+        float.IsFinite(point.X) && float.IsFinite(point.Y) && float.IsFinite(point.Z);
+
+    private bool HasTransformSelection() => GetTransformSelectionPositions().Count > 0;
+
+    private List<Vector3> GetTransformSelectionPositions()
+    {
+        if (_data == null)
+            return new List<Vector3>();
+
+        return PickKind switch
+        {
+            PreviewPickKind.Bone => _data.Bones
+                .Where(bone => bone.Index == SelectedBoneIndex)
+                .Select(bone => ToGl(bone.Position))
+                .ToList(),
+            PreviewPickKind.Collider => _data.Colliders
+                .Where(collider => collider.Index == SelectedColliderIndex)
+                .Select(collider => (ToGl(collider.Start) + ToGl(collider.End)) * 0.5f)
+                .ToList(),
+            _ => _data.Particles
+                .Where(particle => _selectedParticleIndices.Contains(particle.Index))
+                .Select(particle => ToGl(particle.Position))
+                .ToList()
+        };
+    }
+
+    private void SetAxisConstraint(Keys key, Vector3 worldAxis)
+    {
+        if (_axisConstraintKey == key && _localAxisConstraint)
+            return;
+
+        var requestLocalAxis = _axisConstraintKey == key && PickKind != PreviewPickKind.Particle;
+        _axisConstraintKey = key;
+        _localAxisConstraint = requestLocalAxis;
+        _axisConstraint = requestLocalAxis
+            ? GetSelectedLocalWorldAxis(worldAxis)
+            : ToGl(new SysVec3(worldAxis.X, worldAxis.Y, worldAxis.Z));
+    }
+
+    private Vector3 GetSelectedLocalWorldAxis(Vector3 fallback)
+    {
+        if (_data == null)
+            return fallback;
+
+        var boneIndex = PickKind switch
+        {
+            // Bone translations are stored in their parent's coordinate space.
+            // A repeated axis key should therefore use the parent frame, not
+            // the selected bone's rotated drawing axis.
+            PreviewPickKind.Bone => _data.Bones.FirstOrDefault(bone => bone.Index == SelectedBoneIndex)?.ParentIndex ?? -1,
+            PreviewPickKind.Collider => _data.Colliders.FirstOrDefault(collider => collider.Index == SelectedColliderIndex)?.BoneIndex ?? -1,
+            _ => -1
+        };
+        var bone = _data.Bones.FirstOrDefault(candidate => candidate.Index == boneIndex);
+        if (bone == null)
+            return fallback;
+
+        var axis = fallback.X > 0.5f ? ToGl(bone.AxisX)
+            : fallback.Y > 0.5f ? ToGl(bone.AxisY)
+            : ToGl(bone.AxisZ);
+        return axis.LengthSquared < 0.000001f ? fallback : Vector3.Normalize(axis);
+    }
+
     private static void AddLine(List<Vector3> vertices, Vector3 a, Vector3 b)
     {
         vertices.Add(a);
@@ -1556,7 +1765,10 @@ public sealed class ParticlePreviewControl : GLControl
 
     private static Vector3 ToGl(SysVec3 vector)
     {
-        return new Vector3(vector.X, vector.Y, vector.Z);
+        // Havok/BotW and the OpenGL viewport use opposite X handedness. Keep
+        // this conversion at the presentation boundary; stored HKCL values
+        // stay untouched and editor transform events are converted back.
+        return new Vector3(-vector.X, vector.Y, vector.Z);
     }
 
     private static float[] ToFloatArray(IReadOnlyList<Vector3> vertices)

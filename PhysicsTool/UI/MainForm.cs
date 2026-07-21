@@ -49,6 +49,7 @@ public sealed class MainForm : Form
     private readonly Button _particleRefreshButton = new();
     private readonly Button _directEditButton = new();
     private readonly Button _addEditorItemButton = new();
+    private readonly Button _mirrorModeButton = new();
     private readonly ContextMenuStrip _exportMenu = new();
     private readonly ContextMenuStrip _clothMenu = new();
     private string? _currentSavePath;
@@ -74,6 +75,7 @@ public sealed class MainForm : Form
     private GroupBox? _relationshipGroup;
     private GroupBox? _particleBindGroup;
     private bool _updatingParticleGrid;
+    private bool _previewRefreshQueued;
     private bool _directEditMode;
     private bool _applyingSnapshot;
     private EditorPage _editorPage = EditorPage.Particles;
@@ -86,6 +88,13 @@ public sealed class MainForm : Form
     private EditorSnapshot? _pendingEditSnapshot;
     private EditorSnapshot? _viewportMoveSnapshot;
     private bool _viewportTransformChanged;
+    // Viewport gestures are evaluated from this baseline instead of repeatedly
+    // transforming parent-local data. This keeps world-space edits stable.
+    private System.Numerics.Vector3 _viewportWorldTranslation;
+    private ParticleEditRow? _clipboardParticle;
+    private BoneEditRow? _clipboardBone;
+    private ColliderEditRow? _clipboardCollider;
+    private readonly Dictionary<int, int> _mirrorPairs = new();
 
     public MainForm()
     {
@@ -161,6 +170,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Top,
             Height = 54,
             Padding = new Padding(8),
+            Margin = Padding.Empty,
             ColumnCount = 2,
             RowCount = 1
         };
@@ -171,13 +181,15 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             WrapContents = false,
-            AutoSize = false
+            AutoSize = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
 
         var openButton = MakeButton("Open Physics", 125);
         openButton.Click += (_, _) => OpenCurrentFile();
 
-        _openReferenceButton.Text = "Open Reference";
+        _openReferenceButton.Text = "Open Donor";
         _openReferenceButton.Width = 125;
         StyleButton(_openReferenceButton);
         _openReferenceButton.Click += (_, _) => OpenReferenceFile();
@@ -215,7 +227,9 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
         editorButtonPanel.Controls.Add(_directEditButton);
 
@@ -427,21 +441,49 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
-        previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         previewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var previewToolbar = new FlowLayoutPanel
+        var previewToolbar = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 4, 0, 4)
+        };
+        previewToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0f));
+        previewToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 144.0f));
+
+        var leftToolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             WrapContents = false,
-            Padding = new Padding(0, 2, 0, 4)
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
         _addEditorItemButton.Text = "Add Particle";
         _addEditorItemButton.Width = 116;
         StyleButton(_addEditorItemButton);
-        previewToolbar.Controls.Add(_addEditorItemButton);
+        leftToolbar.Controls.Add(_addEditorItemButton);
+
+        _mirrorModeButton.Width = 136;
+        StyleButton(_mirrorModeButton);
+        UpdateMirrorModeButton();
+        var rightToolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        rightToolbar.Controls.Add(_mirrorModeButton);
+        previewToolbar.Controls.Add(leftToolbar, 0, 0);
+        previewToolbar.Controls.Add(rightToolbar, 1, 0);
 
         _particlePreview.Dock = DockStyle.Fill;
         previewLayout.Controls.Add(previewToolbar, 0, 0);
@@ -546,7 +588,7 @@ public sealed class MainForm : Form
     {
         _particleBindGroup = new GroupBox
         {
-            Text = "Particle bind",
+            Text = "Attach to Bone",
             Dock = DockStyle.Fill,
             Padding = new Padding(8)
         };
@@ -564,19 +606,19 @@ public sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         _particleBindStatusLabel.Dock = DockStyle.Fill;
-        _particleBindStatusLabel.Text = "Select particle(s), then choose a bone.";
+        _particleBindStatusLabel.Text = "Select an item, then choose a bone.";
 
         _particleBindBoneCombo.Dock = DockStyle.Fill;
         _particleBindBoneCombo.DropDownStyle = ComboBoxStyle.DropDownList;
 
-        _particleBindButton.Text = "Bind";
+        _particleBindButton.Text = "Attach";
         _particleBindButton.Dock = DockStyle.Fill;
         StyleButton(_particleBindButton);
 
         var hint = new Label
         {
             Dock = DockStyle.Fill,
-            Text = "Viewport: left click selects, drag boxes, middle drag pans. Ctrl+click a bone also binds.",
+            Text = "Attach moves the selected item to the chosen bone. Collider reassignment alone preserves its current position.",
             AutoEllipsis = true
         };
 
@@ -711,11 +753,15 @@ public sealed class MainForm : Form
         button.Height = 30;
         button.Margin = new Padding(0, 0, 8, 0);
         button.AutoSize = false;
-        button.UseCompatibleTextRendering = true;
+        button.TextAlign = ContentAlignment.MiddleCenter;
+        button.Padding = new Padding(4, 0, 4, 0);
+        button.UseCompatibleTextRendering = false;
+        button.UseVisualStyleBackColor = false;
         button.FlatStyle = FlatStyle.Flat;
         button.BackColor = Color.FromArgb(64, 64, 64);
         button.ForeColor = Color.Gainsboro;
-        button.FlatAppearance.BorderColor = Color.FromArgb(115, 115, 115);
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.BorderColor = Color.FromArgb(165, 165, 165);
         button.FlatAppearance.MouseOverBackColor = Color.FromArgb(78, 78, 78);
         button.FlatAppearance.MouseDownBackColor = Color.FromArgb(88, 88, 88);
     }
@@ -729,9 +775,14 @@ public sealed class MainForm : Form
         var json = MakeExportMenuItem("JSON", () => ExportJson());
         var wiiU = MakeExportMenuItem("Wii U HKCL", () => SaveHkcl(HkclPlatform.WiiU));
         var switchItem = MakeExportMenuItem("Switch HKCL", () => SaveHkcl(HkclPlatform.Switch));
+        var freshHkcl = MakeExportMenuItem("Experimental fresh HKCL from selected BPHCL cloth", ExportFreshHkclFromBphcl);
+        var freshDocumentHkcl = MakeExportMenuItem("Experimental fresh HKCL from all BPHCL cloths", ExportFreshHkclDocumentFromBphcl);
         _exportMenu.Items.Add(json);
         _exportMenu.Items.Add(wiiU);
         _exportMenu.Items.Add(switchItem);
+        _exportMenu.Items.Add(new ToolStripSeparator());
+        _exportMenu.Items.Add(freshHkcl);
+        _exportMenu.Items.Add(freshDocumentHkcl);
     }
 
     private void ConfigureClothMenu()
@@ -772,9 +823,15 @@ public sealed class MainForm : Form
         _mergeButton.Click += (_, _) => MergeSelectedReferenceCloth();
         _particleApplyButton.Click += (_, _) => UndoEditorChange();
         _particleRefreshButton.Click += (_, _) => RedoEditorChange();
-        _particleBindButton.Click += (_, _) => BindSelectedParticlesToChosenBone();
+        _particleBindButton.Click += (_, _) => AttachSelectedItemsToChosenBone();
         _addEditorItemButton.Click += (_, _) => AddEditorItemForCurrentTab();
-        _editorIndexList.SelectedIndexChanged += (_, _) => RefreshSelectedEditorItem();
+        _editorIndexList.SelectedIndexChanged += (_, _) =>
+        {
+            var wasUserListSelection = _editorIndexList.Focused;
+            RefreshSelectedEditorItem();
+            if (wasUserListSelection)
+                BeginInvoke(new Action(() => _particlePreview.Focus()));
+        };
         _editorTabs.SelectedIndexChanged += (_, _) =>
         {
             if (_applyingSnapshot)
@@ -800,7 +857,17 @@ public sealed class MainForm : Form
                 _pendingEditSnapshot ??= CaptureCurrentEditorSnapshot();
         };
         _editorDetailGrid.CellEndEdit += (_, _) => CommitEditorDetailChange();
-        _editorDetailGrid.CellValueChanged += (_, _) => CommitEditorDetailChange();
+        _editorDetailGrid.CellValueChanged += (_, e) =>
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0 ||
+                _editorDetailGrid.Columns[e.ColumnIndex].Name != "Value" ||
+                _editorDetailGrid.Rows[e.RowIndex].Cells[e.ColumnIndex] is not DataGridViewCheckBoxCell)
+            {
+                return;
+            }
+
+            CommitEditorDetailChange();
+        };
         _editorDetailGrid.CurrentCellDirtyStateChanged += (_, _) =>
         {
             if (_editorDetailGrid.IsCurrentCellDirty)
@@ -822,10 +889,25 @@ public sealed class MainForm : Form
         _particlePreview.ItemPicked += (_, e) => HandlePreviewPick(e);
         _particlePreview.ParticlesSelected += (_, e) => SelectParticlesFromViewport(e.ParticleIndices, e.AddToSelection);
         _particlePreview.ParticleMoveStarted += (_, _) => BeginViewportParticleMove();
-        _particlePreview.ParticlesMoved += (_, e) => MoveSelectedParticles(e.Delta);
-        _particlePreview.ParticlesScaled += (_, e) => ScaleSelectedParticles(e.Factor, e.Axis);
-        _particlePreview.ParticlesRotated += (_, e) => RotateSelectedParticles(e.Radians, e.Axis);
+        _particlePreview.ParticlesMoved += (_, e) => MoveSelectedParticles(e.Delta, e.LocalAxis);
+        _particlePreview.ParticlesScaled += (_, e) => ScaleSelectedParticles(e.Factor, e.Axis, e.LocalAxis, e.RadiusOnly);
+        _particlePreview.ParticlesRotated += (_, e) => RotateSelectedParticles(e.Radians, e.Axis, e.LocalAxis);
         _particlePreview.MirrorRequested += (_, e) => MirrorSelectedParticles(e.Axis, e.Local);
+        _particlePreview.MirrorModeChanged += (_, _) =>
+        {
+            UpdateMirrorModeButton();
+            _statusLabel.Text = _particlePreview.MirrorModeEnabled
+                ? "Mirror X enabled: matching opposite-side items follow transforms."
+                : "Mirror X disabled.";
+        };
+        _particlePreview.CopyRequested += (_, _) => CopySelectedEditorItem();
+        _particlePreview.PasteRequested += (_, _) => PasteEditorItem();
+        _particlePreview.PasteMirroredRequested += (_, _) => PasteEditorItem(mirrorX: true);
+        _mirrorModeButton.Click += (_, _) =>
+        {
+            _particlePreview.MirrorModeEnabled = !_particlePreview.MirrorModeEnabled;
+            BeginInvoke(new Action(() => _particlePreview.Focus()));
+        };
         _particlePreview.LinkRequested += (_, _) => LinkSelectedParticles();
         _particlePreview.DeleteRequested += (_, _) => DeleteSelectedEditorItem();
         _particlePreview.ParticleMoveEnded += (_, _) => EndViewportParticleMove();
@@ -950,16 +1032,77 @@ public sealed class MainForm : Form
 
     private void BeginViewportParticleMove()
     {
-        if (_current.IsReadOnlyExternal || _selectedParticleIndices.Count == 0 || !_current.HasDocument || _clothList.SelectedIndex < 0)
+        if (_current.IsReadOnlyExternal || !HasActiveEditorSelection() || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
 
-        _viewportMoveSnapshot ??= CaptureEditorSnapshot(EditorPage.Particles, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+        _viewportMoveSnapshot ??= CaptureEditorSnapshot(_editorPage, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+        _viewportWorldTranslation = System.Numerics.Vector3.Zero;
+        BuildMirrorPairs();
+        if (SnapMirrorPairsToSources())
+        {
+            _viewportTransformChanged = true;
+            UpdateViewportTransformPreview();
+        }
     }
 
-    private void MoveSelectedParticles(System.Numerics.Vector3 delta)
+    private void MoveSelectedParticles(System.Numerics.Vector3 delta, bool _)
     {
-        if (_current.IsReadOnlyExternal || _selectedParticleIndices.Count == 0 || !_current.HasDocument || _clothList.SelectedIndex < 0)
+        if (_current.IsReadOnlyExternal || !HasActiveEditorSelection() || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
+
+        if (_editorPage == EditorPage.Bones)
+        {
+            var bone = GetSelectedBone();
+            var sourceBones = _viewportMoveSnapshot?.Bones;
+            var baseline = sourceBones?.FirstOrDefault(candidate => candidate.Index == bone?.Index);
+            if (bone == null || baseline == null || sourceBones == null)
+                return;
+
+            // The viewport sends small mouse deltas. Accumulate them in world
+            // space, then derive the parent-local value from the untouched pose.
+            _viewportWorldTranslation += delta;
+            var boneWorld = GetBoneWorldMatrix(baseline.Index, sourceBones);
+            boneWorld.M41 += _viewportWorldTranslation.X;
+            boneWorld.M42 += _viewportWorldTranslation.Y;
+            boneWorld.M43 += _viewportWorldTranslation.Z;
+
+            var parentWorld = GetBoneWorldMatrix(baseline.ParentIndex, sourceBones);
+            if (!System.Numerics.Matrix4x4.Invert(parentWorld, out var parentInverse))
+                parentInverse = System.Numerics.Matrix4x4.Identity;
+            var local = boneWorld * parentInverse;
+            bone.X = Math.Clamp(local.M41, -30.0f, 30.0f);
+            bone.Y = Math.Clamp(local.M42, -30.0f, 30.0f);
+            bone.Z = Math.Clamp(local.M43, -30.0f, 30.0f);
+            ApplyMirrorToBone(bone);
+            UpdateViewportTransformPreview();
+            _viewportTransformChanged = true;
+            return;
+        }
+
+        if (_editorPage == EditorPage.Colliders)
+        {
+            var collider = GetSelectedCollider();
+            var baseline = _viewportMoveSnapshot?.Colliders?.FirstOrDefault(candidate => candidate.Index == collider?.Index);
+            if (collider == null || baseline == null)
+                return;
+
+            _viewportWorldTranslation += delta;
+            collider.StartX = baseline.StartX + _viewportWorldTranslation.X;
+            collider.StartY = baseline.StartY + _viewportWorldTranslation.Y;
+            collider.StartZ = baseline.StartZ + _viewportWorldTranslation.Z;
+            collider.EndX = baseline.EndX + _viewportWorldTranslation.X;
+            collider.EndY = baseline.EndY + _viewportWorldTranslation.Y;
+            collider.EndZ = baseline.EndZ + _viewportWorldTranslation.Z;
+            var transform = baseline.Transform;
+            transform.M41 += _viewportWorldTranslation.X;
+            transform.M42 += _viewportWorldTranslation.Y;
+            transform.M43 += _viewportWorldTranslation.Z;
+            collider.Transform = transform;
+            ApplyMirrorToCollider(collider);
+            UpdateViewportTransformPreview();
+            _viewportTransformChanged = true;
+            return;
+        }
 
         foreach (var particle in _particleRows.Where(p => _selectedParticleIndices.Contains(p.Index)))
         {
@@ -969,13 +1112,43 @@ public sealed class MainForm : Form
         }
 
         _viewportTransformChanged = true;
+        ApplyMirrorToParticles();
         _particlePreview.UpdateParticlePreviewRows(_particleRows);
     }
 
-    private void ScaleSelectedParticles(float factor, System.Numerics.Vector3? axis)
+    private void ScaleSelectedParticles(float factor, System.Numerics.Vector3? axis, bool localAxis, bool radiusOnly)
     {
-        if (_current.IsReadOnlyExternal || _selectedParticleIndices.Count == 0 || !_current.HasDocument || _clothList.SelectedIndex < 0)
+        if (_current.IsReadOnlyExternal || !HasActiveEditorSelection() || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
+
+        if (_editorPage == EditorPage.Bones)
+        {
+            var bone = GetSelectedBone();
+            if (bone == null)
+                return;
+
+            ScaleBoneTranslation(bone, factor, axis);
+            ApplyMirrorToBone(bone);
+            UpdateViewportTransformPreview();
+            _viewportTransformChanged = true;
+            return;
+        }
+
+        if (_editorPage == EditorPage.Colliders)
+        {
+            var collider = GetSelectedCollider();
+            if (collider == null)
+                return;
+
+            if (radiusOnly)
+                collider.Radius = Math.Clamp(collider.Radius * factor, 0.0001f, 10.0f);
+            else
+                ScaleCollider(collider, factor, axis);
+            ApplyMirrorToCollider(collider);
+            UpdateViewportTransformPreview();
+            _viewportTransformChanged = true;
+            return;
+        }
 
         var selected = _particleRows.Where(p => _selectedParticleIndices.Contains(p.Index)).ToList();
         if (selected.Count == 0)
@@ -1003,13 +1176,40 @@ public sealed class MainForm : Form
         }
 
         _viewportTransformChanged = true;
+        ApplyMirrorToParticles();
         _particlePreview.UpdateParticlePreviewRows(_particleRows);
     }
 
-    private void RotateSelectedParticles(float radians, System.Numerics.Vector3 axis)
+    private void RotateSelectedParticles(float radians, System.Numerics.Vector3 axis, bool localAxis)
     {
-        if (_current.IsReadOnlyExternal || _selectedParticleIndices.Count == 0 || !_current.HasDocument || _clothList.SelectedIndex < 0)
+        if (_current.IsReadOnlyExternal || !HasActiveEditorSelection() || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
+
+        if (_editorPage == EditorPage.Bones)
+        {
+            var bone = GetSelectedBone();
+            if (bone == null)
+                return;
+
+            RotateBone(bone, radians, axis, localAxis);
+            ApplyMirrorToBone(bone);
+            UpdateViewportTransformPreview();
+            _viewportTransformChanged = true;
+            return;
+        }
+
+        if (_editorPage == EditorPage.Colliders)
+        {
+            var collider = GetSelectedCollider();
+            if (collider == null)
+                return;
+
+            RotateCollider(collider, radians, axis);
+            ApplyMirrorToCollider(collider);
+            UpdateViewportTransformPreview();
+            _viewportTransformChanged = true;
+            return;
+        }
 
         var selected = _particleRows.Where(p => _selectedParticleIndices.Contains(p.Index)).ToList();
         if (selected.Count == 0)
@@ -1028,14 +1228,46 @@ public sealed class MainForm : Form
         }
 
         _viewportTransformChanged = true;
+        ApplyMirrorToParticles();
         _particlePreview.UpdateParticlePreviewRows(_particleRows);
     }
 
     private void MirrorSelectedParticles(char axisName, bool local)
     {
-        if (_current.IsReadOnlyExternal || _selectedParticleIndices.Count == 0 || !_current.HasDocument || _clothList.SelectedIndex < 0)
+        if (_current.IsReadOnlyExternal || !HasActiveEditorSelection() || !_current.HasDocument || _clothList.SelectedIndex < 0)
         {
-            _statusLabel.Text = "Select one or more particles before mirroring.";
+            _statusLabel.Text = "Select an editor item before mirroring.";
+            return;
+        }
+
+        if (_editorPage == EditorPage.Bones && GetSelectedBone() is { } selectedBone)
+        {
+            var boneSnapshot = CaptureEditorSnapshot(EditorPage.Bones, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+            var boneAxis = GetMirrorAxis(axisName, local);
+            var reflected = ReflectPoint(new System.Numerics.Vector3(selectedBone.X, selectedBone.Y, selectedBone.Z), local ? new System.Numerics.Vector3(selectedBone.X, selectedBone.Y, selectedBone.Z) : System.Numerics.Vector3.Zero, boneAxis);
+            selectedBone.X = reflected.X; selectedBone.Y = reflected.Y; selectedBone.Z = reflected.Z;
+            _current.UpdateBoneRows(_clothList.SelectedIndex, _boneRows);
+            PushUndo(boneSnapshot);
+            _redoStack.Clear();
+            RefreshPreview(resetCamera: false);
+            _statusLabel.Text = $"Mirrored selected bone on {(local ? "local" : "global")} {axisName}.";
+            return;
+        }
+
+        if (_editorPage == EditorPage.Colliders && GetSelectedCollider() is { } selectedCollider)
+        {
+            var colliderSnapshot = CaptureEditorSnapshot(EditorPage.Colliders, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+            var colliderAxis = GetMirrorAxis(axisName, local);
+            var colliderPivot = local ? ColliderCenter(selectedCollider) : System.Numerics.Vector3.Zero;
+            var start = ReflectPoint(new System.Numerics.Vector3(selectedCollider.StartX, selectedCollider.StartY, selectedCollider.StartZ), colliderPivot, colliderAxis);
+            var end = ReflectPoint(new System.Numerics.Vector3(selectedCollider.EndX, selectedCollider.EndY, selectedCollider.EndZ), colliderPivot, colliderAxis);
+            selectedCollider.StartX = start.X; selectedCollider.StartY = start.Y; selectedCollider.StartZ = start.Z;
+            selectedCollider.EndX = end.X; selectedCollider.EndY = end.Y; selectedCollider.EndZ = end.Z;
+            _current.UpdateColliderRows(GetActiveColliderRowsForWrite());
+            PushUndo(colliderSnapshot);
+            _redoStack.Clear();
+            RefreshPreview(resetCamera: false);
+            _statusLabel.Text = $"Mirrored selected collider on {(local ? "local" : "global")} {axisName}.";
             return;
         }
 
@@ -1048,11 +1280,10 @@ public sealed class MainForm : Form
         var axis = GetMirrorAxis(axisName, local);
         foreach (var particle in selected)
         {
-            var offset = new System.Numerics.Vector3(particle.X - pivot.X, particle.Y - pivot.Y, particle.Z - pivot.Z);
-            var reflected = offset - 2.0f * axis * System.Numerics.Vector3.Dot(offset, axis);
-            particle.X = pivot.X + reflected.X;
-            particle.Y = pivot.Y + reflected.Y;
-            particle.Z = pivot.Z + reflected.Z;
+            var reflected = ReflectPoint(new System.Numerics.Vector3(particle.X, particle.Y, particle.Z), pivot, axis);
+            particle.X = reflected.X;
+            particle.Y = reflected.Y;
+            particle.Z = reflected.Z;
         }
 
         _current.UpdateParticleRows(_clothList.SelectedIndex, _particleRows);
@@ -1123,15 +1354,17 @@ public sealed class MainForm : Form
 
         if (_viewportTransformChanged)
         {
-            _current.UpdateParticleRows(_clothList.SelectedIndex, _particleRows);
+            ApplyCurrentRowsToDocument();
             PushUndo(_viewportMoveSnapshot);
             _redoStack.Clear();
             RefreshSelectedEditorItem();
         }
         _viewportMoveSnapshot = null;
         _viewportTransformChanged = false;
+        _viewportWorldTranslation = System.Numerics.Vector3.Zero;
+        _mirrorPairs.Clear();
         UpdateButtons();
-        _statusLabel.Text = "Transformed selected particle(s).";
+        _statusLabel.Text = "Transformed selected editor item(s).";
     }
 
     private void CancelViewportParticleMove()
@@ -1142,32 +1375,439 @@ public sealed class MainForm : Form
         ApplyEditorSnapshot(_viewportMoveSnapshot);
         _viewportMoveSnapshot = null;
         _viewportTransformChanged = false;
+        _viewportWorldTranslation = System.Numerics.Vector3.Zero;
+        _mirrorPairs.Clear();
         _statusLabel.Text = "Canceled transform.";
     }
 
-    private void BindSelectedParticlesToChosenBone()
+    private bool HasActiveEditorSelection() => _editorPage switch
     {
-        if (_current.IsReadOnlyExternal)
+        EditorPage.Particles => _selectedParticleIndices.Count > 0,
+        EditorPage.Bones => GetSelectedBone() != null,
+        EditorPage.Colliders => GetSelectedCollider() != null,
+        _ => false
+    };
+
+    private BoneEditRow? GetSelectedBone() =>
+        _editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _boneRows.Count
+            ? _boneRows[_editorIndexList.SelectedIndex]
+            : null;
+
+    private ColliderEditRow? GetSelectedCollider() =>
+        _editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _colliderRows.Count
+            ? _colliderRows[_editorIndexList.SelectedIndex]
+            : null;
+
+    private void UpdateLivePreview()
+    {
+        ApplyCurrentRowsToDocument();
+        RefreshPreview(resetCamera: false);
+    }
+
+    private void UpdateViewportTransformPreview()
+    {
+        // During modal transforms keep the full document untouched. The
+        // viewport can update its cached geometry directly at mouse speed;
+        // EndViewportParticleMove commits the rows once on confirmation.
+        switch (_editorPage)
+        {
+            case EditorPage.Bones:
+                _particlePreview.UpdateBonePreviewRows(_boneRows);
+                break;
+            case EditorPage.Colliders:
+                _particlePreview.UpdateColliderPreviewRows(_colliderRows);
+                break;
+            default:
+                _particlePreview.UpdateParticlePreviewRows(_particleRows);
+                break;
+        }
+    }
+
+    private static void TranslateCollider(ColliderEditRow collider, System.Numerics.Vector3 delta)
+    {
+        collider.StartX += delta.X;
+        collider.StartY += delta.Y;
+        collider.StartZ += delta.Z;
+        collider.EndX += delta.X;
+        collider.EndY += delta.Y;
+        collider.EndZ += delta.Z;
+        var transform = collider.Transform;
+        transform.M41 += delta.X;
+        transform.M42 += delta.Y;
+        transform.M43 += delta.Z;
+        collider.Transform = transform;
+    }
+
+    private void ScaleBoneTranslation(BoneEditRow bone, float factor, System.Numerics.Vector3? axis)
+    {
+        var translation = new System.Numerics.Vector3(bone.X, bone.Y, bone.Z);
+        if (!axis.HasValue)
+        {
+            translation *= factor;
+            bone.X = Math.Clamp(translation.X, -30.0f, 30.0f);
+            bone.Y = Math.Clamp(translation.Y, -30.0f, 30.0f);
+            bone.Z = Math.Clamp(translation.Z, -30.0f, 30.0f);
+            return;
+        }
+
+        // A bone translation is expressed in the coordinate system of its parent.
+        var direction = NormalizeOrDefault(
+            System.Numerics.Vector3.Transform(axis.Value, System.Numerics.Quaternion.Inverse(GetBoneWorldRotation(bone.ParentIndex))),
+            System.Numerics.Vector3.UnitX);
+        var alongAxis = System.Numerics.Vector3.Dot(translation, direction);
+        translation += direction * (alongAxis * (factor - 1.0f));
+        bone.X = Math.Clamp(translation.X, -30.0f, 30.0f);
+        bone.Y = Math.Clamp(translation.Y, -30.0f, 30.0f);
+        bone.Z = Math.Clamp(translation.Z, -30.0f, 30.0f);
+    }
+
+    private void RotateBone(BoneEditRow bone, float radians, System.Numerics.Vector3 axis, bool localAxis)
+    {
+        var existing = new System.Numerics.Quaternion(bone.RotationX, bone.RotationY, bone.RotationZ, bone.RotationW);
+        if (existing.LengthSquared() < 0.000001f)
+            existing = System.Numerics.Quaternion.Identity;
+        else
+            existing = System.Numerics.Quaternion.Normalize(existing);
+
+        var parentRotation = GetBoneWorldRotation(bone.ParentIndex);
+        var parentAxis = NormalizeOrDefault(
+            System.Numerics.Vector3.Transform(axis, System.Numerics.Quaternion.Inverse(parentRotation)),
+            System.Numerics.Vector3.UnitY);
+        var delta = System.Numerics.Quaternion.CreateFromAxisAngle(parentAxis, radians);
+        // World axis rotations are expressed in parent space, while a repeated
+        // X/Y/Z uses the bone's own local axis and composes on the other side.
+        var result = localAxis
+            ? System.Numerics.Quaternion.Normalize(existing * delta)
+            : System.Numerics.Quaternion.Normalize(delta * existing);
+        bone.RotationX = result.X;
+        bone.RotationY = result.Y;
+        bone.RotationZ = result.Z;
+        bone.RotationW = result.W;
+    }
+
+    private static System.Numerics.Matrix4x4 GetBoneWorldMatrix(int boneIndex, IReadOnlyList<BoneEditRow> bones)
+    {
+        if (boneIndex < 0)
+            return System.Numerics.Matrix4x4.Identity;
+
+        var chain = new Stack<BoneEditRow>();
+        var visited = new HashSet<int>();
+        var currentIndex = boneIndex;
+        while (currentIndex >= 0 && visited.Add(currentIndex))
+        {
+            var bone = bones.FirstOrDefault(candidate => candidate.Index == currentIndex);
+            if (bone == null)
+                break;
+
+            chain.Push(bone);
+            currentIndex = bone.ParentIndex;
+        }
+
+        var world = System.Numerics.Matrix4x4.Identity;
+        while (chain.Count > 0)
+            world = CreateBoneLocalMatrix(chain.Pop()) * world;
+        return world;
+    }
+
+    private static System.Numerics.Matrix4x4 CreateBoneLocalMatrix(BoneEditRow bone)
+    {
+        var rotation = new System.Numerics.Quaternion(bone.RotationX, bone.RotationY, bone.RotationZ, bone.RotationW);
+        if (rotation.LengthSquared() < 0.000001f)
+            rotation = System.Numerics.Quaternion.Identity;
+        else
+            rotation = System.Numerics.Quaternion.Normalize(rotation);
+
+        return System.Numerics.Matrix4x4.CreateScale(bone.ScaleX, bone.ScaleY, bone.ScaleZ)
+            * System.Numerics.Matrix4x4.CreateFromQuaternion(rotation)
+            * System.Numerics.Matrix4x4.CreateTranslation(bone.X, bone.Y, bone.Z);
+    }
+
+    private System.Numerics.Quaternion GetBoneWorldRotation(int boneIndex)
+        => GetBoneWorldRotation(boneIndex, _boneRows);
+
+    private static System.Numerics.Quaternion GetBoneWorldRotation(int boneIndex, IReadOnlyList<BoneEditRow> bones)
+    {
+        if (boneIndex < 0)
+            return System.Numerics.Quaternion.Identity;
+
+        var chain = new Stack<BoneEditRow>();
+        var visited = new HashSet<int>();
+        var currentIndex = boneIndex;
+        while (currentIndex >= 0 && visited.Add(currentIndex))
+        {
+            var bone = bones.FirstOrDefault(candidate => candidate.Index == currentIndex);
+            if (bone == null)
+                break;
+
+            chain.Push(bone);
+            currentIndex = bone.ParentIndex;
+        }
+
+        var world = System.Numerics.Quaternion.Identity;
+        while (chain.Count > 0)
+        {
+            var bone = chain.Pop();
+            var local = new System.Numerics.Quaternion(bone.RotationX, bone.RotationY, bone.RotationZ, bone.RotationW);
+            if (local.LengthSquared() < 0.000001f)
+                local = System.Numerics.Quaternion.Identity;
+            else
+                local = System.Numerics.Quaternion.Normalize(local);
+            world = System.Numerics.Quaternion.Normalize(local * world);
+        }
+
+        return world;
+    }
+
+    private static void ScaleCollider(ColliderEditRow collider, float factor, System.Numerics.Vector3? axis)
+    {
+        var center = new System.Numerics.Vector3(
+            (collider.StartX + collider.EndX) * 0.5f,
+            (collider.StartY + collider.EndY) * 0.5f,
+            (collider.StartZ + collider.EndZ) * 0.5f);
+        var start = ScalePoint(new System.Numerics.Vector3(collider.StartX, collider.StartY, collider.StartZ), center, factor, axis);
+        var end = ScalePoint(new System.Numerics.Vector3(collider.EndX, collider.EndY, collider.EndZ), center, factor, axis);
+        collider.StartX = start.X; collider.StartY = start.Y; collider.StartZ = start.Z;
+        collider.EndX = end.X; collider.EndY = end.Y; collider.EndZ = end.Z;
+        if (!axis.HasValue)
+            collider.Radius *= factor;
+    }
+
+    private static void RotateCollider(ColliderEditRow collider, float radians, System.Numerics.Vector3 axis)
+    {
+        // hclCollidable stores its shape points in local space. Keep those points
+        // unchanged and rotate the hkTransform basis around the collider center.
+        // Rotating only the displayed endpoints causes the next serialize/undo pass
+        // to rebake a different local shape and makes the collider drift.
+        var oldTransform = collider.Transform;
+        var startWorld = new System.Numerics.Vector3(collider.StartX, collider.StartY, collider.StartZ);
+        var endWorld = new System.Numerics.Vector3(collider.EndX, collider.EndY, collider.EndZ);
+        var localStart = InverseTransformColliderPoint(oldTransform, startWorld);
+        var localEnd = InverseTransformColliderPoint(oldTransform, endWorld);
+        var localCenter = (localStart + localEnd) * 0.5f;
+        var center = (startWorld + endWorld) * 0.5f;
+        var rotation = System.Numerics.Matrix4x4.CreateFromAxisAngle(NormalizeOrDefault(axis, System.Numerics.Vector3.UnitY), radians);
+
+        var transform = oldTransform;
+        var xAxis = System.Numerics.Vector3.Transform(new System.Numerics.Vector3(oldTransform.M11, oldTransform.M12, oldTransform.M13), rotation);
+        var yAxis = System.Numerics.Vector3.Transform(new System.Numerics.Vector3(oldTransform.M21, oldTransform.M22, oldTransform.M23), rotation);
+        var zAxis = System.Numerics.Vector3.Transform(new System.Numerics.Vector3(oldTransform.M31, oldTransform.M32, oldTransform.M33), rotation);
+        transform.M11 = xAxis.X; transform.M12 = xAxis.Y; transform.M13 = xAxis.Z;
+        transform.M21 = yAxis.X; transform.M22 = yAxis.Y; transform.M23 = yAxis.Z;
+        transform.M31 = zAxis.X; transform.M32 = zAxis.Y; transform.M33 = zAxis.Z;
+
+        var transformedLocalCenter = TransformColliderDirection(transform, localCenter);
+        transform.M41 = center.X - transformedLocalCenter.X;
+        transform.M42 = center.Y - transformedLocalCenter.Y;
+        transform.M43 = center.Z - transformedLocalCenter.Z;
+        collider.Transform = transform;
+
+        var start = TransformColliderPoint(transform, localStart);
+        var end = TransformColliderPoint(transform, localEnd);
+        collider.StartX = start.X; collider.StartY = start.Y; collider.StartZ = start.Z;
+        collider.EndX = end.X; collider.EndY = end.Y; collider.EndZ = end.Z;
+    }
+
+    private static System.Numerics.Vector3 TransformColliderPoint(System.Numerics.Matrix4x4 transform, System.Numerics.Vector3 local)
+    {
+        var direction = TransformColliderDirection(transform, local);
+        return direction + new System.Numerics.Vector3(transform.M41, transform.M42, transform.M43);
+    }
+
+    private static System.Numerics.Vector3 TransformColliderDirection(System.Numerics.Matrix4x4 transform, System.Numerics.Vector3 local) => new(
+        transform.M11 * local.X + transform.M21 * local.Y + transform.M31 * local.Z,
+        transform.M12 * local.X + transform.M22 * local.Y + transform.M32 * local.Z,
+        transform.M13 * local.X + transform.M23 * local.Y + transform.M33 * local.Z);
+
+    private static System.Numerics.Vector3 InverseTransformColliderPoint(System.Numerics.Matrix4x4 transform, System.Numerics.Vector3 world)
+    {
+        // Only the 3x3 rotation basis participates in an hkTransform point
+        // conversion. The fourth column holds non-homogeneous Havok data.
+        var basis = new System.Numerics.Matrix4x4(
+            transform.M11, transform.M12, transform.M13, 0.0f,
+            transform.M21, transform.M22, transform.M23, 0.0f,
+            transform.M31, transform.M32, transform.M33, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f);
+        if (!System.Numerics.Matrix4x4.Invert(basis, out var inverse))
+            throw new InvalidOperationException("Collider transform cannot be inverted.");
+
+        var translated = world - new System.Numerics.Vector3(transform.M41, transform.M42, transform.M43);
+        return new System.Numerics.Vector3(
+            inverse.M11 * translated.X + inverse.M21 * translated.Y + inverse.M31 * translated.Z,
+            inverse.M12 * translated.X + inverse.M22 * translated.Y + inverse.M32 * translated.Z,
+            inverse.M13 * translated.X + inverse.M23 * translated.Y + inverse.M33 * translated.Z);
+    }
+
+    private static System.Numerics.Vector3 ScalePoint(System.Numerics.Vector3 point, System.Numerics.Vector3 center, float factor, System.Numerics.Vector3? axis)
+    {
+        var offset = point - center;
+        if (!axis.HasValue)
+            return center + offset * factor;
+
+        var direction = NormalizeOrDefault(axis.Value, System.Numerics.Vector3.UnitX);
+        return center + offset + direction * (System.Numerics.Vector3.Dot(offset, direction) * (factor - 1.0f));
+    }
+
+    private void BuildMirrorPairs()
+    {
+        _mirrorPairs.Clear();
+        if (!_particlePreview.MirrorModeEnabled)
             return;
 
-        if (_particleBindBoneCombo.SelectedItem is not BoneComboItem item)
+        if (_editorPage == EditorPage.Particles)
+        {
+            foreach (var source in _particleRows.Where(particle => _selectedParticleIndices.Contains(particle.Index)))
+                AddMirrorPair(source.Index, new System.Numerics.Vector3(source.X, source.Y, source.Z),
+                    _particleRows.Where(candidate => !_selectedParticleIndices.Contains(candidate.Index))
+                        .Select(candidate => (candidate.Index, Position: new System.Numerics.Vector3(candidate.X, candidate.Y, candidate.Z))));
+            return;
+        }
+
+        if (_editorPage == EditorPage.Bones && GetSelectedBone() is { } bone)
+        {
+            AddMirrorPair(bone.Index, new System.Numerics.Vector3(bone.X, bone.Y, bone.Z),
+                _boneRows.Where(candidate => candidate.Index != bone.Index)
+                    .Select(candidate => (candidate.Index, Position: new System.Numerics.Vector3(candidate.X, candidate.Y, candidate.Z))));
+            return;
+        }
+
+        if (_editorPage == EditorPage.Colliders && GetSelectedCollider() is { } collider)
+        {
+            var center = ColliderCenter(collider);
+            AddMirrorPair(collider.Index, center,
+                _colliderRows.Where(candidate => candidate.Index != collider.Index)
+                    .Select(candidate => (candidate.Index, Position: ColliderCenter(candidate))));
+        }
+    }
+
+    private void AddMirrorPair(int sourceIndex, System.Numerics.Vector3 sourcePosition, IEnumerable<(int Index, System.Numerics.Vector3 Position)> candidates)
+    {
+        var mirrored = MirrorPoint(sourcePosition);
+        var partner = candidates
+            .Where(candidate => MathF.Sign(candidate.Position.X) != MathF.Sign(sourcePosition.X) || MathF.Abs(sourcePosition.X) < 0.0001f)
+            .OrderBy(candidate => System.Numerics.Vector3.DistanceSquared(candidate.Position, mirrored))
+            .Select(candidate => (int?)candidate.Index)
+            .FirstOrDefault();
+        if (partner.HasValue)
+            _mirrorPairs[sourceIndex] = partner.Value;
+    }
+
+    private bool SnapMirrorPairsToSources()
+    {
+        return _editorPage switch
+        {
+            EditorPage.Particles => ApplyMirrorToParticles(),
+            EditorPage.Bones when GetSelectedBone() is { } bone => ApplyMirrorToBone(bone),
+            EditorPage.Colliders when GetSelectedCollider() is { } collider => ApplyMirrorToCollider(collider),
+            _ => false
+        };
+    }
+
+    private bool ApplyMirrorToParticles()
+    {
+        if (!_particlePreview.MirrorModeEnabled)
+            return false;
+
+        var changed = false;
+
+        foreach (var pair in _mirrorPairs)
+        {
+            var source = _particleRows.FirstOrDefault(particle => particle.Index == pair.Key);
+            var partner = _particleRows.FirstOrDefault(particle => particle.Index == pair.Value);
+            if (source == null || partner == null)
+                continue;
+
+            var mirrored = MirrorPoint(new System.Numerics.Vector3(source.X, source.Y, source.Z));
+            partner.X = mirrored.X;
+            partner.Y = mirrored.Y;
+            partner.Z = mirrored.Z;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private bool ApplyMirrorToBone(BoneEditRow source)
+    {
+        if (!_particlePreview.MirrorModeEnabled || !_mirrorPairs.TryGetValue(source.Index, out var partnerIndex))
+            return false;
+
+        var partner = _boneRows.FirstOrDefault(bone => bone.Index == partnerIndex);
+        if (partner == null)
+            return false;
+
+        var mirrored = MirrorPoint(new System.Numerics.Vector3(source.X, source.Y, source.Z));
+        partner.X = mirrored.X;
+        partner.Y = mirrored.Y;
+        partner.Z = mirrored.Z;
+        partner.ScaleX = source.ScaleX;
+        partner.ScaleY = source.ScaleY;
+        partner.ScaleZ = source.ScaleZ;
+        return true;
+    }
+
+    private bool ApplyMirrorToCollider(ColliderEditRow source)
+    {
+        if (!_particlePreview.MirrorModeEnabled || !_mirrorPairs.TryGetValue(source.Index, out var partnerIndex))
+            return false;
+
+        var partner = _colliderRows.FirstOrDefault(collider => collider.Index == partnerIndex);
+        if (partner == null)
+            return false;
+
+        var start = MirrorPoint(new System.Numerics.Vector3(source.StartX, source.StartY, source.StartZ));
+        var end = MirrorPoint(new System.Numerics.Vector3(source.EndX, source.EndY, source.EndZ));
+        partner.StartX = start.X; partner.StartY = start.Y; partner.StartZ = start.Z;
+        partner.EndX = end.X; partner.EndY = end.Y; partner.EndZ = end.Z;
+        partner.Radius = source.Radius;
+        return true;
+    }
+
+    private static System.Numerics.Vector3 MirrorPoint(System.Numerics.Vector3 point) => new(-point.X, point.Y, point.Z);
+
+    private static System.Numerics.Vector3 ReflectPoint(System.Numerics.Vector3 point, System.Numerics.Vector3 pivot, System.Numerics.Vector3 axis)
+    {
+        var offset = point - pivot;
+        return pivot + offset - 2.0f * axis * System.Numerics.Vector3.Dot(offset, axis);
+    }
+
+    private static System.Numerics.Vector3 ColliderCenter(ColliderEditRow collider) => new(
+        (collider.StartX + collider.EndX) * 0.5f,
+        (collider.StartY + collider.EndY) * 0.5f,
+        (collider.StartZ + collider.EndZ) * 0.5f);
+
+    private void AttachSelectedItemsToChosenBone()
+    {
+        if (_current.IsReadOnlyExternal || _particleBindBoneCombo.SelectedItem is not BoneComboItem item)
             return;
 
-        var indices = _selectedParticleIndices.Count > 0
-            ? _selectedParticleIndices.ToArray()
-            : TryGetSelectedParticle(out var activeParticle)
-                ? new[] { activeParticle.Index }
-                : Array.Empty<int>();
-
-        if (indices.Length == 0)
-            return;
-
-        BindParticlesToBone(indices, item.Index);
+        switch (_editorPage)
+        {
+            case EditorPage.Colliders:
+                AttachSelectedColliderToBone(item.Index);
+                break;
+            case EditorPage.Bones:
+                AttachSelectedBoneToBone(item.Index);
+                break;
+            default:
+            {
+                var indices = _selectedParticleIndices.Count > 0
+                    ? _selectedParticleIndices.ToArray()
+                    : TryGetSelectedParticle(out var activeParticle)
+                        ? new[] { activeParticle.Index }
+                        : Array.Empty<int>();
+                if (indices.Length > 0)
+                    AttachParticlesToBone(indices, item.Index);
+                break;
+            }
+        }
     }
 
     private void RefreshParticleBindingPanel()
     {
-        var previousIndex = _particleBindBoneCombo.SelectedItem is BoneComboItem selected ? selected.Index : -1;
+        var attachedIndex = GetAttachmentBoneIndex();
+        var previousIndex = attachedIndex >= 0
+            ? attachedIndex
+            : _particleBindBoneCombo.SelectedItem is BoneComboItem selected ? selected.Index : -1;
         _particleBindBoneCombo.Items.Clear();
         foreach (var bone in _boneRows)
             _particleBindBoneCombo.Items.Add(new BoneComboItem { Index = bone.Index, Name = bone.Name });
@@ -1181,15 +1821,38 @@ public sealed class MainForm : Form
             _particleBindBoneCombo.SelectedIndex = match?.index ?? 0;
         }
 
-        var selectedCount = _selectedParticleIndices.Count;
-        if (selectedCount == 0 && TryGetSelectedParticle(out _))
+        var selectedCount = _editorPage == EditorPage.Particles ? _selectedParticleIndices.Count : 0;
+        if (_editorPage == EditorPage.Particles && selectedCount == 0 && TryGetSelectedParticle(out _))
             selectedCount = 1;
 
-        _particleBindStatusLabel.Text = selectedCount <= 1
-            ? "Selected: 1 particle"
-            : $"Selected: {selectedCount} particles";
-        _particleBindButton.Enabled = !_current.IsReadOnlyExternal && selectedCount > 0 && _particleBindBoneCombo.Items.Count > 0;
+        var itemLabel = _editorPage switch
+        {
+            EditorPage.Bones => "bone",
+            EditorPage.Colliders => "collider",
+            _ => "particle"
+        };
+        var hasSelection = _editorPage switch
+        {
+            EditorPage.Bones => GetSelectedBone() != null,
+            EditorPage.Colliders => GetSelectedCollider() != null,
+            _ => selectedCount > 0
+        };
+        var countLabel = _editorPage == EditorPage.Particles && selectedCount > 1
+            ? $"Selected: {selectedCount} particles"
+            : hasSelection ? $"Selected: 1 {itemLabel}" : $"Select a {itemLabel}.";
+
+        _particleBindGroup!.Text = "Attach to Bone";
+        _particleBindStatusLabel.Text = countLabel;
+        _particleBindButton.Text = "Attach";
+        _particleBindButton.Enabled = !_current.IsReadOnlyExternal && hasSelection && _particleBindBoneCombo.Items.Count > 0;
     }
+
+    private int GetAttachmentBoneIndex() => _editorPage switch
+    {
+        EditorPage.Bones => GetSelectedBone()?.ParentIndex ?? -1,
+        EditorPage.Colliders => GetSelectedCollider()?.BoneIndex ?? -1,
+        _ => -1
+    };
 
     private bool TryGetSelectedParticle(out ParticleEditRow particle)
     {
@@ -1251,12 +1914,12 @@ public sealed class MainForm : Form
         RefreshParticleGrid(resetCamera: false, selectedListIndex: listIndex);
     }
 
-    private void BindParticleToBone(int particleIndex, int boneIndex)
+    private void AttachParticleToBone(int particleIndex, int boneIndex)
     {
-        BindParticlesToBone(new[] { particleIndex }, boneIndex);
+        AttachParticlesToBone(new[] { particleIndex }, boneIndex);
     }
 
-    private void BindParticlesToBone(IReadOnlyCollection<int> particleIndices, int boneIndex)
+    private void AttachParticlesToBone(IReadOnlyCollection<int> particleIndices, int boneIndex)
     {
         RunGuarded(() =>
         {
@@ -1302,8 +1965,65 @@ public sealed class MainForm : Form
             MoveEditorContentToSelectedTab();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: firstIndex);
             _statusLabel.Text = particleIndices.Count == 1
-                ? $"Bound particle {particleIndices.First()} to bone {bone.Name}."
+                ? $"Attached particle {particleIndices.First()} to bone {bone.Name}."
                 : $"Snapped {particleIndices.Count} selected particles to bone {bone.Name} using particle {anchorIndex} as the anchor.";
+        });
+    }
+
+    private void AttachSelectedColliderToBone(int boneIndex)
+    {
+        var collider = GetSelectedCollider();
+        if (collider == null)
+            return;
+
+        RunGuarded(() =>
+        {
+            var preview = _current.GetParticlePreview(_clothList.SelectedIndex);
+            var bone = preview.Bones.FirstOrDefault(candidate => candidate.Index == boneIndex);
+            var boneRow = _boneRows.FirstOrDefault(candidate => candidate.Index == boneIndex);
+            if (bone == null || boneRow == null)
+                return;
+
+            var snapshot = CaptureEditorSnapshot(EditorPage.Colliders, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+            TranslateCollider(collider, bone.Position - ColliderCenter(collider));
+            collider.BoneIndex = boneIndex;
+            collider.BoneName = boneRow.Name;
+            _current.UpdateColliderRows(GetActiveColliderRowsForWrite());
+            PushUndo(snapshot);
+            _redoStack.Clear();
+            RefreshParticleGrid(resetCamera: false, selectedListIndex: _editorIndexList.SelectedIndex);
+            _statusLabel.Text = $"Attached collider {collider.Index} to bone {boneRow.Name}.";
+        });
+    }
+
+    private void AttachSelectedBoneToBone(int boneIndex)
+    {
+        var selectedBone = GetSelectedBone();
+        if (selectedBone == null || selectedBone.Index == boneIndex)
+            return;
+
+        RunGuarded(() =>
+        {
+            var preview = _current.GetParticlePreview(_clothList.SelectedIndex);
+            var target = preview.Bones.FirstOrDefault(candidate => candidate.Index == boneIndex);
+            var targetRow = _boneRows.FirstOrDefault(candidate => candidate.Index == boneIndex);
+            if (target == null || targetRow == null)
+                return;
+
+            var snapshot = CaptureEditorSnapshot(EditorPage.Bones, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+            var parentWorld = GetBoneWorldMatrix(selectedBone.ParentIndex, _boneRows);
+            if (!System.Numerics.Matrix4x4.Invert(parentWorld, out var inverseParentWorld))
+                throw new InvalidOperationException("Selected bone parent transform cannot be inverted.");
+
+            var local = System.Numerics.Vector3.Transform(target.Position, inverseParentWorld);
+            selectedBone.X = Math.Clamp(local.X, -30.0f, 30.0f);
+            selectedBone.Y = Math.Clamp(local.Y, -30.0f, 30.0f);
+            selectedBone.Z = Math.Clamp(local.Z, -30.0f, 30.0f);
+            _current.UpdateBoneRows(_clothList.SelectedIndex, _boneRows);
+            PushUndo(snapshot);
+            _redoStack.Clear();
+            RefreshParticleGrid(resetCamera: false, selectedListIndex: _editorIndexList.SelectedIndex);
+            _statusLabel.Text = $"Moved bone {selectedBone.Name} to bone {targetRow.Name}.";
         });
     }
 
@@ -1398,6 +2118,16 @@ public sealed class MainForm : Form
         };
     }
 
+    private void UpdateMirrorModeButton()
+    {
+        var enabled = _particlePreview.MirrorModeEnabled;
+        _mirrorModeButton.Text = enabled ? "Mirror X: On" : "Mirror X";
+        _mirrorModeButton.UseVisualStyleBackColor = false;
+        _mirrorModeButton.BackColor = enabled ? Color.FromArgb(45, 105, 170) : Color.FromArgb(64, 64, 64);
+        _mirrorModeButton.ForeColor = Color.Gainsboro;
+        _mirrorModeButton.Font = Font;
+    }
+
     private void AddEditorItemForCurrentTab()
     {
         if (!_directEditMode || _current.IsReadOnlyExternal || !_current.HasDocument || _clothList.SelectedIndex < 0)
@@ -1409,26 +2139,15 @@ public sealed class MainForm : Form
             int newIndex;
             if (_editorPage == EditorPage.Bones)
             {
-                var source = _editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _boneRows.Count
-                    ? _boneRows[_editorIndexList.SelectedIndex]
-                    : null;
-                newIndex = _current.AddBone(_clothList.SelectedIndex, source);
+                newIndex = _current.AddBone(_clothList.SelectedIndex);
             }
             else if (_editorPage == EditorPage.Colliders)
             {
-                var source = _editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _colliderRows.Count
-                    ? _colliderRows[_editorIndexList.SelectedIndex]
-                    : null;
-                var targetBone = _boneRows.FirstOrDefault(b => b.Index == source?.BoneIndex)
-                    ?? _boneRows.FirstOrDefault();
-                newIndex = _current.AddCollider(_clothList.SelectedIndex, source, targetBone);
+                newIndex = _current.AddCollider(_clothList.SelectedIndex, targetBone: _boneRows.FirstOrDefault());
             }
             else
             {
-                var source = _editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _particleRows.Count
-                    ? _particleRows[_editorIndexList.SelectedIndex]
-                    : null;
-                newIndex = _current.AddParticle(_clothList.SelectedIndex, source);
+                newIndex = _current.AddParticle(_clothList.SelectedIndex);
                 _selectedParticleIndices.Clear();
                 _selectedParticleIndices.Add(newIndex);
             }
@@ -1437,6 +2156,83 @@ public sealed class MainForm : Form
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: newIndex);
             _statusLabel.Text = $"Added {_editorPage.ToString().TrimEnd('s').ToLowerInvariant()} {newIndex}.";
+        });
+    }
+
+    private void CopySelectedEditorItem()
+    {
+        if (!_directEditMode || _current.IsReadOnlyExternal || !HasActiveEditorSelection())
+            return;
+
+        if (_editorPage == EditorPage.Bones && GetSelectedBone() is { } bone)
+        {
+            _clipboardBone = CloneBone(bone);
+            _statusLabel.Text = $"Copied bone {bone.Index}.";
+        }
+        else if (_editorPage == EditorPage.Colliders && GetSelectedCollider() is { } collider)
+        {
+            _clipboardCollider = CloneCollider(collider);
+            _statusLabel.Text = $"Copied collider {collider.Index}.";
+        }
+        else if (_editorPage == EditorPage.Particles)
+        {
+            var selected = _particleRows.FirstOrDefault(particle => _selectedParticleIndices.Contains(particle.Index));
+            if (selected != null)
+            {
+                _clipboardParticle = CloneParticle(selected);
+                _statusLabel.Text = $"Copied particle {selected.Index}.";
+            }
+        }
+    }
+
+    private void PasteEditorItem(bool mirrorX = false)
+    {
+        if (!_directEditMode || _current.IsReadOnlyExternal || !_current.HasDocument || _clothList.SelectedIndex < 0)
+            return;
+
+        RunGuarded(() =>
+        {
+            var snapshot = CaptureFullEditorSnapshot(_editorPage, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+            int newIndex;
+            if (_editorPage == EditorPage.Bones && _clipboardBone != null)
+            {
+                var copy = CloneBone(_clipboardBone);
+                if (mirrorX)
+                    copy.X = -copy.X;
+                newIndex = _current.AddBone(_clothList.SelectedIndex, copy);
+            }
+            else if (_editorPage == EditorPage.Colliders && _clipboardCollider != null)
+            {
+                var copy = CloneCollider(_clipboardCollider);
+                if (mirrorX)
+                {
+                    copy.StartX = -copy.StartX;
+                    copy.EndX = -copy.EndX;
+                }
+                newIndex = _current.AddCollider(_clothList.SelectedIndex, copy, _boneRows.FirstOrDefault(bone => bone.Index == copy.BoneIndex));
+            }
+            else if (_editorPage == EditorPage.Particles && _clipboardParticle != null)
+            {
+                var copy = CloneParticle(_clipboardParticle);
+                if (mirrorX)
+                    copy.X = -copy.X;
+                newIndex = _current.AddParticle(_clothList.SelectedIndex, copy);
+            }
+            else
+            {
+                _statusLabel.Text = $"Copy a {_editorPage.ToString().TrimEnd('s').ToLowerInvariant()} first.";
+                return;
+            }
+
+            PushUndo(snapshot);
+            _redoStack.Clear();
+            if (_editorPage == EditorPage.Particles)
+            {
+                _selectedParticleIndices.Clear();
+                _selectedParticleIndices.Add(newIndex);
+            }
+            RefreshParticleGrid(resetCamera: false, selectedListIndex: newIndex);
+            _statusLabel.Text = $"Pasted {(mirrorX ? "X-flipped " : string.Empty)}{_editorPage.ToString().TrimEnd('s').ToLowerInvariant()} {newIndex}.";
         });
     }
 
@@ -1615,12 +2411,15 @@ public sealed class MainForm : Form
         _particlePreview.SelectedBoneIndex = -1;
         _particlePreview.SelectedColliderIndex = -1;
         if (!_current.HasDocument || _clothList.SelectedIndex < 0 || _editorIndexList.SelectedIndex < 0)
+        {
+            RefreshParticleBindingPanel();
             return;
+        }
 
         if (_relationshipGroup != null)
             _relationshipGroup.Visible = _editorPage == EditorPage.Particles;
         if (_particleBindGroup != null)
-            _particleBindGroup.Enabled = _editorPage == EditorPage.Particles && !_current.IsReadOnlyExternal;
+            _particleBindGroup.Enabled = !_current.IsReadOnlyExternal;
 
         if (_editorPage == EditorPage.Bones)
         {
@@ -1631,6 +2430,7 @@ public sealed class MainForm : Form
             FillBoneDetailGrid(bone);
             _particlePreview.SelectedBoneIndex = bone.Index;
             _particlePreview.Invalidate();
+            RefreshParticleBindingPanel();
             return;
         }
 
@@ -1643,6 +2443,7 @@ public sealed class MainForm : Form
             FillColliderDetailGrid(collider);
             _particlePreview.SelectedColliderIndex = collider.Index;
             _particlePreview.Invalidate();
+            RefreshParticleBindingPanel();
             return;
         }
 
@@ -1682,7 +2483,7 @@ public sealed class MainForm : Form
             else if (_editorPage == EditorPage.Colliders)
             {
                 ApplySelectedColliderDetailsToCache();
-                _current.UpdateColliderRows(_colliderRows);
+                _current.UpdateColliderRows(GetActiveColliderRowsForWrite());
             }
             else
             {
@@ -1704,17 +2505,47 @@ public sealed class MainForm : Form
         if (_current.IsReadOnlyExternal || _updatingParticleGrid || _applyingSnapshot || _pendingEditSnapshot == null || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
 
-        RunGuarded(() =>
+        var snapshot = _pendingEditSnapshot;
+        try
         {
-            var snapshot = _pendingEditSnapshot;
-            _pendingEditSnapshot = null;
             ApplySelectedDetailsToCache();
             ApplyCurrentRowsToDocument();
+            _pendingEditSnapshot = null;
             PushUndo(snapshot);
             _redoStack.Clear();
-            RefreshPreview(resetCamera: false);
+            QueuePreviewRefresh();
             _statusLabel.Text = "Updated value.";
-        });
+            UpdateButtons();
+        }
+        catch (FormatException ex)
+        {
+            _pendingEditSnapshot = snapshot;
+            MessageBox.Show(this, ex.Message, "PhysicsTool", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            _pendingEditSnapshot = snapshot;
+            MessageBox.Show(this, ex.ToString(), "PhysicsTool error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private bool CommitActiveEditorDetail()
+    {
+        if (!_directEditMode || _current.IsReadOnlyExternal ||
+            !_editorDetailGrid.IsCurrentCellInEditMode ||
+            _editorDetailGrid.CurrentCell is not { } cell ||
+            !string.Equals(cell.OwningColumn?.Name, "Value", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _pendingEditSnapshot ??= CaptureCurrentEditorSnapshot();
+        if (_editorDetailGrid.EditingControl is TextBox textBox)
+            cell.Value = textBox.Text;
+
+        _editorDetailGrid.EndEdit();
+        CommitEditorDetailChange();
+        return true;
     }
 
     private void ApplySelectedDetailsToCache()
@@ -1735,9 +2566,26 @@ public sealed class MainForm : Form
         if (_editorPage == EditorPage.Bones)
             _current.UpdateBoneRows(_clothList.SelectedIndex, _boneRows);
         else if (_editorPage == EditorPage.Colliders)
-            _current.UpdateColliderRows(_colliderRows);
+            _current.UpdateColliderRows(GetActiveColliderRowsForWrite());
         else
             _current.UpdateParticleRows(_clothList.SelectedIndex, _particleRows);
+    }
+
+    private IReadOnlyList<ColliderEditRow> GetActiveColliderRowsForWrite()
+    {
+        var selected = GetSelectedCollider();
+        if (selected == null)
+            return _colliderRows;
+
+        var rows = new List<ColliderEditRow> { selected };
+        if (_mirrorPairs.TryGetValue(selected.Index, out var partnerIndex))
+        {
+            var partner = _colliderRows.FirstOrDefault(row => row.Index == partnerIndex);
+            if (partner != null)
+                rows.Add(partner);
+        }
+
+        return rows;
     }
 
     private void RefreshPreview(bool resetCamera)
@@ -1745,8 +2593,27 @@ public sealed class MainForm : Form
         if (!_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
 
+        var camera = resetCamera ? null : _particlePreview.CaptureCameraState();
         _particlePreview.SetData(_current.GetParticlePreview(_clothList.SelectedIndex), resetCamera);
+        if (camera != null)
+            _particlePreview.RestoreCameraState(camera);
         RefreshSelectedEditorItem();
+    }
+
+    // A DataGridView cannot have its rows rebuilt while it is finishing an
+    // edit. Queue the viewport refresh after that WinForms operation ends.
+    private void QueuePreviewRefresh()
+    {
+        if (_previewRefreshQueued || IsDisposed || Disposing)
+            return;
+
+        _previewRefreshQueued = true;
+        BeginInvoke(new Action(() =>
+        {
+            _previewRefreshQueued = false;
+            if (!IsDisposed && !Disposing)
+                RefreshPreview(resetCamera: false);
+        }));
     }
 
     private EditorSnapshot? CaptureCurrentEditorSnapshot()
@@ -1827,12 +2694,12 @@ public sealed class MainForm : Form
 
     private void ApplyEditorSnapshot(EditorSnapshot snapshot)
     {
+        var camera = _particlePreview.CaptureCameraState();
         _applyingSnapshot = true;
         try
         {
             if (snapshot.RawState != null)
             {
-                var camera = _particlePreview.CaptureCameraState();
                 _current.RestoreState(snapshot.RawState);
                 RefreshCurrentLists();
                 _editorPage = snapshot.Page;
@@ -1844,7 +2711,6 @@ public sealed class MainForm : Form
                 };
                 MoveEditorContentToSelectedTab();
                 RefreshParticleGrid(resetCamera: false, selectedListIndex: snapshot.SelectedIndex);
-                _particlePreview.RestoreCameraState(camera);
                 return;
             }
 
@@ -1867,6 +2733,7 @@ public sealed class MainForm : Form
         }
         finally
         {
+            _particlePreview.RestoreCameraState(camera);
             _applyingSnapshot = false;
         }
     }
@@ -1876,6 +2743,7 @@ public sealed class MainForm : Form
         _pendingEditSnapshot = null;
         _viewportMoveSnapshot = null;
         _viewportTransformChanged = false;
+        _viewportWorldTranslation = System.Numerics.Vector3.Zero;
         _selectedParticleIndices.Clear();
         _undoStack.Clear();
         _redoStack.Clear();
@@ -1947,9 +2815,9 @@ public sealed class MainForm : Form
         var bone = _boneRows[_editorIndexList.SelectedIndex];
         bone.Name = ReadDetailText("Name");
         bone.ParentIndex = ReadDetailInt("Parent");
-        bone.X = ReadDetailFloat("X");
-        bone.Y = ReadDetailFloat("Y");
-        bone.Z = ReadDetailFloat("Z");
+        bone.X = ReadBonePosition("X");
+        bone.Y = ReadBonePosition("Y");
+        bone.Z = ReadBonePosition("Z");
         bone.RotationX = ReadDetailFloat("Rot X");
         bone.RotationY = ReadDetailFloat("Rot Y");
         bone.RotationZ = ReadDetailFloat("Rot Z");
@@ -1960,8 +2828,7 @@ public sealed class MainForm : Form
         _editorDetailGrid.Rows.Clear();
         AddParticleDetail("Index", collider.Index.ToString(CultureInfo.InvariantCulture), true);
         AddParticleDetail("Name", collider.Name, false);
-        AddParticleDetail("Bone Index", collider.BoneIndex.ToString(CultureInfo.InvariantCulture), false);
-        AddParticleDetail("Bone", collider.BoneName, true);
+        AddColliderBoneDetail(collider);
         AddParticleDetail("Start X", FormatFloat(collider.StartX), false);
         AddParticleDetail("Start Y", FormatFloat(collider.StartY), false);
         AddParticleDetail("Start Z", FormatFloat(collider.StartZ), false);
@@ -1978,7 +2845,8 @@ public sealed class MainForm : Form
 
         var collider = _colliderRows[_editorIndexList.SelectedIndex];
         collider.Name = ReadDetailText("Name");
-        collider.BoneIndex = ReadDetailInt("Bone Index");
+        collider.BoneIndex = ReadDetailBoneIndex("Bone");
+        collider.BoneName = _boneRows.FirstOrDefault(bone => bone.Index == collider.BoneIndex)?.Name ?? string.Empty;
         collider.StartX = ReadDetailFloat("Start X");
         collider.StartY = ReadDetailFloat("Start Y");
         collider.StartZ = ReadDetailFloat("Start Z");
@@ -1987,6 +2855,29 @@ public sealed class MainForm : Form
         collider.EndZ = ReadDetailFloat("End Z");
         collider.Radius = ReadDetailFloat("Radius");
     }
+
+    private void AddColliderBoneDetail(ColliderEditRow collider)
+    {
+        var rowIndex = _editorDetailGrid.Rows.Add("Bone", string.Empty);
+        var combo = new DataGridViewComboBoxCell
+        {
+            FlatStyle = FlatStyle.Flat,
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.ComboBox,
+            DisplayStyleForCurrentCellOnly = false
+        };
+
+        foreach (var bone in _boneRows)
+            combo.Items.Add(FormatBoneOption(bone.Index, bone.Name));
+
+        var selected = FormatBoneOption(collider.BoneIndex, collider.BoneName);
+        if (!combo.Items.Contains(selected))
+            combo.Items.Insert(0, selected);
+        combo.Value = selected;
+        _editorDetailGrid.Rows[rowIndex].Cells["Value"] = combo;
+    }
+
+    private static string FormatBoneOption(int index, string name) =>
+        index < 0 ? "None" : $"{index}: {name}";
 
     private string ReadDetailText(string field)
     {
@@ -2002,8 +2893,19 @@ public sealed class MainForm : Form
     private float ReadDetailFloat(string field)
     {
         var text = ReadDetailText(field);
-        if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-            throw new FormatException($"Invalid number in {field}: {text}");
+        if (string.IsNullOrWhiteSpace(text))
+            throw new FormatException($"Please enter a value for {field}.");
+        if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !float.IsFinite(value))
+            throw new FormatException($"Please enter a valid number for {field}.");
+
+        return value;
+    }
+
+    private float ReadBonePosition(string field)
+    {
+        var value = ReadDetailFloat(field);
+        if (value < -30.0f || value > 30.0f)
+            throw new FormatException($"Bone {field} must be between -30 and 30.");
 
         return value;
     }
@@ -2011,8 +2913,24 @@ public sealed class MainForm : Form
     private int ReadDetailInt(string field)
     {
         var text = ReadDetailText(field);
+        if (string.IsNullOrWhiteSpace(text))
+            throw new FormatException($"Please enter a value for {field}.");
         if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-            throw new FormatException($"Invalid integer in {field}: {text}");
+            throw new FormatException($"Please enter a whole number for {field}.");
+
+        return value;
+    }
+
+    private int ReadDetailBoneIndex(string field)
+    {
+        var text = ReadDetailText(field);
+        if (string.Equals(text, "None", StringComparison.OrdinalIgnoreCase))
+            return -1;
+
+        var separator = text.IndexOf(':');
+        var indexText = separator >= 0 ? text[..separator] : text;
+        if (!int.TryParse(indexText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+            throw new FormatException("Please choose a valid bone.");
 
         return value;
     }
@@ -2084,7 +3002,8 @@ public sealed class MainForm : Form
             EndX = row.EndX,
             EndY = row.EndY,
             EndZ = row.EndZ,
-            Radius = row.Radius
+            Radius = row.Radius,
+            Transform = row.Transform
         };
     }
 
@@ -2138,6 +3057,107 @@ public sealed class MainForm : Form
         });
     }
 
+    private void ExportFreshHkclFromBphcl()
+    {
+        if (!_current.IsBphcl || _clothList.SelectedIndex < 0)
+        {
+            MessageBox.Show(
+                this,
+                "Open a BPHCL file and select one cloth first.",
+                "Fresh HKCL export",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var selectedName = _current.GetClothName(_clothList.SelectedIndex);
+        var warning =
+            "This creates a brand-new HKCL document from the selected BPHCL cloth.\n\n" +
+            "It does not clone an HKCL template. It rebuilds the cloth's skeleton, buffers, " +
+            "operators, state access, and colliders from BPHCL data. This is still experimental, " +
+            "but this output is intended for focused in-game testing.\n\n" +
+            $"Create a fresh HKCL for {selectedName}?";
+        if (MessageBox.Show(this, warning, "Experimental fresh HKCL export", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export fresh HKCL structural test",
+            Filter = "Wii U HKCL|*.hkcl|All files|*.*",
+            FileName = MakeSafeFileName(selectedName) + ".hkcl"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        RunGuarded(() =>
+        {
+            var fresh = _current.CreateFreshHkclFromCurrentBphcl(_clothList.SelectedIndex);
+            fresh.SaveHkcl(dialog.FileName, HkclPlatform.WiiU);
+
+            // Verify the bytes by returning through the normal HKCL reader.
+            var verification = new HkclService();
+            verification.Load(dialog.FileName);
+            if (!verification.HasDocument || verification.IsReadOnlyExternal)
+                throw new InvalidOperationException("The fresh HKCL file was written but could not be reopened by PhysicsTool.");
+
+            _statusLabel.Text = $"Exported and reopened fresh HKCL: {Path.GetFileName(dialog.FileName)}";
+            PlaySaveSound();
+        });
+    }
+
+    private void ExportFreshHkclDocumentFromBphcl()
+    {
+        if (!_current.IsBphcl || !_current.HasDocument)
+        {
+            MessageBox.Show(
+                this,
+                "Open a BPHCL file first.",
+                "Fresh full HKCL export",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var warning =
+            "This creates one brand-new HKCL document containing every BPHCL cloth unit.\n\n" +
+            "Colliders are shared in the outer container, while each cloth receives its own skeleton, " +
+            "particle simulation, constraints, states, and ordered collider references. This is the first " +
+            "full-file standalone conversion pass, so keep the original files untouched for comparison.\n\n" +
+            "Create the full fresh HKCL?";
+        if (MessageBox.Show(this, warning, "Experimental full HKCL export", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export full fresh HKCL structural test",
+            Filter = "Wii U HKCL|*.hkcl|All files|*.*",
+            FileName = Path.GetFileNameWithoutExtension(_current.SuggestFileName(".bphcl")) + "_fresh_full.hkcl"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        RunGuarded(() =>
+        {
+            var fresh = _current.CreateFreshHkclFromCurrentBphclDocument();
+            fresh.SaveHkcl(dialog.FileName, HkclPlatform.WiiU);
+
+            var verification = new HkclService();
+            verification.Load(dialog.FileName);
+            if (!verification.HasDocument || verification.IsReadOnlyExternal)
+                throw new InvalidOperationException("The full fresh HKCL was written but could not be reopened by PhysicsTool.");
+            var expectedClothCount = _current.GetClothSummaries().Count;
+            var actualClothCount = verification.GetClothSummaries().Count;
+            if (actualClothCount != expectedClothCount)
+            {
+                throw new InvalidOperationException(
+                    $"The full fresh HKCL reopened with {actualClothCount} cloths; expected {expectedClothCount}.");
+            }
+
+            _statusLabel.Text = $"Exported and reopened full fresh HKCL: {Path.GetFileName(dialog.FileName)}";
+            PlaySaveSound();
+        });
+    }
+
     private void SaveHkcl(HkclPlatform platform)
     {
         if (!_current.HasDocument)
@@ -2165,6 +3185,7 @@ public sealed class MainForm : Form
             _currentSavePath = dialog.FileName;
             _currentSavePlatform = platform;
             _statusLabel.Text = $"Exported {Path.GetFileName(dialog.FileName)}";
+            PlaySaveSound();
         });
     }
 
@@ -2183,6 +3204,7 @@ public sealed class MainForm : Form
         {
             _current.SaveHkcl(_currentSavePath, _currentSavePlatform);
             _statusLabel.Text = $"Saved {Path.GetFileName(_currentSavePath)}";
+            PlaySaveSound();
         });
     }
 
@@ -2208,8 +3230,11 @@ public sealed class MainForm : Form
             _currentSavePath = dialog.FileName;
             _currentSavePlatform = platform;
             _statusLabel.Text = $"Saved {Path.GetFileName(dialog.FileName)}";
+            PlaySaveSound();
         });
     }
+
+    private static void PlaySaveSound() => System.Media.SystemSounds.Asterisk.Play();
 
     private void RemoveSelectedCloth()
     {
@@ -2338,18 +3363,32 @@ public sealed class MainForm : Form
             return;
         }
 
-        if (isBphclToHkcl && MessageBox.Show(
-                this,
-                _current.DescribeMergePreflight(
-                    _reference,
-                    _referenceClothList.SelectedIndex,
-                    Math.Max(0, _clothList.SelectedIndex)) +
-                "\n\nContinue?",
-                "BPHCL -> HKCL conversion",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Information) != DialogResult.Yes)
+        if (isBphclToHkcl)
         {
-            return;
+            var preflight = _current.GetBphclToHkclConversionPreflight(
+                _reference,
+                _referenceClothList.SelectedIndex,
+                _clothList.SelectedIndex);
+            if (!preflight.IsEligible)
+            {
+                MessageBox.Show(
+                    this,
+                    preflight.ToDisplayText(),
+                    "BPHCL -> HKCL conversion blocked",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (MessageBox.Show(
+                    this,
+                    preflight.ToDisplayText() + "\n\nConvert now?",
+                    "BPHCL -> HKCL conversion",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information) != DialogResult.Yes)
+            {
+                return;
+            }
         }
 
         if (_current.IsBphcl && _reference.IsBphcl)
@@ -2459,6 +3498,9 @@ public sealed class MainForm : Form
         SetButtonEnabled(_particleApplyButton, direct && hasCurrent && !readOnlyExternal && _undoStack.Count > 0);
         SetButtonEnabled(_particleRefreshButton, direct && hasCurrent && !readOnlyExternal && _redoStack.Count > 0);
         SetButtonEnabled(_addEditorItemButton, direct && hasCurrent && !readOnlyExternal && _clothList.SelectedIndex >= 0);
+        SetButtonEnabled(_mirrorModeButton, direct && hasCurrent && !readOnlyExternal && _clothList.SelectedIndex >= 0);
+        if (_mirrorModeButton.Enabled)
+            UpdateMirrorModeButton();
     }
 
     private static void SetButtonEnabled(Button button, bool enabled)
@@ -2466,6 +3508,16 @@ public sealed class MainForm : Form
         button.Enabled = enabled;
         button.ForeColor = enabled ? Color.Gainsboro : Color.FromArgb(130, 130, 130);
         button.BackColor = enabled ? Color.FromArgb(64, 64, 64) : Color.FromArgb(58, 58, 58);
+    }
+
+    private static string MakeSafeFileName(string name)
+    {
+        var invalidCharacters = Path.GetInvalidFileNameChars();
+        var safeName = new string(name.Select(character => invalidCharacters.Contains(character) ? '_' : character).ToArray())
+            .Trim()
+            .TrimEnd('.');
+
+        return string.IsNullOrWhiteSpace(safeName) ? "Physics" : safeName;
     }
 
     private void RunGuarded(Action action)
@@ -2488,6 +3540,21 @@ public sealed class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.Enter && CommitActiveEditorDetail())
+            return true;
+
+        if (keyData == (Keys.Control | Keys.C) && !_editorDetailGrid.IsCurrentCellInEditMode)
+        {
+            CopySelectedEditorItem();
+            return true;
+        }
+
+        if (keyData == (Keys.Control | Keys.V) && !_editorDetailGrid.IsCurrentCellInEditMode)
+        {
+            PasteEditorItem();
+            return true;
+        }
+
         if (keyData == (Keys.Control | Keys.Z))
         {
             UndoEditorChange();
@@ -2502,7 +3569,12 @@ public sealed class MainForm : Form
 
         if (keyData == Keys.Delete)
         {
-            if (!_directEditMode)
+            if (_editorDetailGrid.IsCurrentCellInEditMode)
+                return base.ProcessCmdKey(ref msg, keyData);
+
+            if (_directEditMode)
+                DeleteSelectedEditorItem();
+            else
                 RemoveSelectedCloth();
             return true;
         }

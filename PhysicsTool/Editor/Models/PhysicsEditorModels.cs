@@ -57,6 +57,10 @@ public sealed class ColliderEditRow
     public float EndY { get; set; }
     public float EndZ { get; set; }
     public float Radius { get; set; }
+
+    // The editor exposes world-space endpoints. HKCL stores shape points in
+    // this transform's local space, so the service bakes between the two.
+    public Matrix4x4 Transform { get; set; } = Matrix4x4.Identity;
 }
 
 public sealed class ParticlePreviewData
