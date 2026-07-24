@@ -84,7 +84,10 @@ public sealed partial class HkclService
         ApplyBphclSimulationSettings(cloth, sourceSimulation);
 
         var solverScale = Math.Max(1, sourceSimulation.Particles.Count);
-        ApplyBphclParticles(cloth, sourceSimulation, solverScale);
+        ApplyBphclParticles(
+            cloth,
+            sourceSimulation,
+            solverScale);
         ApplyBphclBufferAndOperatorLayout(
             cloth,
             sourceCloth,
@@ -209,7 +212,10 @@ public sealed partial class HkclService
             ApplyBphclSimulationSettings(cloth, simulation);
 
             var solverScale = Math.Max(1, simulation.Particles.Count);
-            ApplyBphclParticles(cloth, simulation, solverScale);
+            ApplyBphclParticles(
+                cloth,
+                simulation,
+                solverScale);
             ApplyBphclBufferAndOperatorLayout(
                 cloth,
                 sourceCloth,

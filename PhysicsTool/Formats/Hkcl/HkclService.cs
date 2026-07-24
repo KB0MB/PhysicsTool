@@ -1404,16 +1404,31 @@ public sealed partial class HkclService
         if (clothIndex < 0 || clothIndex >= sourceCloths.Count)
             throw new ArgumentOutOfRangeException(nameof(clothIndex));
 
+        var sourceCloth = sourceCloths[clothIndex];
+        var importedCloth = CloneForCurrentGraph(sourceCloth);
         var targetCloths = GetMutableClothDatas(root);
-        targetCloths.Add(CloneForCurrentGraph(sourceCloths[clothIndex]));
+        targetCloths.Add(importedCloth);
 
         var sourceSkeleton = GetSkeletons(refRoot).ElementAtOrDefault(clothIndex);
         if (sourceSkeleton != null)
             GetMutableSkeletons(root).Add(CloneForCurrentGraph(sourceSkeleton));
 
+        // A cloth does not own its hclCollidables.  It points at entries in the
+        // container-wide list, so clone that small graph once and reconnect the
+        // imported per-instance lists to the new container objects.
+        var sourceColliders = EnumerateReferencedCollidables(sourceCloth)
+            .Distinct(ReferenceEquality.Instance)
+            .ToList();
+        var importedColliders = sourceColliders
+            .Select(CloneForCurrentGraph)
+            .ToList();
+
         var targetCollidables = GetMutableCollidables(root);
-        foreach (var collidable in EnumerateReferencedCollidables(sourceCloths[clothIndex]))
-            targetCollidables.Add(CloneForCurrentGraph(collidable));
+        foreach (var collidable in importedColliders)
+            targetCollidables.Add(collidable);
+
+        RemapClothCollidableReferences(importedCloth, sourceCloth,
+            sourceColliders.Zip(importedColliders).ToDictionary(pair => pair.First, pair => pair.Second, ReferenceEquality.Instance));
 
         return "Merged selected HKCL cloth.";
     }
@@ -1513,7 +1528,10 @@ public sealed partial class HkclService
         // per-cloth factors. Keep positions and rest lengths untouched while
         // a reliable scale model is reverse engineered.
         var bphclSolverScale = Math.Max(1, sourceSimulation.Particles.Count);
-        ApplyBphclParticles(convertedCloth, sourceSimulation, bphclSolverScale);
+        ApplyBphclParticles(
+            convertedCloth,
+            sourceSimulation,
+            bphclSolverScale);
         var topologyNotes = ApplyBphclBufferAndOperatorLayout(
             convertedCloth,
             sourceCloth,
@@ -2245,12 +2263,19 @@ public sealed partial class HkclService
             AddListItem(list, defaultValue);
     }
 
-    private static void ApplyBphclParticles(object cloth, NativeBphclSimCloth source, float solverScale)
+    private static void ApplyBphclParticles(
+        object cloth,
+        NativeBphclSimCloth source,
+        float solverScale)
     {
+        const float inverseMassDivisor = 10.0f;
+
         var templateRows = GetParticleRowsForCloth(cloth);
+
         var rows = source.Particles.Select((particle, index) =>
         {
             var template = templateRows[index];
+
             return new ParticleEditRow
             {
                 Index = index,
@@ -2259,10 +2284,15 @@ public sealed partial class HkclService
                 Y = particle.Position.Y,
                 Z = particle.Position.Z,
                 W = particle.Position.W,
+
+                // Restore the original mass conversion.
                 Mass = particle.Mass * solverScale,
+
+                // Original inverse-mass conversion, then divide by 10.
                 InverseMass = solverScale > 0.0f
                     ? particle.InverseMass / solverScale
-                    : particle.InverseMass,
+                    : particle.InverseMass / inverseMassDivisor,
+
                 Radius = particle.Radius,
                 Friction = particle.Friction,
                 CollisionMask = index < source.StaticCollisionMasks.Count
@@ -2484,6 +2514,47 @@ public sealed partial class HkclService
             ?? throw new InvalidOperationException("The HKCL template has no mutable per-instance collider reference list.");
         foreach (var collidable in collidables)
             AddListItem(destination, collidable);
+    }
+
+    private static void RemapClothCollidableReferences(
+        object importedCloth,
+        object sourceCloth,
+        IReadOnlyDictionary<object, object> colliderMap)
+    {
+        RemapColliderList(
+            GetValue(sourceCloth, "perInstanceCollidables") as IList,
+            GetValue(importedCloth, "perInstanceCollidables") as IList,
+            colliderMap);
+
+        var sourceSimulations = GetList(GetValue(sourceCloth, "simClothDatas")) ?? Array.Empty<object>();
+        var importedSimulations = GetList(GetValue(importedCloth, "simClothDatas")) ?? Array.Empty<object>();
+
+        for (var index = 0; index < Math.Min(sourceSimulations.Count, importedSimulations.Count); index++)
+        {
+            RemapColliderList(
+                GetValue(sourceSimulations[index], "perInstanceCollidables") as IList,
+                GetValue(importedSimulations[index], "perInstanceCollidables") as IList,
+                colliderMap);
+        }
+    }
+
+    private static void RemapColliderList(
+        IList? source,
+        IList? destination,
+        IReadOnlyDictionary<object, object> colliderMap)
+    {
+        if (source == null || destination == null)
+            return;
+
+        var remapped = source.Cast<object>()
+            .Select(collider => colliderMap.TryGetValue(collider, out var imported)
+                ? imported
+                : throw new InvalidOperationException("The imported HKCL cloth references a collider that was not copied."))
+            .ToArray();
+
+        destination.Clear();
+        foreach (var collider in remapped)
+            AddListItem(destination, collider);
     }
 
     private static object CreateHkclColliderShape(object targetCollider, NativeBphclColliderShape source)
