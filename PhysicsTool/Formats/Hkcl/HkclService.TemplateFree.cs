@@ -9,6 +9,26 @@ namespace HKCLTool;
 public sealed partial class HkclService
 {
     /// <summary>
+    /// Returns the current per-cloth conversion defaults. The suggested scale
+    /// uses a verified vanilla match where one is available, otherwise it
+    /// falls back to the conservative topology-based value.
+    /// </summary>
+    public IReadOnlyList<BphclConversionScale> GetBphclConversionScaleSuggestions()
+    {
+        var sourceDocument = _bphcl?.NativeDocument
+            ?? throw new InvalidOperationException("Open a BPHCL file before requesting conversion scales.");
+
+        return sourceDocument.Cloths
+            .Select((cloth, index) =>
+            {
+                var simulation = cloth.SimCloths.SingleOrDefault();
+                var (scale, basis) = GetBphclSolverScaleSuggestion(index, cloth.Name, simulation);
+                return new BphclConversionScale(index, StripBphclPrefix(cloth.Name), scale, basis);
+            })
+            .ToList();
+    }
+
+    /// <summary>
     /// Builds a new HKCL document from one native BPHCL cloth without cloning
     /// an HKCL cloth. This is intentionally an experimental structural export:
     /// the source geometry, skeleton, solver, colliders, operators, and
@@ -16,7 +36,9 @@ public sealed partial class HkclService
     /// the BPHCL source. It remains experimental because uncommon layouts
     /// have not yet been verified in-game.
     /// </summary>
-    public HkclService CreateFreshHkclFromCurrentBphcl(int sourceClothIndex)
+    public HkclService CreateFreshHkclFromCurrentBphcl(
+        int sourceClothIndex,
+        IReadOnlyDictionary<int, float>? solverScaleOverrides = null)
     {
         var sourceDocument = _bphcl?.NativeDocument
             ?? throw new InvalidOperationException("Open a BPHCL file before creating a fresh HKCL export.");
@@ -83,11 +105,8 @@ public sealed partial class HkclService
         RebuildBphclParticleTopology(cloth, sourceSimulation);
         ApplyBphclSimulationSettings(cloth, sourceSimulation);
 
-        var solverScale = Math.Max(1, sourceSimulation.Particles.Count);
-        ApplyBphclParticles(
-            cloth,
-            sourceSimulation,
-            solverScale);
+        var solverScale = ResolveBphclSolverScale(sourceClothIndex, sourceSimulation, solverScaleOverrides);
+        ApplyBphclParticles(cloth, sourceSimulation, solverScale);
         ApplyBphclBufferAndOperatorLayout(
             cloth,
             sourceCloth,
@@ -113,7 +132,10 @@ public sealed partial class HkclService
             activeSourceColliders.Count,
             boneMap);
         InitializeFreshColliderRuntimeMetadata(cloth, colliders);
-        ApplyBphclConstraintLinks(cloth, sourceSimulation, preserveTemplateLayout: false, stiffnessScale: solverScale);
+        // BPHCL's link stiffness is already a solver coefficient. The
+        // conversion scale is only for particle mass/inverse mass; multiplying
+        // stiffness as well changes the cloth's actual constraint response.
+        ApplyBphclConstraintLinks(cloth, sourceSimulation, preserveTemplateLayout: false);
         ApplyBphclConstraintExecution(cloth, sourceSimulation, sourceCloth.Operators);
         ApplyBphclSimpleMeshBoneDeform(cloth, sourceCloth.SimpleMeshBoneDeformers, boneMap);
         BuildFreshClothStates(cloth, sourceCloth);
@@ -131,13 +153,50 @@ public sealed partial class HkclService
         };
     }
 
+    private float ResolveBphclSolverScale(
+        int clothIndex,
+        NativeBphclSimCloth? simulation,
+        IReadOnlyDictionary<int, float>? overrides)
+    {
+        if (simulation == null)
+            return 1.0f;
+
+        if (overrides != null && overrides.TryGetValue(clothIndex, out var scale) &&
+            float.IsFinite(scale) && scale > 0.0f)
+        {
+            return scale;
+        }
+
+        var sourceName = _bphcl?.NativeDocument?.Cloths.ElementAtOrDefault(clothIndex)?.Name ?? string.Empty;
+        return GetBphclSolverScaleSuggestion(clothIndex, sourceName, simulation).Scale;
+    }
+
+    private (float Scale, string Basis) GetBphclSolverScaleSuggestion(
+        int clothIndex,
+        string clothName,
+        NativeBphclSimCloth? simulation)
+    {
+        if (simulation == null)
+            return (1.0f, "No simulation data");
+
+        if (BphclConversionProfileCatalog.TryGet(_bphcl?.SourcePath ?? _path, clothName, out var verifiedScale, out var verifiedBasis))
+            return (verifiedScale, verifiedBasis);
+
+        var boneCount = _bphcl?.NativeDocument?.Skeletons.ElementAtOrDefault(clothIndex)?.BoneCount ?? 0;
+        if (BphclStructuralScaleMatcher.TrySuggest(simulation, boneCount, out var structuralScale, out var structuralBasis))
+            return (structuralScale, structuralBasis);
+
+        return (Math.Max(1, simulation.Particles.Count), "Topology fallback");
+    }
+
     /// <summary>
     /// Builds one standalone HKCL document from every cloth unit in the
     /// current BPHCL. Collidables remain shared at the outer-container level,
     /// while each cloth receives its own ordered active-collider list and
     /// transform map.
     /// </summary>
-    public HkclService CreateFreshHkclFromCurrentBphclDocument()
+    public HkclService CreateFreshHkclFromCurrentBphclDocument(
+        IReadOnlyDictionary<int, float>? solverScaleOverrides = null)
     {
         var sourceDocument = _bphcl?.NativeDocument
             ?? throw new InvalidOperationException("Open a BPHCL file before creating a fresh HKCL export.");
@@ -211,11 +270,8 @@ public sealed partial class HkclService
             RebuildBphclParticleTopology(cloth, simulation);
             ApplyBphclSimulationSettings(cloth, simulation);
 
-            var solverScale = Math.Max(1, simulation.Particles.Count);
-            ApplyBphclParticles(
-                cloth,
-                simulation,
-                solverScale);
+            var solverScale = ResolveBphclSolverScale(index, simulation, solverScaleOverrides);
+            ApplyBphclParticles(cloth, simulation, solverScale);
             ApplyBphclBufferAndOperatorLayout(
                 cloth,
                 sourceCloth,
@@ -252,8 +308,11 @@ public sealed partial class HkclService
                 context.BoneMap);
             InitializeFreshColliderRuntimeMetadata(context.Cloth, contextColliders);
 
-            var solverScale = Math.Max(1, context.Simulation.Particles.Count);
-            ApplyBphclConstraintLinks(context.Cloth, context.Simulation, preserveTemplateLayout: false, stiffnessScale: solverScale);
+            var solverScale = ResolveBphclSolverScale(
+                contexts.IndexOf(context),
+                context.Simulation,
+                solverScaleOverrides);
+            ApplyBphclConstraintLinks(context.Cloth, context.Simulation, preserveTemplateLayout: false);
             ApplyBphclConstraintExecution(context.Cloth, context.Simulation, context.SourceCloth.Operators);
             ApplyBphclSimpleMeshBoneDeform(context.Cloth, context.SourceCloth.SimpleMeshBoneDeformers, context.BoneMap);
             BuildFreshClothStates(context.Cloth, context.SourceCloth);

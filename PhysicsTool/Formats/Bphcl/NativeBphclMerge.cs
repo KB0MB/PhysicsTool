@@ -105,20 +105,30 @@ internal static class NativeBphclMerge
         NativeBphclDocument target,
         NativeBphclDocument source,
         int sourceClothIndex) =>
-        ImportCompleteCloth(target, source, sourceClothIndex, replaceTargetClothIndex: null);
+        ImportCompleteCloth(target, source, sourceClothIndex, replaceTargetClothIndex: null, reuseCompatibleColliders: true);
+
+    // Duplication is intentionally different from cross-file import: a
+    // duplicate must own its colliders so future edits cannot move the source
+    // cloth's body collision objects as a side effect.
+    public static byte[] DuplicateCompleteCloth(
+        NativeBphclDocument target,
+        NativeBphclDocument source,
+        int sourceClothIndex) =>
+        ImportCompleteCloth(target, source, sourceClothIndex, replaceTargetClothIndex: null, reuseCompatibleColliders: false);
 
     public static byte[] ReplaceCompleteCloth(
         NativeBphclDocument target,
         NativeBphclDocument source,
         int targetClothIndex,
         int sourceClothIndex) =>
-        ImportCompleteCloth(target, source, sourceClothIndex, targetClothIndex);
+        ImportCompleteCloth(target, source, sourceClothIndex, targetClothIndex, reuseCompatibleColliders: true);
 
     private static byte[] ImportCompleteCloth(
         NativeBphclDocument target,
         NativeBphclDocument source,
         int sourceClothIndex,
-        int? replaceTargetClothIndex)
+        int? replaceTargetClothIndex,
+        bool reuseCompatibleColliders)
     {
         if ((uint)sourceClothIndex >= (uint)source.Cloths.Count)
             throw new ArgumentOutOfRangeException(nameof(sourceClothIndex));
@@ -181,7 +191,9 @@ internal static class NativeBphclMerge
         var typeTable = NativeBphclTypeTable.Create(target, source, requiredSourceTypes);
         var typeMap = typeTable.SourceToMerged;
         var liveSourceItems = sourceItemIndices.ToHashSet();
-        var reusedColliderItems = FindReusableColliders(target, source, liveSourceItems);
+        var reusedColliderItems = reuseCompatibleColliders
+            ? FindReusableColliders(target, source, liveSourceItems)
+            : new Dictionary<int, int>();
         replacementAamp = NativeAampClothMerger.AppendColliderEntries(
             replacementAamp,
             source,

@@ -831,6 +831,7 @@ public sealed partial class NativeBphclDocument
         {
             var linkOffset = checked(recordArray.DataOffset + index * (uint)stride);
             var values = new Dictionary<string, double>(StringComparer.Ordinal);
+            var editableValueOffsets = new Dictionary<string, uint>(StringComparer.Ordinal);
             int? particleA = null;
             int? particleB = null;
 
@@ -840,12 +841,20 @@ public sealed partial class NativeBphclDocument
                 if (value is null)
                     continue;
                 values[member.Name] = value.Value;
+                if (string.Equals(GetTypeName(member.TypeIndex), "hkReal", StringComparison.Ordinal))
+                    editableValueOffsets[member.Name] = member.Offset;
                 if (member.Name == "particleA")
                     particleA = checked((int)value.Value);
                 else if (member.Name == "particleB")
                     particleB = checked((int)value.Value);
             }
-            links.Add(new NativeBphclConstraintLink(checked((int)index), particleA, particleB, values));
+            links.Add(new NativeBphclConstraintLink(
+                checked((int)index),
+                particleA,
+                particleB,
+                values,
+                linkOffset,
+                editableValueOffsets));
         }
         return links;
     }
@@ -898,7 +907,7 @@ public sealed partial class NativeBphclDocument
         if (!TryReadStringPointer(item.DataOffset + 144, out var name))
             name = $"Collidable {index}";
 
-        var shape = new NativeBphclColliderShape("<none>", -1, Vector4.Zero, Vector4.Zero, 0.0f, 0.0f, Vector4.Zero);
+        var shape = new NativeBphclColliderShape("<none>", -1, Vector4.Zero, Vector4.Zero, 0.0f, 0.0f, Vector4.Zero, 0);
         if (TryGetReferencedItem(item.DataOffset + 136, out var shapeItemIndex))
         {
             var shapeItem = GetItem(shapeItemIndex);
@@ -912,25 +921,25 @@ public sealed partial class NativeBphclDocument
                     ReadVector4(shapeItem.DataOffset + 48),
                     ReadSingle(shapeItem.DataOffset + 80),
                     ReadSingle(shapeItem.DataOffset + 80),
-                    Vector4.Zero),
+                    Vector4.Zero, shapeItem.DataOffset),
                 "hclSphereShape" => new NativeBphclColliderShape(
                     shapeTypeName, shapeKind,
                     ReadVector4(shapeItem.DataOffset + 32),
                     Vector4.Zero,
                     ReadVector4(shapeItem.DataOffset + 32).W,
                     ReadVector4(shapeItem.DataOffset + 32).W,
-                    Vector4.Zero),
+                    Vector4.Zero, shapeItem.DataOffset),
                 "hclTaperedCapsuleShape" => new NativeBphclColliderShape(
                     shapeTypeName, shapeKind,
                     ReadVector4(shapeItem.DataOffset + 32),
                     ReadVector4(shapeItem.DataOffset + 48),
                     ReadSingle(shapeItem.DataOffset + 144),
                     ReadSingle(shapeItem.DataOffset + 148),
-                    Vector4.Zero),
+                    Vector4.Zero, shapeItem.DataOffset),
                 "hclPlaneShape" => new NativeBphclColliderShape(
                     shapeTypeName, shapeKind,
                     Vector4.Zero, Vector4.Zero, 0.0f, 0.0f,
-                    ReadVector4(shapeItem.DataOffset + 32)),
+                    ReadVector4(shapeItem.DataOffset + 32), shapeItem.DataOffset),
                 _ => shape
             };
         }
@@ -960,7 +969,8 @@ public sealed partial class NativeBphclDocument
                 index < parents.Count && parents[index] != ushort.MaxValue ? parents[index] : -1,
                 ReadByte(boneOffset + 8u) != 0,
                 poses is not null && index < poses.Count ? ReadVector4(poseOffset) : Vector4.Zero,
-                poses is not null && index < poses.Count ? ReadVector4(poseOffset + 16u) : Vector4.Zero));
+                poses is not null && index < poses.Count ? ReadVector4(poseOffset + 16u) : Vector4.Zero,
+                poseOffset));
         }
         return bones;
     }

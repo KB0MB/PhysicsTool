@@ -26,7 +26,11 @@ public static class BphclBridge
 {
     public static BphclDocumentSummary Load(string path)
     {
-        var native = NativeBphclDocument.Open(path);
+        return CreateSummary(NativeBphclDocument.Open(path), Path.GetFullPath(path));
+    }
+
+    internal static BphclDocumentSummary CreateSummary(NativeBphclDocument native, string sourcePath)
+    {
         var aampClothNames = native.Aamp.ClothEntries
             .Select(entry => entry.Name)
             .ToHashSet(StringComparer.Ordinal);
@@ -71,7 +75,7 @@ public static class BphclBridge
         var raw = new JObject
         {
             ["format"] = "BPHCL",
-            ["sourcePath"] = Path.GetFullPath(path),
+            ["sourcePath"] = sourcePath,
             ["fileSize"] = native.Bytes.Length,
             ["clothCount"] = cloths.Count,
             ["colliderCount"] = native.CollidableCount,
@@ -115,7 +119,7 @@ public static class BphclBridge
         return new BphclDocumentSummary
         {
             NativeDocument = native,
-            SourcePath = Path.GetFullPath(path),
+            SourcePath = sourcePath,
             FileSize = native.Bytes.Length,
             ClothCount = cloths.Count,
             ColliderCount = native.CollidableCount,
@@ -130,6 +134,15 @@ public static class BphclBridge
     public static BphclDocumentSummary Save(string inputPath, string outputPath)
     {
         var document = NativeBphclDocument.Open(inputPath);
+        NativeBphclWriter.SaveRebuiltCopy(document, outputPath);
+        return Load(outputPath);
+    }
+
+    public static BphclDocumentSummary Save(NativeBphclDocument document, string outputPath)
+    {
+        // Particle-only edits have already updated the native DATA payload.
+        // Rebuild the native container from that document so the saved file
+        // continues through the same BPHCL packer used by merge/delete.
         NativeBphclWriter.SaveRebuiltCopy(document, outputPath);
         return Load(outputPath);
     }
@@ -181,6 +194,14 @@ public static class BphclBridge
 
         // The legacy bridge still provides the UI summary for now. The binary
         // merge above is fully native and no longer relies on reusable slots.
+        return Load(outputPath);
+    }
+
+    public static BphclDocumentSummary DuplicateCloth(string inputPath, string renamedDonorPath, string outputPath, int clothIndex)
+    {
+        var target = NativeBphclDocument.Open(inputPath);
+        var donor = NativeBphclDocument.Open(renamedDonorPath);
+        NativeBphclWriter.SaveDuplicatedCloth(target, donor, clothIndex, outputPath);
         return Load(outputPath);
     }
 

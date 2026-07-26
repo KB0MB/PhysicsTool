@@ -20,30 +20,39 @@ public enum PreviewPickKind
     Collider
 }
 
+public enum ParticleSelectionOperation
+{
+    Replace,
+    Add,
+    Toggle,
+    Remove
+}
+
 public sealed class PreviewPickEventArgs : EventArgs
 {
-    public PreviewPickEventArgs(PreviewPickKind kind, int index, bool addToSelection)
+    public PreviewPickEventArgs(PreviewPickKind kind, int index, ParticleSelectionOperation selectionOperation)
     {
         Kind = kind;
         Index = index;
-        AddToSelection = addToSelection;
+        SelectionOperation = selectionOperation;
     }
 
     public PreviewPickKind Kind { get; }
     public int Index { get; }
-    public bool AddToSelection { get; }
+    public ParticleSelectionOperation SelectionOperation { get; }
+    public bool AddToSelection => SelectionOperation != ParticleSelectionOperation.Replace;
 }
 
 public sealed class ParticleSelectionEventArgs : EventArgs
 {
-    public ParticleSelectionEventArgs(IReadOnlyList<int> particleIndices, bool addToSelection)
+    public ParticleSelectionEventArgs(IReadOnlyList<int> particleIndices, ParticleSelectionOperation selectionOperation)
     {
         ParticleIndices = particleIndices;
-        AddToSelection = addToSelection;
+        SelectionOperation = selectionOperation;
     }
 
     public IReadOnlyList<int> ParticleIndices { get; }
-    public bool AddToSelection { get; }
+    public ParticleSelectionOperation SelectionOperation { get; }
 }
 
 public sealed class ParticleMoveEventArgs : EventArgs
@@ -249,11 +258,15 @@ public sealed class ParticlePreviewControl : GLControl
 
     public void SetData(ParticlePreviewData? data, bool resetCamera = true)
     {
+        var hadSceneData = _data != null;
         _data = data;
         if (resetCamera || data == null)
             ResetCameraToData();
         else
-            UpdateSceneBounds(updateGrid: false);
+            // Opening Editor preserves the camera, but the first real scene
+            // still needs to establish a grid scale. Otherwise it keeps the
+            // tiny empty-viewport default until a later camera reset.
+            UpdateSceneBounds(updateGrid: !hadSceneData);
         Invalidate();
     }
 
@@ -271,6 +284,62 @@ public sealed class ParticlePreviewControl : GLControl
             particle.Position = new SysVec3(row.X, row.Y, row.Z);
             particle.Fixed = row.Fixed;
             particle.Radius = row.Radius;
+        }
+
+        Invalidate();
+    }
+
+    public void UpdateSimulatedParticlePositions(IReadOnlyDictionary<int, SysVec3> positions)
+    {
+        if (_data == null)
+            return;
+
+        foreach (var particle in _data.Particles)
+        {
+            if (positions.TryGetValue(particle.Index, out var position))
+                particle.Position = position;
+        }
+
+        Invalidate();
+    }
+
+    public void UpdateSimulatedBonePositions(IReadOnlyDictionary<int, SysVec3> positions)
+    {
+        if (_data == null)
+            return;
+
+        foreach (var bone in _data.Bones)
+        {
+            if (positions.TryGetValue(bone.Index, out var position))
+                bone.Position = position;
+        }
+
+        Invalidate();
+    }
+
+    public void UpdateSimulatedPose(
+        IReadOnlyDictionary<int, SysVec3> particlePositions,
+        IReadOnlyDictionary<int, SimulatedBonePreviewPose> bonePoses)
+    {
+        if (_data == null)
+            return;
+
+        foreach (var particle in _data.Particles)
+        {
+            if (particlePositions.TryGetValue(particle.Index, out var position))
+                particle.Position = position;
+        }
+
+        foreach (var bone in _data.Bones)
+        {
+            if (!bonePoses.TryGetValue(bone.Index, out var pose))
+                continue;
+
+            bone.Position = pose.Position;
+            bone.AxisX = pose.AxisX;
+            bone.AxisY = pose.AxisY;
+            bone.AxisZ = pose.AxisZ;
+            bone.StretchScale = pose.StretchScale;
         }
 
         Invalidate();
@@ -306,15 +375,22 @@ public sealed class ParticlePreviewControl : GLControl
         if (_data == null)
             return;
 
-        var previewRows = _data.Colliders.ToDictionary(collider => collider.Index);
         foreach (var row in rows)
         {
-            if (!previewRows.TryGetValue(row.Index, out var collider))
-                continue;
-
-            collider.Start = new SysVec3(row.StartX, row.StartY, row.StartZ);
-            collider.End = new SysVec3(row.EndX, row.EndY, row.EndZ);
-            collider.Radius = row.Radius;
+            // The same global hclCollidable can deliberately occupy more than
+            // one per-instance slot. Update every slot, not only the first.
+            foreach (var collider in _data.Colliders.Where(candidate => candidate.Index == row.Index))
+            {
+                collider.Start = new SysVec3(row.StartX, row.StartY, row.StartZ);
+                collider.End = new SysVec3(row.EndX, row.EndY, row.EndZ);
+                collider.Radius = row.Radius;
+                if (collider.Kind is ColliderPreviewKind.Capsule or ColliderPreviewKind.Sphere)
+                    collider.EndRadius = row.Radius;
+                if (collider.Kind == ColliderPreviewKind.Plane)
+                    collider.PlaneNormal = NormalizeOrDefault(
+                        new SysVec3(row.PlaneNormalX, row.PlaneNormalY, row.PlaneNormalZ),
+                        SysVec3.UnitY);
+            }
         }
 
         Invalidate();
@@ -1016,11 +1092,11 @@ public sealed class ParticlePreviewControl : GLControl
                 ConsiderSegment(PreviewPickKind.Collider, collider.Index, ToGl(collider.Start), ToGl(collider.End), location, mvp, ref bestDistance, ref bestKind, ref bestIndex);
         }
 
-        var addToSelection = (ModifierKeys & Keys.Shift) == Keys.Shift || (ModifierKeys & Keys.Control) == Keys.Control;
+        var selectionOperation = GetParticleSelectionOperation(rectangleSelection: false);
         if (bestKind.HasValue)
-            ItemPicked?.Invoke(this, new PreviewPickEventArgs(bestKind.Value, bestIndex, addToSelection));
+            ItemPicked?.Invoke(this, new PreviewPickEventArgs(bestKind.Value, bestIndex, selectionOperation));
         else
-            ItemPicked?.Invoke(this, new PreviewPickEventArgs(PickKind, -1, addToSelection));
+            ItemPicked?.Invoke(this, new PreviewPickEventArgs(PickKind, -1, selectionOperation));
     }
 
     private bool TryPickParticleAt(Point location, out int particleIndex)
@@ -1051,7 +1127,7 @@ public sealed class ParticlePreviewControl : GLControl
     {
         if (_data == null || rectangle.Width <= 2 || rectangle.Height <= 2)
         {
-            ParticlesSelected?.Invoke(this, new ParticleSelectionEventArgs(Array.Empty<int>(), (ModifierKeys & Keys.Shift) == Keys.Shift || (ModifierKeys & Keys.Control) == Keys.Control));
+            ParticlesSelected?.Invoke(this, new ParticleSelectionEventArgs(Array.Empty<int>(), GetParticleSelectionOperation(rectangleSelection: true)));
             return;
         }
 
@@ -1063,7 +1139,16 @@ public sealed class ParticlePreviewControl : GLControl
                 selected.Add(particle.Index);
         }
 
-        ParticlesSelected?.Invoke(this, new ParticleSelectionEventArgs(selected, (ModifierKeys & Keys.Shift) == Keys.Shift || (ModifierKeys & Keys.Control) == Keys.Control));
+        ParticlesSelected?.Invoke(this, new ParticleSelectionEventArgs(selected, GetParticleSelectionOperation(rectangleSelection: true)));
+    }
+
+    private ParticleSelectionOperation GetParticleSelectionOperation(bool rectangleSelection)
+    {
+        if ((ModifierKeys & Keys.Control) == Keys.Control)
+            return ParticleSelectionOperation.Remove;
+        if ((ModifierKeys & Keys.Shift) == Keys.Shift)
+            return rectangleSelection ? ParticleSelectionOperation.Add : ParticleSelectionOperation.Toggle;
+        return ParticleSelectionOperation.Replace;
     }
 
     private void ConsiderPoint(
@@ -1225,8 +1310,12 @@ public sealed class ParticlePreviewControl : GLControl
     {
         var gridVertices = new List<Vector3>();
         var gridY = _viewRoot.Y;
-        var step = _gridStep;
-        var half = Math.Clamp((int)MathF.Ceiling(_gridExtent / step), 8, 16);
+        // Limit line count for performance, but expand the spacing to preserve
+        // the requested world extent. Previously the line-count cap silently
+        // shrank the grid on large skeletons.
+        var requestedHalf = Math.Max(1, (int)MathF.Ceiling(_gridExtent / _gridStep));
+        var half = Math.Clamp(requestedHalf, 16, 32);
+        var step = Math.Max(_gridStep, _gridExtent / half);
         var centerX = _viewRoot.X;
         var centerZ = _viewRoot.Z;
 
@@ -1272,22 +1361,36 @@ public sealed class ParticlePreviewControl : GLControl
 
         var lines = new List<Vector3>();
         var selectedLines = new List<Vector3>();
-        var (_, cameraRight, cameraUp) = GetCameraBasis();
+        var bonesByIndex = _data.Bones.ToDictionary(bone => bone.Index);
+        var jointSize = GetBoneJointSize();
         foreach (var bone in _data.Bones)
         {
             var point = ToGl(bone.Position);
             var jointLines = bone.Index == SelectedBoneIndex ? selectedLines : lines;
-            AddJointDiamond(jointLines, point, cameraRight, cameraUp);
+            AddToolboxJoint(
+                jointLines,
+                point,
+                ToGl(bone.AxisX),
+                ToGl(bone.AxisY),
+                ToGl(bone.AxisZ),
+                jointSize);
+        }
 
-            if (bone.ParentIndex < 0)
+        foreach (var bone in _data.Bones)
+        {
+            if (bone.ParentIndex < 0 || !bonesByIndex.TryGetValue(bone.ParentIndex, out var parent))
                 continue;
 
-            var parent = _data.Bones.FirstOrDefault(b => b.Index == bone.ParentIndex);
-            if (parent == null)
-                continue;
-
-            var handleLines = bone.Index == SelectedBoneIndex || parent.Index == SelectedBoneIndex ? selectedLines : lines;
-            AddBoneHandle(handleLines, ToGl(parent.Position), point);
+            var linkLines = bone.Index == SelectedBoneIndex || parent.Index == SelectedBoneIndex
+                ? selectedLines
+                : lines;
+            AddToolboxBoneLink(
+                linkLines,
+                ToGl(parent.Position),
+                ToGl(parent.AxisX),
+                ToGl(parent.AxisZ),
+                ToGl(bone.Position),
+                jointSize);
         }
 
         if (lines.Count > 0)
@@ -1296,26 +1399,52 @@ public sealed class ParticlePreviewControl : GLControl
             DrawSingleColor(PrimitiveType.Lines, selectedLines, new Vector4(1.0f, 1.0f, 1.0f, 1.0f), mvp, 3.0f, 1.0f, false);
     }
 
-    private static void AddBoneHandle(List<Vector3> lines, Vector3 parent, Vector3 child)
-    {
-        var delta = child - parent;
-        if (delta.LengthSquared < 0.000001f)
-            return;
+    private float GetBoneJointSize() => Math.Clamp(_sceneRadius * 0.008f, 0.0025f, 0.025f);
 
-        AddLine(lines, parent, child);
+    private static void AddToolboxBoneLink(
+        List<Vector3> lines,
+        Vector3 parent,
+        Vector3 parentAxisX,
+        Vector3 parentAxisZ,
+        Vector3 child,
+        float size)
+    {
+        var ring = BuildJointRing(parent, parentAxisX, parentAxisZ, size);
+        foreach (var tip in ring)
+            AddLine(lines, tip, child);
     }
 
-    private void AddJointDiamond(List<Vector3> lines, Vector3 point, Vector3 cameraRight, Vector3 cameraUp)
+    private static void AddToolboxJoint(
+        List<Vector3> lines,
+        Vector3 point,
+        Vector3 axisX,
+        Vector3 axisY,
+        Vector3 axisZ,
+        float size)
     {
-        var size = Math.Max(0.004f, _sceneRadius * 0.006f);
-        var left = point - cameraRight * size;
-        var right = point + cameraRight * size;
-        var top = point + cameraUp * size;
-        var bottom = point - cameraUp * size;
-        AddLine(lines, left, top);
-        AddLine(lines, top, right);
-        AddLine(lines, right, bottom);
-        AddLine(lines, bottom, left);
+        var ring = BuildJointRing(point, axisX, axisZ, size);
+        for (var i = 0; i < ring.Length; i++)
+            AddLine(lines, ring[i], ring[(i + 1) % ring.Length]);
+
+        var top = point + NormalizeOrFallback(axisY, Vector3.UnitY) * size;
+        var bottom = point - NormalizeOrFallback(axisY, Vector3.UnitY) * size;
+        foreach (var tip in ring)
+        {
+            AddLine(lines, tip, top);
+            AddLine(lines, tip, bottom);
+        }
+    }
+
+    private static Vector3[] BuildJointRing(Vector3 center, Vector3 axisX, Vector3 axisZ, float size)
+    {
+        var x = NormalizeOrFallback(axisX, Vector3.UnitX) * size;
+        var z = NormalizeOrFallback(axisZ, Vector3.UnitZ) * size;
+        return new[] { center - z, center + x, center + z, center - x };
+    }
+
+    private static Vector3 NormalizeOrFallback(Vector3 vector, Vector3 fallback)
+    {
+        return vector.LengthSquared < 0.000001f ? fallback : Vector3.Normalize(vector);
     }
 
     private void DrawTriangles(Matrix4 mvp)

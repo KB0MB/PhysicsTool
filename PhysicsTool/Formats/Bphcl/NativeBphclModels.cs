@@ -313,7 +313,18 @@ public sealed record NativeBphclConstraintLink(
     int Index,
     int? ParticleA,
     int? ParticleB,
-    IReadOnlyDictionary<string, double> Values);
+    IReadOnlyDictionary<string, double> Values,
+    uint DataOffset,
+    IReadOnlyDictionary<string, uint> EditableValueOffsets);
+
+// This deliberately represents numeric edits within an existing reflected
+// record. It is not an array editor: link insertion/removal needs ITEM/PTCH
+// relocation work and is kept out of the native in-place writer.
+public sealed record NativeBphclConstraintEdit(
+    int ConstraintSetIndex,
+    int RecordIndex,
+    bool IsLocalRecord,
+    IReadOnlyDictionary<string, float> Values);
 
 public sealed record NativeBphclParticle(
     int Index,
@@ -344,7 +355,19 @@ public sealed record NativeBphclColliderShape(
     Vector4 End,
     float Radius,
     float EndRadius,
-    Vector4 PlaneEquation);
+    Vector4 PlaneEquation,
+    uint DataOffset);
+
+/// <summary>Only existing transform and shape values are writable; names and
+/// collider ownership need relocation-aware structural editing.</summary>
+public sealed record NativeBphclColliderEdit(
+    Vector4 AxisX,
+    Vector4 AxisY,
+    Vector4 AxisZ,
+    Vector4 Translation,
+    Vector4? Start = null,
+    Vector4? End = null,
+    float? Radius = null);
 
 public sealed record NativeBphclCollider(
     int Index,
@@ -374,4 +397,8 @@ public sealed record NativeBphclBone(
     int ParentIndex,
     bool LockTranslation,
     Vector4 Translation,
-    Vector4 Rotation);
+    Vector4 Rotation,
+    uint PoseDataOffset);
+
+/// <summary>Only an existing bone reference pose is writable in place.</summary>
+public sealed record NativeBphclBoneEdit(Vector4? Translation = null, Vector4? Rotation = null);

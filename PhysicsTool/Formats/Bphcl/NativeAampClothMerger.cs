@@ -10,6 +10,9 @@ internal static class NativeAampClothMerger
     private const uint ClothMeshListHash = 1_571_872_146;
     private const uint CollidableListHash = 107_719_806;
     private const uint NameParameterHash = 4_262_580_536;
+    // The per-cloth AAMP record identifies the skeleton bone that anchors
+    // the simulation mesh. It is separate from the record's own Name field.
+    private const uint BaseBoneParameterHash = 1_259_279_791;
     private const byte StringReference = 20;
 
     public static byte[] GetOriginalArchive(NativeBphclDocument document) =>
@@ -41,6 +44,68 @@ internal static class NativeAampClothMerger
             "collidable_",
             colliderNames.Distinct(StringComparer.Ordinal),
             required: false);
+    }
+
+    // Collider names live in both TAG0 and AAMP. A normal rename updates the
+    // existing AAMP entry; a mirrored duplicate must instead add a second
+    // entry, because the source collider still owns the original name.
+    public static byte[] SynchronizeColliderNameEdits(
+        NativeBphclDocument document,
+        IReadOnlyDictionary<int, string> replacements)
+    {
+        if (replacements.Count == 0)
+            return GetOriginalArchive(document);
+
+        var archive = AampArchive.Read(document.Bytes, document.Header.ParameterOffset, document.Header.ParameterSize);
+        var colliderList = archive.FindList(CollidableListHash);
+        var original = colliderList.Objects.ToArray();
+        var objects = original.ToList();
+
+        foreach (var collider in document.Colliders)
+        {
+            if (!replacements.TryGetValue(collider.Index, out var newName) ||
+                string.Equals(collider.Name, newName, StringComparison.Ordinal))
+                continue;
+
+            var oldName = collider.Name;
+            var oldNameRemainsLive = document.Colliders.Any(other =>
+                other.Index != collider.Index &&
+                !replacements.ContainsKey(other.Index) &&
+                string.Equals(other.Name, oldName, StringComparison.Ordinal));
+            var existingIndex = objects.FindIndex(item => string.Equals(item.Name, newName, StringComparison.Ordinal));
+            if (existingIndex >= 0)
+                continue;
+
+            var donorIndex = objects.FindIndex(item => string.Equals(item.Name, oldName, StringComparison.Ordinal));
+            if (donorIndex < 0)
+            {
+                // Some game files omit an AAMP entry for a collider. Keep
+                // that omission rather than inventing incomplete metadata.
+                continue;
+            }
+
+            var renamed = RenameAampObject(objects[donorIndex], newName);
+            if (oldNameRemainsLive)
+            {
+                renamed = renamed with { NameHash = AllocateObjectHash(objects, "collidable_") };
+                objects.Add(renamed);
+            }
+            else
+            {
+                objects[donorIndex] = renamed;
+            }
+        }
+
+        if (objects.SequenceEqual(original))
+            return archive.Bytes;
+
+        return RebuildList(
+            archive,
+            colliderList,
+            objects,
+            objectCountDelta: objects.Count - original.Length,
+            parameterCountDelta: objects.Sum(item => item.Parameters.Count) - original.Sum(item => item.Parameters.Count),
+            stringBytesDelta: CountStringBytes(objects) - CountStringBytes(original));
     }
 
     // Keep the AAMP collidable_list aligned with the live global collider
@@ -91,22 +156,146 @@ internal static class NativeAampClothMerger
             .Any(entry => entry.itemIndex != index && string.Equals(entry.item.Name, newName, StringComparison.Ordinal)))
             throw new InvalidDataException($"BPHCL AAMP already has a cloth_mesh_list entry named '{newName}'.");
 
-        var current = clothList.Objects[index];
+        var objects = clothList.Objects.ToArray();
+        objects[index] = RenameAampObject(objects[index], newName);
+        return RebuildList(archive, clothList, objects, 0, 0, 0);
+    }
+
+    // A BPHCL cloth's AAMP entry keeps a base-bone name in addition to its
+    // mesh name. The native skeleton editor can rename that bone later (for
+    // example, duplicating an L shoulder to an R shoulder), so synchronize
+    // only this one matching entry rather than rewriting unrelated AAMP data.
+    public static byte[] SynchronizeClothBaseBoneEdits(
+        NativeBphclDocument document,
+        int clothIndex,
+        IReadOnlyDictionary<int, string> replacements)
+    {
+        var cloth = document.Cloths.ElementAtOrDefault(clothIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
+        var skeleton = document.Skeletons.ElementAtOrDefault(clothIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
+        var archive = AampArchive.Read(document.Bytes, document.Header.ParameterOffset, document.Header.ParameterSize);
+        var clothList = archive.FindList(ClothMeshListHash);
+        var objects = clothList.Objects.ToArray();
+        var objectIndex = Array.FindIndex(objects, item => string.Equals(item.Name, cloth.Name, StringComparison.Ordinal));
+        if (objectIndex < 0)
+            return archive.Bytes;
+
+        var current = objects[objectIndex];
+        var baseBone = current.Parameters
+            .FirstOrDefault(parameter => parameter.NameHash == BaseBoneParameterHash)
+            ?.ReadString();
+        if (string.IsNullOrWhiteSpace(baseBone))
+            return archive.Bytes;
+
+        var bone = skeleton.Bones.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, baseBone, StringComparison.Ordinal) ||
+            string.Equals(StripLinkPrefix(candidate.Name), StripLinkPrefix(baseBone), StringComparison.Ordinal));
+        var replacement = bone != null && replacements.TryGetValue(bone.Index, out var editedName)
+            ? editedName
+            : FindSuffixedBaseBoneRepair(skeleton, baseBone);
+        if (string.IsNullOrWhiteSpace(replacement))
+            return archive.Bytes;
+
+        var updatedBaseBone = baseBone.StartsWith("Link:", StringComparison.Ordinal)
+            ? replacement
+            : StripLinkPrefix(replacement);
+        if (string.Equals(baseBone, updatedBaseBone, StringComparison.Ordinal))
+            return archive.Bytes;
+
+        objects[objectIndex] = ReplaceStringParameter(current, BaseBoneParameterHash, updatedBaseBone, required: true);
+        return RebuildList(archive, clothList, objects, 0, 0, 0);
+    }
+
+    // Old PhysicsTool builds could write a duplicate whose AAMP base bone
+    // retained the source's name. Recover only the unambiguous, common case
+    // where the paired skeleton now contains exactly one suffixed counterpart
+    // such as ShoulderArmor_1_Armor_R. This keeps ordinary saves lossless.
+    public static byte[] RepairSuffixedClothBaseBones(NativeBphclDocument document)
+    {
+        var archive = AampArchive.Read(document.Bytes, document.Header.ParameterOffset, document.Header.ParameterSize);
+        var clothList = archive.FindList(ClothMeshListHash);
+        var objects = clothList.Objects.ToArray();
+        var changed = false;
+
+        for (var clothIndex = 0; clothIndex < document.Cloths.Count && clothIndex < document.Skeletons.Count; clothIndex++)
+        {
+            var cloth = document.Cloths[clothIndex];
+            var objectIndex = Array.FindIndex(objects, item => string.Equals(item.Name, cloth.Name, StringComparison.Ordinal));
+            if (objectIndex < 0)
+                continue;
+
+            var current = objects[objectIndex];
+            var baseBone = current.Parameters
+                .FirstOrDefault(parameter => parameter.NameHash == BaseBoneParameterHash)
+                ?.ReadString();
+            if (string.IsNullOrWhiteSpace(baseBone))
+                continue;
+
+            var replacement = FindSuffixedBaseBoneRepair(document.Skeletons[clothIndex], baseBone);
+            if (string.IsNullOrWhiteSpace(replacement))
+                continue;
+
+            var updatedBaseBone = baseBone.StartsWith("Link:", StringComparison.Ordinal)
+                ? replacement
+                : StripLinkPrefix(replacement);
+            if (string.Equals(baseBone, updatedBaseBone, StringComparison.Ordinal))
+                continue;
+
+            objects[objectIndex] = ReplaceStringParameter(current, BaseBoneParameterHash, updatedBaseBone, required: true);
+            changed = true;
+        }
+
+        return changed ? RebuildList(archive, clothList, objects, 0, 0, 0) : archive.Bytes;
+    }
+
+    private static AampObject RenameAampObject(AampObject current, string newName)
+    {
+        return ReplaceStringParameter(current, NameParameterHash, newName, required: true);
+    }
+
+    private static AampObject ReplaceStringParameter(
+        AampObject current,
+        uint parameterHash,
+        string value,
+        bool required)
+    {
         var nameFound = false;
         var parameters = current.Parameters.Select(parameter =>
         {
-            if (parameter.NameHash != NameParameterHash)
+            if (parameter.NameHash != parameterHash)
                 return parameter;
             nameFound = true;
-            return parameter with { Value = parameter.CreateStringValue(newName) };
+            return parameter with { Value = parameter.CreateStringValue(value) };
         }).ToArray();
-        if (!nameFound)
-            throw new InvalidDataException($"BPHCL AAMP cloth_mesh_list entry '{oldName}' has no writable Name parameter.");
-
-        var objects = clothList.Objects.ToArray();
-        objects[index] = current with { Name = newName, Parameters = parameters };
-        return RebuildList(archive, clothList, objects, 0, 0, 0);
+        if (!nameFound && required)
+            throw new InvalidDataException($"BPHCL AAMP entry '{current.Name}' has no writable parameter {parameterHash}.");
+        return current with
+        {
+            Name = parameterHash == NameParameterHash ? value : current.Name,
+            Parameters = parameters
+        };
     }
+
+    private static string StripLinkPrefix(string value) =>
+        value.StartsWith("Link:", StringComparison.Ordinal) ? value[5..] : value;
+
+    private static string? FindSuffixedBaseBoneRepair(NativeBphclSkeleton skeleton, string baseBone)
+    {
+        var normalizedBaseBone = StripLinkPrefix(baseBone);
+        var candidates = skeleton.Bones
+            .Where(candidate => StripLinkPrefix(candidate.Name)
+                .StartsWith(normalizedBaseBone + "_", StringComparison.Ordinal))
+            .Select(candidate => candidate.Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return candidates.Length == 1 ? candidates[0] : null;
+    }
+
+    private static int CountStringBytes(IEnumerable<AampObject> objects) => objects
+        .SelectMany(item => item.Parameters)
+        .Where(parameter => parameter.Type == StringReference)
+        .Sum(parameter => parameter.Value.Length);
 
     private static byte[] AppendEntries(
         byte[] targetAamp,
