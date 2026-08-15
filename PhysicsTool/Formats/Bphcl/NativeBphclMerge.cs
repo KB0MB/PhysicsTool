@@ -425,7 +425,10 @@ internal static class NativeBphclMerge
         string.Equals(source.Name, target.Name, StringComparison.Ordinal) &&
         string.Equals(source.Shape.TypeName, target.Shape.TypeName, StringComparison.Ordinal) &&
         source.Shape.Kind == target.Shape.Kind &&
+        source.PinchDetectionEnabled == target.PinchDetectionEnabled &&
+        source.PinchDetectionPriority == target.PinchDetectionPriority &&
         source.Enabled == target.Enabled &&
+        ApproximatelyEqual(source.PinchDetectionRadius, target.PinchDetectionRadius) &&
         ApproximatelyEqual(source.Translation.X, target.Translation.X) &&
         ApproximatelyEqual(source.Translation.Y, target.Translation.Y) &&
         ApproximatelyEqual(source.Translation.Z, target.Translation.Z);

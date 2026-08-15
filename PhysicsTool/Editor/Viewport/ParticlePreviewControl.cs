@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -270,6 +270,21 @@ public sealed class ParticlePreviewControl : GLControl
         Invalidate();
     }
 
+    // HKRG stores a complete visual skeleton as well as the smaller ragdoll
+    // skeleton. Only one layer should answer bone picks at a time because the
+    // two skeletons both use compact 0-based editor indices.
+    public void SetReferenceBonesSelectable(bool selectReferenceBones)
+    {
+        if (_data == null || !_data.Bones.Any(bone => bone.IsReference))
+            return;
+
+        foreach (var bone in _data.Bones)
+            bone.IsSelectable = bone.IsReference == selectReferenceBones;
+
+        SelectedBoneIndex = -1;
+        Invalidate();
+    }
+
     public void UpdateParticlePreviewRows(IEnumerable<ParticleEditRow> rows)
     {
         if (_data == null)
@@ -345,6 +360,40 @@ public sealed class ParticlePreviewControl : GLControl
         Invalidate();
     }
 
+    public void UpdateSimulatedRagdollPose(
+        IReadOnlyDictionary<int, SimulatedBonePreviewPose> bonePoses,
+        IReadOnlyDictionary<int, ColliderPreviewShape> colliderPoses)
+    {
+        if (_data == null)
+            return;
+
+        foreach (var bone in _data.Bones)
+        {
+            if (bone.IsReference || !bonePoses.TryGetValue(GetBoneEditorIndex(bone), out var pose))
+                continue;
+
+            bone.Position = pose.Position;
+            bone.AxisX = pose.AxisX;
+            bone.AxisY = pose.AxisY;
+            bone.AxisZ = pose.AxisZ;
+            bone.StretchScale = pose.StretchScale;
+        }
+
+        foreach (var collider in _data.Colliders)
+        {
+            if (!colliderPoses.TryGetValue(collider.Index, out var pose))
+                continue;
+
+            collider.Start = pose.Start;
+            collider.End = pose.End;
+            collider.Radius = pose.Radius;
+            collider.EndRadius = pose.EndRadius;
+            collider.PlaneNormal = pose.PlaneNormal;
+        }
+
+        Invalidate();
+    }
+
     // Bone edits happen repeatedly while a modal G/R/S transform is active.
     // Rebuilding the entire HKCL/BPHCL preview here made those transforms crawl,
     // so update the viewport's already-loaded skeleton instead.
@@ -357,10 +406,11 @@ public sealed class ParticlePreviewControl : GLControl
         var worldMatrices = new Dictionary<int, SysMat4>();
         foreach (var bone in _data.Bones)
         {
-            if (!rowsByIndex.ContainsKey(bone.Index))
+            var editorIndex = GetBoneEditorIndex(bone);
+            if (!bone.IsSelectable || !rowsByIndex.ContainsKey(editorIndex))
                 continue;
 
-            var world = GetBoneWorldMatrix(bone.Index, rowsByIndex, worldMatrices, new HashSet<int>());
+            var world = GetBoneWorldMatrix(editorIndex, rowsByIndex, worldMatrices, new HashSet<int>());
             bone.Position = new SysVec3(world.M41, world.M42, world.M43);
             bone.AxisX = NormalizeOrDefault(SysVec3.TransformNormal(SysVec3.UnitX, world), SysVec3.UnitX);
             bone.AxisY = NormalizeOrDefault(SysVec3.TransformNormal(SysVec3.UnitY, world), SysVec3.UnitY);
@@ -989,6 +1039,7 @@ public sealed class ParticlePreviewControl : GLControl
             var mvp = GetMvp();
             DrawGridAndAxes(mvp);
             DrawColliders(mvp);
+            DrawRagdollConstraints(mvp);
 
             if (_data != null && (_data.Particles.Count > 0 || _data.Bones.Count > 0))
             {
@@ -1083,8 +1134,8 @@ public sealed class ParticlePreviewControl : GLControl
         }
         else if (PickKind == PreviewPickKind.Bone)
         {
-            foreach (var bone in _data.Bones)
-                ConsiderPoint(PreviewPickKind.Bone, bone.Index, ToGl(bone.Position), location, mvp, ref bestDistance, ref bestKind, ref bestIndex);
+            foreach (var bone in _data.Bones.Where(bone => bone.IsSelectable))
+                ConsiderPoint(PreviewPickKind.Bone, GetBoneEditorIndex(bone), ToGl(bone.Position), location, mvp, ref bestDistance, ref bestKind, ref bestIndex);
         }
         else if (PickKind == PreviewPickKind.Collider)
         {
@@ -1359,6 +1410,7 @@ public sealed class ParticlePreviewControl : GLControl
         if (_data == null || _data.Bones.Count == 0)
             return;
 
+        var referenceLines = new List<Vector3>();
         var lines = new List<Vector3>();
         var selectedLines = new List<Vector3>();
         var bonesByIndex = _data.Bones.ToDictionary(bone => bone.Index);
@@ -1366,7 +1418,10 @@ public sealed class ParticlePreviewControl : GLControl
         foreach (var bone in _data.Bones)
         {
             var point = ToGl(bone.Position);
-            var jointLines = bone.Index == SelectedBoneIndex ? selectedLines : lines;
+            var isSelected = bone.IsSelectable && GetBoneEditorIndex(bone) == SelectedBoneIndex;
+            var jointLines = isSelected
+                ? selectedLines
+                : bone.IsReference ? referenceLines : lines;
             AddToolboxJoint(
                 jointLines,
                 point,
@@ -1381,9 +1436,11 @@ public sealed class ParticlePreviewControl : GLControl
             if (bone.ParentIndex < 0 || !bonesByIndex.TryGetValue(bone.ParentIndex, out var parent))
                 continue;
 
-            var linkLines = bone.Index == SelectedBoneIndex || parent.Index == SelectedBoneIndex
+            var isSelected = bone.IsSelectable && GetBoneEditorIndex(bone) == SelectedBoneIndex ||
+                             parent.IsSelectable && GetBoneEditorIndex(parent) == SelectedBoneIndex;
+            var linkLines = isSelected
                 ? selectedLines
-                : lines;
+                : bone.IsReference || parent.IsReference ? referenceLines : lines;
             AddToolboxBoneLink(
                 linkLines,
                 ToGl(parent.Position),
@@ -1393,6 +1450,8 @@ public sealed class ParticlePreviewControl : GLControl
                 jointSize);
         }
 
+        if (referenceLines.Count > 0)
+            DrawSingleColor(PrimitiveType.Lines, referenceLines, new Vector4(0.95f, 0.30f, 0.07f, 1.0f), mvp, 1.6f, 1.0f, false);
         if (lines.Count > 0)
             DrawSingleColor(PrimitiveType.Lines, lines, new Vector4(1.0f, 0.92f, 0.0f, 1.0f), mvp, 2.0f, 1.0f, false);
         if (selectedLines.Count > 0)
@@ -1599,6 +1658,34 @@ public sealed class ParticlePreviewControl : GLControl
         }
     }
 
+    private void DrawRagdollConstraints(Matrix4 mvp)
+    {
+        if (_data == null || _data.RagdollConstraints.Count == 0)
+            return;
+
+        var colliderCenters = _data.Colliders.ToDictionary(collider => collider.Index, GetColliderCenter);
+        var lines = new List<Vector3>();
+        foreach (var constraint in _data.RagdollConstraints)
+        {
+            if (!colliderCenters.TryGetValue(constraint.BodyA, out var a) ||
+                !colliderCenters.TryGetValue(constraint.BodyB, out var b))
+            {
+                continue;
+            }
+
+            AddLine(lines, ToGl(a), ToGl(b));
+        }
+
+        if (lines.Count > 0)
+            DrawSingleColor(PrimitiveType.Lines, lines, new Vector4(1.0f, 0.42f, 0.08f, 1.0f), mvp, 2.6f, 1.0f, false);
+    }
+
+    private static SysVec3 GetColliderCenter(ColliderPreviewShape collider)
+    {
+        return collider.Kind == ColliderPreviewKind.Plane
+            ? collider.Start
+            : (collider.Start + collider.End) * 0.5f;
+    }
     private void DrawLinks(Matrix4 mvp)
     {
         if (_data == null)
@@ -1835,7 +1922,7 @@ public sealed class ParticlePreviewControl : GLControl
         return PickKind switch
         {
             PreviewPickKind.Bone => _data.Bones
-                .Where(bone => bone.Index == SelectedBoneIndex)
+                .Where(bone => bone.IsSelectable && GetBoneEditorIndex(bone) == SelectedBoneIndex)
                 .Select(bone => ToGl(bone.Position))
                 .ToList(),
             PreviewPickKind.Collider => _data.Colliders
@@ -1872,7 +1959,8 @@ public sealed class ParticlePreviewControl : GLControl
             // Bone translations are stored in their parent's coordinate space.
             // A repeated axis key should therefore use the parent frame, not
             // the selected bone's rotated drawing axis.
-            PreviewPickKind.Bone => _data.Bones.FirstOrDefault(bone => bone.Index == SelectedBoneIndex)?.ParentIndex ?? -1,
+            PreviewPickKind.Bone => _data.Bones.FirstOrDefault(bone =>
+                bone.IsSelectable && GetBoneEditorIndex(bone) == SelectedBoneIndex)?.ParentIndex ?? -1,
             PreviewPickKind.Collider => _data.Colliders.FirstOrDefault(collider => collider.Index == SelectedColliderIndex)?.BoneIndex ?? -1,
             _ => -1
         };
@@ -1900,6 +1988,9 @@ public sealed class ParticlePreviewControl : GLControl
         return new Vector3(-vector.X, vector.Y, vector.Z);
     }
 
+    private static int GetBoneEditorIndex(BonePreviewPoint bone) =>
+        bone.EditorIndex >= 0 ? bone.EditorIndex : bone.Index;
+
     private static float[] ToFloatArray(IReadOnlyList<Vector3> vertices)
     {
         var result = new float[vertices.Count * 3];
@@ -1922,3 +2013,6 @@ public sealed class ParticlePreviewControl : GLControl
             graphics.DrawString(details, Font, brush, 12, 34);
     }
 }
+
+
+

@@ -29,6 +29,8 @@ public sealed partial class NativeBphclDocument
     public IReadOnlyList<NativeBphclSkeleton> Skeletons { get; private set; } = Array.Empty<NativeBphclSkeleton>();
     public IReadOnlyList<NativeBphclCollider> Colliders { get; private set; } = Array.Empty<NativeBphclCollider>();
     internal NativeAampMetadata Aamp { get; private set; } = NativeAampMetadata.Read(Array.Empty<byte>(), 0, 0);
+    public bool IsAampReadable => Aamp.IsReadable;
+    public IReadOnlyList<string> AampClothEntryNames => Aamp.ClothEntries.Select(entry => entry.Name).ToArray();
     public int CollidableCount { get; private set; }
     public IEnumerable<uint> RelocationOffsets => InternalPatches.SelectMany(x => x.Offsets);
 

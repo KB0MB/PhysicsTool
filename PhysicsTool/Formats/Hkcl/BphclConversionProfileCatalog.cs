@@ -27,6 +27,7 @@ internal static class BphclConversionProfileCatalog
         new("Armor_008_Head", "Hair_F_008_Havok", 3f),
         new("Armor_008_Head", "Hair_H_008_Havok", 3f),
         new("Armor_009_Head", "Hair_2_009_Havok", 6.8399291f),
+        new("Armor_009_Head", "Hair_1_009_Havok", 8.56784344f),
         new("Armor_009_Head", "Hair_3_009_Havok", 12f),
         new("Armor_009_Head", "Hair_B_009_Havok", 4.02698898f),
         new("Armor_009_Head", "Hair_D_009_Havok", 3f),
@@ -63,11 +64,31 @@ internal static class BphclConversionProfileCatalog
         new("Armor_020_Upper", "Belt_A_Havok", 5.00000048f),
         new("Armor_020_Upper", "Tunic_001_Havok", 30.5641632f),
         new("Armor_030_Head", "Hair_030_A_Havok", 12.000001f),
+        new("Armor_030_Head", "Hair_030_B_Havok", 14f),
+        new("Armor_046_Head", "Beard_046_Havok", 10.000001f),
+        new("Armor_046_Head", "Caudal_Fin_046_Havok", 15f),
         new("Armor_048_Head", "Dread_Havok", 2f),
         new("Armor_048_Head", "Hair_2_Havok", 30.0000019f),
         new("Armor_048_Head", "Pony_Havok", 2.50000024f),
         new("Armor_048_Upper", "AccSpine_Havok", 3f),
         new("Armor_048_Upper", "Skirt_Havok", 2f),
+        // Measured from the Armor_210 paired vanilla HKCL. Its soft constraints use the same scale as mass.
+        new("Armor_210_RaulSkin_Upper", "Outer_210_Havok", 20.9737225f, 20.9737225f, "Measured paired match"),
+        // The Dinraal outer skirt has the same 54-particle topology and soft-link coefficients as Outer_210.
+        // It uses that measured solver conversion rather than the generic tunic fallback.
+        new("Armor_1061_RaulSkin_Upper", "SimulationMesh_Outer_1061", 20.9737225f, 20.9737225f, "Measured Outer_210 coefficient match"),
+        new("Armor_1036_RaulSkin_Upper", "SimulationMesh_Crotch", 2f),
+        new("Armor_1036_RaulSkin_Upper", "SimulationMesh_Necklace", 4.39067554f),
+        new("Armor_1036_RaulSkin_Upper", "SimulationMesh_Necklace_2", 5.86103058f),
+        new("Armor_1036_RaulSkin_Upper", "SimulationMesh_Rope", 0.665974677f),
+        new("Armor_1036_RaulSkin_Upper", "SimulationMesh_Skirt", 2f),
+        new("Armor_1036_RaulSkin_Upper", "SimulationMesh_Tail", 5.86103058f),
+        new("Armor_1043_RaulSkin_Upper", "SimulationMesh_BackCloth", 5f),
+        new("Armor_1043_RaulSkin_Upper", "SimulationMesh_ShoulderCloth", 5f),
+        new("Armor_1043_RaulSkin_Upper", "SimulationMesh_Skirt_1", 2f),
+        new("Armor_1043_RaulSkin_Upper", "SimulationMesh_Sleeve", 8.3393755f),
+        new("Armor_1043_RaulSkin_Upper", "SimulationMesh_Sleeve_D", 5f),
+        new("Armor_1086_Head", "HairLong_1086_SimulationMesh", 30.5641632f),
         new("Armor_179_Head", "Hair_1_179_Havok", 6.42588186f),
         new("Armor_179_Head", "Hair_2_179_Havok", 30f),
         new("Armor_179_Head", "Hair_3_179_Havok", 12f),
@@ -75,6 +96,8 @@ internal static class BphclConversionProfileCatalog
         new("Armor_179_Head", "Hair_D_179_Havok", 3f),
         new("Armor_179_Head", "Hat_179_Havok", 16f),
         new("Armor_179_Upper", "Sode_179_Havok", 29.9999981f),
+        new("Armor_179_Upper", "Outer_179_Havok", 3.21428547f),
+        new("Armor_180_RaulSkin_Upper", "Mant_Havok", 33.5024753f),
         new("Armor_182_Head", "Hair_2_Havok", 30.0000019f),
         new("Armor_182_Head", "Hair_Back_Havok", 7.50394678f)
     ];
@@ -89,7 +112,7 @@ internal static class BphclConversionProfileCatalog
         if (exact != null)
         {
             scale = exact.Scale;
-            basis = $"Verified match: {exact.SourceFile}";
+            basis = $"{exact.Basis ?? "Verified match"}: {exact.SourceFile}";
             return true;
         }
 
@@ -105,14 +128,304 @@ internal static class BphclConversionProfileCatalog
             return true;
         }
 
+        // Some TotK exports carry a generic SimulationMesh_ prefix and an
+        // actor suffix, so an exact name cannot identify an otherwise clear
+        // cloth family. Only use a family when every known match agrees on
+        // its scale; generic families such as Hair intentionally fall back
+        // to the structural matcher instead.
+        var family = GetVerifiedFamily(normalizedName);
+        if (family.Length > 0)
+        {
+            var familyScales = Profiles
+                .Where(profile => profile.ClothName.Contains(family, StringComparison.OrdinalIgnoreCase))
+                .Select(profile => profile.Scale)
+                .DistinctBy(value => MathF.Round(value, 3))
+                .ToArray();
+            if (familyScales.Length == 1)
+            {
+                scale = familyScales[0];
+                // A family can offer a useful particle-mass hint, but it is
+                // not proof that link/bend coefficients use the same BotW
+                // conversion. Callers keep those coefficients independent.
+                basis = $"Mass-only cloth family hint: {family}";
+                return true;
+            }
+        }
+
         scale = 1.0f;
         basis = "Topology fallback";
         return false;
+    }
+
+    /// <summary>
+    /// Finds a measured pair for the reverse HKCL-to-BPHCL path. HKCL files
+    /// omit TotK's optional RaulSkin segment, so actor filenames are compared
+    /// after normalizing that segment.
+    /// </summary>
+    /// <summary>
+    /// Returns the native TotK cloth name for verified paired cases where the
+    /// BotW counterpart uses a different authoring name.
+    /// </summary>
+    public static string GetReverseClothName(string? sourcePath, string clothName)
+    {
+        var sourceFile = NormalizeActorFileName(Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty));
+        var normalizedName = Normalize(clothName);
+        if (string.Equals(sourceFile, "Armor_180_Upper", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(normalizedName, "Mant_Havok", StringComparison.OrdinalIgnoreCase))
+        {
+            return "SimulationMesh_Mant";
+        }
+
+        return normalizedName;
+    }
+    public static bool TryGetReverseScales(
+        string? sourcePath,
+        string clothName,
+        out float massScale,
+        out float constraintScale)
+    {
+        var normalizedName = Normalize(clothName);
+        var sourceFile = NormalizeActorFileName(Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty));
+        var exact = Profiles.FirstOrDefault(profile =>
+            string.Equals(NormalizeActorFileName(profile.SourceFile), sourceFile, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(profile.ClothName, normalizedName, StringComparison.OrdinalIgnoreCase));
+
+        if (exact is null)
+        {
+            massScale = 1.0f;
+            constraintScale = 1.0f;
+            return false;
+        }
+
+        massScale = exact.Scale;
+        constraintScale = exact.ConstraintScale ??
+            (UsesLegacyMassConstraintScale(exact.SourceFile, normalizedName) ? exact.Scale : 1.0f);
+        return true;
+    }
+    /// <summary>
+    /// Returns true only for a measured BPHCL/HKCL counterpart from the same
+    /// source file. A similarly named or merely similar-shaped cloth is not
+    /// enough evidence to reinterpret solver coefficients.
+    /// </summary>
+    public static bool HasExactSourceProfile(string? sourcePath, string clothName)
+    {
+        var normalizedName = Normalize(clothName);
+        var sourceFile = Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty);
+        return Profiles.Any(profile =>
+            string.Equals(profile.SourceFile, sourceFile, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(profile.ClothName, normalizedName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// TotK normally enables terrain collision for every dynamic particle.
+    /// These are the only paired vanilla exceptions observed so far.
+    /// </summary>
+    public static bool ShouldEnableReverseLandscapeCollision(string? sourcePath, string clothName)
+    {
+        var sourceFile = NormalizeActorFileName(Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty));
+        var normalizedName = Normalize(clothName);
+        return !((string.Equals(sourceFile, "Armor_009_Head", StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(normalizedName, "Hair_2_009_Havok", StringComparison.OrdinalIgnoreCase)) ||
+                 (string.Equals(sourceFile, "Armor_179_Head", StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(normalizedName, "Hair_2_179_Havok", StringComparison.OrdinalIgnoreCase)) ||
+                 (string.Equals(sourceFile, "Armor_182_Head", StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(normalizedName, "Hair_2_Havok", StringComparison.OrdinalIgnoreCase)));
+    }
+    public static bool ShouldScaleConstraintCoefficients(string? sourcePath, string clothName)
+    {
+        return TryGetConstraintScale(sourcePath, clothName, out var scale) &&
+               MathF.Abs(scale - 1.0f) > 0.000001f;
+    }
+
+    /// <summary>
+    /// Gets the independently measured multiplier for soft link/bend values.
+    /// A mass match alone is not enough evidence to rescale those coefficients.
+    /// </summary>
+    public static bool TryGetConstraintScale(string? sourcePath, string clothName, out float scale)
+    {
+        var normalizedName = Normalize(clothName);
+        var sourceFile = Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty);
+        var exact = Profiles.FirstOrDefault(profile =>
+            string.Equals(profile.SourceFile, sourceFile, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(profile.ClothName, normalizedName, StringComparison.OrdinalIgnoreCase));
+        if (exact == null)
+        {
+            scale = 1.0f;
+            return false;
+        }
+
+        if (exact.ConstraintScale is { } measuredScale)
+        {
+            scale = measuredScale;
+            return true;
+        }
+
+        // Preserve the previous verified-profile behavior until a profile has
+        // an independently measured constraint value.
+        scale = UsesLegacyMassConstraintScale(sourceFile, normalizedName)
+            ? exact.Scale
+            : 1.0f;
+        return true;
+    }
+
+    private static bool UsesLegacyMassConstraintScale(string sourceFile, string clothName)
+    {
+        if (sourceFile.Contains("RaulSkin_Upper", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (string.Equals(sourceFile, "Armor_1086_Head", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(clothName, "HairLong_1086_SimulationMesh", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
+    }
+
+    // Constraint differences are deliberately narrower than mass profiles.
+    // These rules are repeated in real vanilla BPHCL/HKCL counterparts; an
+    // unrecognized cloth retains the direct source values.
+    public static bool ShouldOmitConstraintSet(string clothName, string className)
+    {
+        if (!string.Equals(className, "hclBendStiffnessConstraintSet", StringComparison.Ordinal))
+            return false;
+
+        var normalized = Normalize(clothName);
+        return normalized.Contains("Muffler", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "Belt_A_Havok", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool ShouldKeepConstraintExecutionTerminator(string clothName)
+    {
+        var normalized = Normalize(clothName);
+        return !normalized.Contains("_1300", StringComparison.OrdinalIgnoreCase);
+    }
+    public static double ApplyConstraintFieldProfile(
+        string? sourcePath,
+        string clothName,
+        string className,
+        string fieldName,
+        double value)
+    {
+        var normalized = Normalize(clothName);
+        if (string.Equals(className, "hclBendLinkConstraintSet", StringComparison.Ordinal) &&
+            string.Equals(fieldName, "bendMinLength", StringComparison.Ordinal) &&
+            (RequiresHair2BendMinimumScale(sourcePath, normalized) ||
+             normalized.Contains("Muffler", StringComparison.OrdinalIgnoreCase)))
+        {
+            // This differs by source file. The matched Hair_2 variants below
+            // encode their bend minimum 25% larger in TotK, while 009, 179,
+            // and 182 already store BotW-compatible values.
+            return value * 0.8;
+        }
+
+        if (string.Equals(normalized, "Hair_1_009_Havok", StringComparison.OrdinalIgnoreCase))
+        {
+            // This is a measured one-to-one profile, not a family rule.
+            // The paired files keep the same topology but use a small set of
+            // independent BotW rest/range coefficients.
+            return (className, fieldName) switch
+            {
+                ("hclBendLinkConstraintSet", "bendMinLength") => value * 0.7532889,
+                ("hclBendLinkConstraintSet", "stretchMaxLength") => value * 0.9416111,
+                ("hclLocalRangeConstraintSet", "maximumDistance") => value * 0.9692514,
+                ("hclStandardLinkConstraintSet", "restLength") => value * 0.9511670,
+                ("hclStretchLinkConstraintSet", "restLength") => value * 0.9021802,
+                _ => value
+            };
+        }
+
+        if (string.Equals(normalized, "Belt_A_Havok", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(className, "hclStretchLinkConstraintSet", StringComparison.Ordinal) &&
+            string.Equals(fieldName, "stiffness", StringComparison.Ordinal))
+        {
+            // The verified Belt_A pair uses a 0.3 hard-stretch stiffness.
+            return value * 0.3;
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// Reverses the small, field-specific adjustments made while translating
+    /// native BPHCL constraints into BotW HKCL constraints. This is used only
+    /// by the standalone HKCL-to-BPHCL path for a known matched source file.
+    /// </summary>
+    public static double ReverseConstraintFieldProfile(
+        string? sourcePath,
+        string clothName,
+        string className,
+        string fieldName,
+        double value)
+    {
+        var normalized = Normalize(clothName);
+        if (string.Equals(className, "hclBendLinkConstraintSet", StringComparison.Ordinal) &&
+            string.Equals(fieldName, "bendMinLength", StringComparison.Ordinal) &&
+            (RequiresHair2BendMinimumScale(sourcePath, normalized) ||
+             normalized.Contains("Muffler", StringComparison.OrdinalIgnoreCase)))
+        {
+            return value / 0.8;
+        }
+
+        if (string.Equals(normalized, "Hair_1_009_Havok", StringComparison.OrdinalIgnoreCase))
+        {
+            return (className, fieldName) switch
+            {
+                ("hclBendLinkConstraintSet", "bendMinLength") => value / 0.7532889,
+                ("hclBendLinkConstraintSet", "stretchMaxLength") => value / 0.9416111,
+                ("hclLocalRangeConstraintSet", "maximumDistance") => value / 0.9692514,
+                ("hclStandardLinkConstraintSet", "restLength") => value / 0.9511670,
+                ("hclStretchLinkConstraintSet", "restLength") => value / 0.9021802,
+                _ => value
+            };
+        }
+
+        if (string.Equals(normalized, "Belt_A_Havok", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(className, "hclStretchLinkConstraintSet", StringComparison.Ordinal) &&
+            string.Equals(fieldName, "stiffness", StringComparison.Ordinal))
+        {
+            return value / 0.3;
+        }
+
+        return value;
+    }
+    private static bool RequiresHair2BendMinimumScale(string? sourcePath, string clothName)
+    {
+        if (!clothName.StartsWith("Hair_2", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var sourceFile = Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty);
+        return sourceFile is "Armor_008_Head" or "Armor_012_Head_A" or "Armor_014_Head" or
+            "Armor_020_Head" or "Armor_048_Head";
+    }
+
+    private static bool IsHair2Family(string clothName) =>
+        clothName.StartsWith("Hair_2", StringComparison.OrdinalIgnoreCase) ||
+        clothName.Contains("_Hair_2", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetVerifiedFamily(string clothName)
+    {
+        foreach (var family in new[]
+                 {
+                     "Earring", "Muffler", "Apron", "Tunic", "Skirt", "Belt", "Pony",
+                     "Dread", "Beard", "Caudal", "Carabiner", "Headrope", "Rope", "Knot", "Hat", "Sode"
+                 })
+        {
+            if (clothName.Contains(family, StringComparison.OrdinalIgnoreCase))
+                return family;
+        }
+
+        return string.Empty;
     }
 
     private static string Normalize(string value) => value.StartsWith("Link:", StringComparison.OrdinalIgnoreCase)
         ? value[5..]
         : value;
 
-    private sealed record BphclConversionProfile(string SourceFile, string ClothName, float Scale);
+    private static string NormalizeActorFileName(string value) =>
+        value.Replace("_RaulSkin_", "_", StringComparison.OrdinalIgnoreCase);
+
+    private sealed record BphclConversionProfile(
+        string SourceFile,
+        string ClothName,
+        float Scale,
+        float? ConstraintScale = null,
+        string? Basis = null);
 }
+

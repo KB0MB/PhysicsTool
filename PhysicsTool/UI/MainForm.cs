@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -14,7 +14,8 @@ public sealed class MainForm : Form
     {
         Particles,
         Bones,
-        Colliders
+        Colliders,
+        Constraints
     }
 
     private sealed class EditorSnapshot
@@ -25,7 +26,9 @@ public sealed class MainForm : Form
         public List<ParticleEditRow>? Particles { get; init; }
         public List<BoneEditRow>? Bones { get; init; }
         public List<ColliderEditRow>? Colliders { get; init; }
+        public List<HkrgConstraintEditRow>? Constraints { get; init; }
         public string? RawState { get; init; }
+        public bool IsHkrgModelSkeleton { get; init; }
     }
 
     private HkclService _current = new();
@@ -74,6 +77,11 @@ public sealed class MainForm : Form
     private readonly ListBox _editorIndexList = new();
     private readonly DataGridView _editorDetailGrid = new();
     private readonly TabControl _editorTabs = new();
+    private readonly TabPage _particleEditorTab = new("Particles");
+    private readonly TabPage _modelBoneEditorTab = new("Bones");
+    private readonly TabPage _boneEditorTab = new("Bones");
+    private readonly TabPage _colliderEditorTab = new("Colliders");
+    private readonly TabPage _constraintEditorTab = new("Constraints");
     private readonly Panel _editorContentPanel = new();
     private readonly ListBox _helperBoneList = new();
     private readonly DataGridView _helperBoneDetailGrid = new();
@@ -113,6 +121,7 @@ public sealed class MainForm : Form
     private List<ParticleEditRow> _particleRows = new();
     private List<BoneEditRow> _boneRows = new();
     private List<ColliderEditRow> _colliderRows = new();
+    private List<HkrgConstraintEditRow> _hkrgConstraintRows = new();
     private readonly HashSet<int> _selectedParticleIndices = new();
     private readonly Stack<EditorSnapshot> _undoStack = new();
     private readonly Stack<EditorSnapshot> _redoStack = new();
@@ -121,6 +130,11 @@ public sealed class MainForm : Form
     private EditorSnapshot? _pendingRelationshipSnapshot;
     private EditorSnapshot? _viewportMoveSnapshot;
     private List<ParticleEditRow>? _viewportParticleRowsBeforeTransform;
+    private List<BoneEditRow>? _viewportBoneRowsBeforeTransform;
+    // HKRG collider undo uses a raw document snapshot. Keep a separate row
+    // baseline for live viewport transforms so rigid bodies still move before
+    // the raw snapshot is committed on confirm.
+    private List<ColliderEditRow>? _viewportColliderRowsBeforeTransform;
     private bool _viewportTransformChanged;
     // Viewport gestures are evaluated from this baseline instead of repeatedly
     // transforming parent-local data. This keeps world-space edits stable.
@@ -131,6 +145,7 @@ public sealed class MainForm : Form
     private readonly Dictionary<int, int> _mirrorPairs = new();
     private readonly Dictionary<Button, bool> _simulationButtonStates = new();
     private HkclPreviewSimulator? _simulation;
+    private HkrgGlidePreviewSimulator? _hkrgSimulation;
     private bool _simulationWindEnabled;
     private bool _simulationRandomWindDirections = true;
     private System.Numerics.Vector3 _simulationWindDirection = System.Numerics.Vector3.UnitX;
@@ -266,7 +281,7 @@ public sealed class MainForm : Form
         _convertButton.Text = "Convert";
         _convertButton.Width = 94;
         StyleButton(_convertButton);
-        _convertButton.Click += (_, _) => ExportFreshHkclDocumentFromBphcl();
+        _convertButton.Click += (_, _) => ConvertCurrentPhysics();
         toolbarButtons.Controls.Add(_convertButton);
 
         UpdateAddButtonText();
@@ -762,10 +777,10 @@ public sealed class MainForm : Form
         _editorContentPanel.Controls.Add(editorLayout);
 
         _editorTabs.Dock = DockStyle.Fill;
-        _editorTabs.TabPages.Add(new TabPage("Particles"));
-        _editorTabs.TabPages.Add(new TabPage("Bones"));
-        _editorTabs.TabPages.Add(new TabPage("Colliders"));
-        _editorTabs.TabPages[0].Controls.Add(_editorContentPanel);
+        _editorTabs.TabPages.Add(_particleEditorTab);
+        _editorTabs.TabPages.Add(_boneEditorTab);
+        _editorTabs.TabPages.Add(_colliderEditorTab);
+        _particleEditorTab.Controls.Add(_editorContentPanel);
         _editorValueGroup.Controls.Add(_editorTabs);
 
         _relationshipGroup = new GroupBox
@@ -1260,19 +1275,20 @@ public sealed class MainForm : Form
 
             // Helper-bone files expose only a small graph-derived bone subset.
             // Do not let the normal physics tabs imply particles or colliders exist.
-            if (_current.IsBphhb && _editorTabs.SelectedIndex != 1)
+            if (_current.IsHelperBoneSidecar && _editorTabs.SelectedTab != _boneEditorTab)
             {
-                _editorTabs.SelectedIndex = 1;
+                _editorTabs.SelectedTab = _boneEditorTab;
                 return;
             }
 
             var previousIndex = _editorIndexList.SelectedIndex;
-            _editorPage = _editorTabs.SelectedIndex switch
-            {
-                1 => EditorPage.Bones,
-                2 => EditorPage.Colliders,
-                _ => EditorPage.Particles
-            };
+            _editorPage = _editorTabs.SelectedTab == _colliderEditorTab
+                ? EditorPage.Colliders
+                : _editorTabs.SelectedTab == _constraintEditorTab
+                    ? EditorPage.Constraints
+                    : _editorTabs.SelectedTab == _modelBoneEditorTab || _editorTabs.SelectedTab == _boneEditorTab
+                        ? EditorPage.Bones
+                        : EditorPage.Particles;
             if (_editorPage != EditorPage.Particles)
                 _selectedParticleIndices.Clear();
             UpdatePreviewPickKind();
@@ -1369,13 +1385,13 @@ public sealed class MainForm : Form
         _particlePreview.ParticleMoveCanceled += (_, _) => CancelViewportParticleMove();
         _directEditButton.Click += (_, _) =>
         {
-            if (_current.IsBphhb)
+            if (_current.IsHelperBoneSidecar)
                 return;
 
             _directEditMode = !_directEditMode;
             if (!_directEditMode)
                 StopSimulation();
-            else if (_current.IsBphhb)
+            else if (_current.IsHelperBoneSidecar)
                 SelectHelperBonePage();
             UpdateModeLayout();
             RefreshParticleGrid(resetCamera: false);
@@ -1391,7 +1407,7 @@ public sealed class MainForm : Form
             if (index >= 0)
                 _clothList.SelectedIndex = index;
         };
-        _clothMenu.Opening += (_, e) => e.Cancel = !_current.HasDocument || _current.IsBphhb || _clothList.SelectedIndex < 0;
+        _clothMenu.Opening += (_, e) => e.Cancel = !_current.HasDocument || _current.IsHelperBoneSidecar || _clothList.SelectedIndex < 0;
         _clothList.SelectedIndexChanged += (_, _) =>
         {
             // Navigating between cloth entries is not an edit. Discard any
@@ -1433,7 +1449,7 @@ public sealed class MainForm : Form
         if (!_directEditMode)
         {
             _directEditMode = true;
-            if (_current.IsBphhb)
+            if (_current.IsHelperBoneSidecar)
                 SelectHelperBonePage();
             UpdateModeLayout();
         }
@@ -1446,8 +1462,60 @@ public sealed class MainForm : Form
     private void SelectHelperBonePage()
     {
         _editorPage = EditorPage.Bones;
-        if (_editorTabs.SelectedIndex != 1)
-            _editorTabs.SelectedIndex = 1;
+        if (_editorTabs.SelectedTab != _boneEditorTab)
+            _editorTabs.SelectedTab = _boneEditorTab;
+    }
+
+    private void SelectHkrgBonePage()
+    {
+        _editorPage = EditorPage.Bones;
+        if (_editorTabs.SelectedTab != _modelBoneEditorTab)
+            _editorTabs.SelectedTab = _modelBoneEditorTab;
+    }
+
+    private void ConfigureEditorTabsForDocument()
+    {
+        _modelBoneEditorTab.Text = "Bones";
+        _boneEditorTab.Text = _current.IsHkrg ? "Ragdoll Bones" : "Bones";
+        _colliderEditorTab.Text = _current.IsHkrg ? "Rigid Bodies" : "Colliders";
+        _constraintEditorTab.Text = "Constraints";
+        if (_current.IsHkrg)
+        {
+            if (_editorTabs.TabPages.Contains(_particleEditorTab))
+                _editorTabs.TabPages.Remove(_particleEditorTab);
+            if (!_editorTabs.TabPages.Contains(_modelBoneEditorTab))
+                _editorTabs.TabPages.Insert(0, _modelBoneEditorTab);
+            if (!_editorTabs.TabPages.Contains(_constraintEditorTab))
+                _editorTabs.TabPages.Add(_constraintEditorTab);
+            if (_editorTabs.SelectedTab == null)
+                _editorTabs.SelectedTab = _modelBoneEditorTab;
+            return;
+        }
+
+        if (_editorTabs.SelectedTab == _modelBoneEditorTab)
+            _editorTabs.SelectedTab = _boneEditorTab;
+        if (_editorTabs.TabPages.Contains(_modelBoneEditorTab))
+            _editorTabs.TabPages.Remove(_modelBoneEditorTab);
+        if (_editorTabs.TabPages.Contains(_constraintEditorTab))
+            _editorTabs.TabPages.Remove(_constraintEditorTab);
+        if (!_editorTabs.TabPages.Contains(_particleEditorTab))
+            _editorTabs.TabPages.Insert(0, _particleEditorTab);
+    }
+
+    private void SelectEditorTabForPage(EditorPage page, bool useHkrgModelSkeleton = false)
+    {
+        _editorPage = page;
+        var tab = page switch
+        {
+            EditorPage.Bones when _current.IsHkrg && useHkrgModelSkeleton => _modelBoneEditorTab,
+            EditorPage.Bones => _boneEditorTab,
+            EditorPage.Colliders => _colliderEditorTab,
+            EditorPage.Constraints => _constraintEditorTab,
+            _ => _particleEditorTab
+        };
+
+        if (_editorTabs.TabPages.Contains(tab) && _editorTabs.SelectedTab != tab)
+            _editorTabs.SelectedTab = tab;
     }
 
     private void MoveEditorContentToSelectedTab()
@@ -1458,8 +1526,16 @@ public sealed class MainForm : Form
 
     private bool CanRunSimulation()
     {
-        return _directEditMode && _current.HasDocument && !_current.IsReadOnlyExternal
-            && _clothList.SelectedIndex >= 0 && _particleRows.Count > 0;
+        if (!_current.HasDocument)
+            return false;
+
+        if (_current.IsHkrg)
+            return _boneRows.Count > 0 || _current.GetParticlePreview(0).Bones.Any(bone => !bone.IsReference);
+
+        if (_current.IsReadOnlyExternal)
+            return false;
+
+        return _directEditMode && _clothList.SelectedIndex >= 0 && _particleRows.Count > 0;
     }
 
     private void ToggleSimulation()
@@ -1467,14 +1543,29 @@ public sealed class MainForm : Form
         if (_simulationTimer.Enabled)
         {
             StopSimulation(resetPreview: true);
-            _statusLabel.Text = "Simulation stopped and reset to the file pose.";
+            _statusLabel.Text = _current.IsHkrg
+                ? "Glide preview stopped and reset to the file pose."
+                : "Simulation stopped and reset to the file pose.";
             return;
         }
 
         if (!CanRunSimulation())
             return;
 
-        var preview = _current.GetParticlePreview(_clothList.SelectedIndex);
+        var previewIndex = _current.IsHkrg ? 0 : _clothList.SelectedIndex;
+        var preview = _current.GetParticlePreview(previewIndex);
+        if (_current.IsHkrg)
+        {
+            _hkrgSimulation = new HkrgGlidePreviewSimulator(preview, _colliderRows, _hkrgConstraintRows);
+            ApplySimulationOptions(_hkrgSimulation);
+            _simulationTimer.Start();
+            _simulationButton.Text = "Stop Simulation";
+            _statusLabel.Text = "Running HKRG glide stress preview. This does not change the file.";
+            UpdateButtons();
+            SetSimulationButtonLock(true);
+            return;
+        }
+
         if (preview.Particles.All(particle => particle.Fixed))
         {
             _statusLabel.Text = "This cloth has no dynamic particles to simulate.";
@@ -1495,6 +1586,8 @@ public sealed class MainForm : Form
         _simulationWindEnabled = !_simulationWindEnabled;
         if (_simulation != null)
             ApplySimulationOptions(_simulation);
+        if (_hkrgSimulation != null)
+            ApplySimulationOptions(_hkrgSimulation);
         UpdateWindSimulationButton();
         _statusLabel.Text = _simulationWindEnabled
             ? "Preview wind enabled. It affects only the viewport simulation."
@@ -1503,13 +1596,23 @@ public sealed class MainForm : Form
 
     private void AdvanceSimulation()
     {
-        if (_simulation == null || !CanRunSimulation())
+        if (!CanRunSimulation() || (_simulation == null && _hkrgSimulation == null))
         {
             StopSimulation();
             return;
         }
 
-        _simulation.Step((1.0f / 60.0f) * _simulationPlaybackSpeed);
+        var deltaSeconds = (1.0f / 60.0f) * _simulationPlaybackSpeed;
+        if (_hkrgSimulation != null)
+        {
+            _hkrgSimulation.Step(deltaSeconds);
+            _particlePreview.UpdateSimulatedRagdollPose(
+                _hkrgSimulation.GetBonePoses(),
+                _hkrgSimulation.GetColliderPoses());
+            return;
+        }
+
+        _simulation!.Step(deltaSeconds);
         _particlePreview.UpdateSimulatedPose(_simulation.GetPositions(), _simulation.GetBonePoses());
     }
 
@@ -1517,11 +1620,13 @@ public sealed class MainForm : Form
     {
         _simulationTimer.Stop();
         _simulation = null;
+        _hkrgSimulation = null;
         _simulationButton.Text = "Run Simulation";
         SetSimulationButtonLock(false);
-        if (resetPreview && _current.HasDocument && _clothList.SelectedIndex >= 0)
+        var previewIndex = _current.IsHkrg ? 0 : _clothList.SelectedIndex;
+        if (resetPreview && _current.HasDocument && previewIndex >= 0)
         {
-            _particlePreview.SetData(_current.GetParticlePreview(_clothList.SelectedIndex), resetCamera: false);
+            _particlePreview.SetData(_current.GetParticlePreview(previewIndex), resetCamera: false);
             _particlePreview.SetSelectedParticleIndices(_selectedParticleIndices);
         }
         UpdateButtons();
@@ -1579,6 +1684,17 @@ public sealed class MainForm : Form
     }
 
     private void ApplySimulationOptions(HkclPreviewSimulator simulation)
+    {
+        simulation.WindEnabled = _simulationWindEnabled;
+        simulation.RandomWindDirections = _simulationRandomWindDirections;
+        simulation.WindDirection = _simulationWindDirection;
+        simulation.WindSpeed = _simulationWindSpeed;
+        simulation.WindGustiness = _simulationWindGustiness;
+        simulation.GravityScale = _simulationGravityScale;
+        simulation.SolverIterations = _simulationSolverIterations;
+    }
+
+    private void ApplySimulationOptions(HkrgGlidePreviewSimulator simulation)
     {
         simulation.WindEnabled = _simulationWindEnabled;
         simulation.RandomWindDirections = _simulationRandomWindDirections;
@@ -1939,11 +2055,21 @@ public sealed class MainForm : Form
             _viewportParticleRowsBeforeTransform = _editorPage == EditorPage.Particles
                 ? _particleRows.Select(CloneParticle).ToList()
                 : null;
+            _viewportBoneRowsBeforeTransform = _editorPage == EditorPage.Bones
+                ? _boneRows.Select(CloneBone).ToList()
+                : null;
+            _viewportColliderRowsBeforeTransform = _editorPage == EditorPage.Colliders ||
+                (_current.IsHkrg && _editorPage == EditorPage.Bones && !IsEditingHkrgModelSkeleton)
+                ? _colliderRows.Select(CloneCollider).ToList()
+                : null;
         }
         _viewportWorldTranslation = System.Numerics.Vector3.Zero;
         BuildMirrorPairs();
         if (SnapMirrorPairsToSources())
         {
+            UpdateHkrgRigidBodiesForRagdollPose(
+                _viewportBoneRowsBeforeTransform,
+                _viewportColliderRowsBeforeTransform);
             _viewportTransformChanged = true;
             UpdateViewportTransformPreview();
         }
@@ -1957,7 +2083,7 @@ public sealed class MainForm : Form
         if (_editorPage == EditorPage.Bones)
         {
             var bone = GetSelectedBone();
-            var sourceBones = _viewportMoveSnapshot?.Bones;
+            var sourceBones = _viewportBoneRowsBeforeTransform;
             var baseline = sourceBones?.FirstOrDefault(candidate => candidate.Index == bone?.Index);
             if (bone == null || baseline == null || sourceBones == null)
                 return;
@@ -1978,6 +2104,7 @@ public sealed class MainForm : Form
             bone.Y = Math.Clamp(local.M42, -30.0f, 30.0f);
             bone.Z = Math.Clamp(local.M43, -30.0f, 30.0f);
             ApplyMirrorToBone(bone);
+            UpdateHkrgRigidBodiesForRagdollPose(sourceBones, _viewportColliderRowsBeforeTransform);
             UpdateViewportTransformPreview();
             _viewportTransformChanged = true;
             return;
@@ -1986,7 +2113,7 @@ public sealed class MainForm : Form
         if (_editorPage == EditorPage.Colliders)
         {
             var collider = GetSelectedCollider();
-            var baseline = _viewportMoveSnapshot?.Colliders?.FirstOrDefault(candidate => candidate.Index == collider?.Index);
+            var baseline = _viewportColliderRowsBeforeTransform?.FirstOrDefault(candidate => candidate.Index == collider?.Index);
             if (collider == null || baseline == null)
                 return;
 
@@ -2033,6 +2160,7 @@ public sealed class MainForm : Form
 
             ScaleBoneTranslation(bone, factor, axis);
             ApplyMirrorToBone(bone);
+            UpdateHkrgRigidBodiesForRagdollPose(_viewportBoneRowsBeforeTransform, _viewportColliderRowsBeforeTransform);
             UpdateViewportTransformPreview();
             _viewportTransformChanged = true;
             return;
@@ -2097,6 +2225,7 @@ public sealed class MainForm : Form
 
             RotateBone(bone, radians, axis, localAxis);
             ApplyMirrorToBone(bone);
+            UpdateHkrgRigidBodiesForRagdollPose(_viewportBoneRowsBeforeTransform, _viewportColliderRowsBeforeTransform);
             UpdateViewportTransformPreview();
             _viewportTransformChanged = true;
             return;
@@ -2147,10 +2276,17 @@ public sealed class MainForm : Form
         if (_editorPage == EditorPage.Bones && GetSelectedBone() is { } selectedBone)
         {
             var boneSnapshot = CaptureEditorSnapshot(EditorPage.Bones, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
+            var originalBones = _boneRows.Select(CloneBone).ToList();
+            var originalColliders = _current.IsHkrg && !IsEditingHkrgModelSkeleton
+                ? _colliderRows.Select(CloneCollider).ToList()
+                : null;
             var boneAxis = GetMirrorAxis(axisName, local);
             var reflected = ReflectPoint(new System.Numerics.Vector3(selectedBone.X, selectedBone.Y, selectedBone.Z), local ? new System.Numerics.Vector3(selectedBone.X, selectedBone.Y, selectedBone.Z) : System.Numerics.Vector3.Zero, boneAxis);
             selectedBone.X = reflected.X; selectedBone.Y = reflected.Y; selectedBone.Z = reflected.Z;
-            _current.UpdateBoneRows(_clothList.SelectedIndex, _boneRows);
+            UpdateHkrgRigidBodiesForRagdollPose(originalBones, originalColliders);
+            UpdateActiveBoneRows(_clothList.SelectedIndex, _boneRows);
+            if (_current.IsHkrg && !IsEditingHkrgModelSkeleton)
+                _current.UpdateColliderRows(_colliderRows);
             PushUndo(boneSnapshot);
             _redoStack.Clear();
             RefreshPreview(resetCamera: false);
@@ -2200,7 +2336,7 @@ public sealed class MainForm : Form
 
     private void MirrorCurrentClothAcrossX()
     {
-        if (!_directEditMode || !_current.HasDocument || _current.IsBphhb ||
+        if (!_directEditMode || !_current.HasDocument || _current.IsHelperBoneSidecar ||
             !CanTransformViewportItems() || _clothList.SelectedIndex < 0)
             return;
 
@@ -2267,7 +2403,7 @@ public sealed class MainForm : Form
                     collider.BoneName = boneName;
             }
 
-            _current.UpdateBoneRows(clothIndex, _boneRows);
+            UpdateActiveBoneRows(clothIndex, _boneRows);
             _current.UpdateParticleRows(clothIndex, _particleRows);
             // Reflection preserves every distance, so constraint rest lengths
             // remain valid. BPHCL also mirrors its uncompressed skin/output
@@ -2460,6 +2596,8 @@ public sealed class MainForm : Form
         }
         _viewportMoveSnapshot = null;
         _viewportParticleRowsBeforeTransform = null;
+        _viewportBoneRowsBeforeTransform = null;
+        _viewportColliderRowsBeforeTransform = null;
         _viewportTransformChanged = false;
         _viewportWorldTranslation = System.Numerics.Vector3.Zero;
         _mirrorPairs.Clear();
@@ -2475,6 +2613,8 @@ public sealed class MainForm : Form
         ApplyEditorSnapshot(_viewportMoveSnapshot);
         _viewportMoveSnapshot = null;
         _viewportParticleRowsBeforeTransform = null;
+        _viewportBoneRowsBeforeTransform = null;
+        _viewportColliderRowsBeforeTransform = null;
         _viewportTransformChanged = false;
         _viewportWorldTranslation = System.Numerics.Vector3.Zero;
         _mirrorPairs.Clear();
@@ -2482,8 +2622,26 @@ public sealed class MainForm : Form
     }
 
     // Native BPHCL documents can update particle positions, skeleton poses, and
-    // collider transforms in-place. Other external formats stay inspection-only.
-    private bool CanTransformViewportItems() => !_current.IsReadOnlyExternal || _current.IsBphcl;
+    // collider transforms in-place. HKRG exposes its model/ragdoll bone layers
+    // and rigid-body shapes as separate editable native records.
+    private bool CanTransformViewportItems() =>
+        !_current.IsReadOnlyExternal || _current.IsBphcl || _current.IsHkrg;
+
+    private bool IsEditingHkrgModelSkeleton =>
+        _current.IsHkrg && _editorTabs.SelectedTab == _modelBoneEditorTab;
+
+    private IReadOnlyList<BoneEditRow> GetActiveBoneRows(int clothIndex) =>
+        IsEditingHkrgModelSkeleton
+            ? _current.GetHkrgModelBoneRows()
+            : _current.GetBoneRows(clothIndex);
+
+    private void UpdateActiveBoneRows(int clothIndex, IEnumerable<BoneEditRow> rows)
+    {
+        if (IsEditingHkrgModelSkeleton)
+            _current.UpdateHkrgModelBoneRows(rows);
+        else
+            _current.UpdateBoneRows(clothIndex, rows);
+    }
 
     private bool HasActiveEditorSelection() => _editorPage switch
     {
@@ -2518,9 +2676,13 @@ public sealed class MainForm : Form
         {
             case EditorPage.Bones:
                 _particlePreview.UpdateBonePreviewRows(_boneRows);
+                if (_current.IsHkrg && !IsEditingHkrgModelSkeleton)
+                    _particlePreview.UpdateColliderPreviewRows(_colliderRows);
                 break;
             case EditorPage.Colliders:
                 _particlePreview.UpdateColliderPreviewRows(_colliderRows);
+                break;
+            case EditorPage.Constraints:
                 break;
             default:
                 _particlePreview.UpdateParticlePreviewRows(_particleRows);
@@ -2541,6 +2703,47 @@ public sealed class MainForm : Form
         transform.M42 += delta.Y;
         transform.M43 += delta.Z;
         collider.Transform = transform;
+    }
+
+    // HKRG shapes are authored in the motion transform's local space, while
+    // the editor shows their world-space endpoints. When a ragdoll pose moves,
+    // transform every mapped rigid body from the untouched gesture baseline.
+    // This avoids accumulating floating-point drift over mouse-move events and
+    // also carries bodies mapped to children of the edited bone.
+    private void UpdateHkrgRigidBodiesForRagdollPose(
+        IReadOnlyList<BoneEditRow>? originalBones,
+        IReadOnlyList<ColliderEditRow>? originalColliders)
+    {
+        if (!_current.IsHkrg || IsEditingHkrgModelSkeleton ||
+            originalBones == null || originalColliders == null)
+        {
+            return;
+        }
+
+        foreach (var collider in _colliderRows)
+        {
+            if (collider.BoneIndex < 0)
+                continue;
+
+            var originalCollider = originalColliders.FirstOrDefault(row => row.Index == collider.Index);
+            if (originalCollider == null)
+                continue;
+
+            var originalBoneWorld = GetBoneWorldMatrix(collider.BoneIndex, originalBones);
+            if (!System.Numerics.Matrix4x4.Invert(originalBoneWorld, out var inverseOriginalBoneWorld))
+                continue;
+
+            var currentBoneWorld = GetBoneWorldMatrix(collider.BoneIndex, _boneRows);
+            var boneDelta = inverseOriginalBoneWorld * currentBoneWorld;
+            collider.StartX = originalCollider.StartX;
+            collider.StartY = originalCollider.StartY;
+            collider.StartZ = originalCollider.StartZ;
+            collider.EndX = originalCollider.EndX;
+            collider.EndY = originalCollider.EndY;
+            collider.EndZ = originalCollider.EndZ;
+            collider.Transform = originalCollider.Transform;
+            _current.ApplyHkrgRigidBodyWorldDelta(collider, boneDelta);
+        }
     }
 
     private void ScaleBoneTranslation(BoneEditRow bone, float factor, System.Numerics.Vector3? axis)
@@ -2796,6 +2999,15 @@ public sealed class MainForm : Form
 
         if (_editorPage == EditorPage.Bones && GetSelectedBone() is { } bone)
         {
+            if (TryAddNamedBoneMirrorPair(bone))
+                return;
+
+            // Only bones without an explicit side token may fall back to a
+            // spatial match. A named left/right bone must never mirror onto
+            // an unrelated opposite-side limb just because it is nearby.
+            if (!string.Equals(SwapSideTokens(bone.Name), bone.Name, StringComparison.Ordinal))
+                return;
+
             AddMirrorPair(bone.Index, new System.Numerics.Vector3(bone.X, bone.Y, bone.Z),
                 _boneRows.Where(candidate => candidate.Index != bone.Index)
                     .Select(candidate => (candidate.Index, Position: new System.Numerics.Vector3(candidate.X, candidate.Y, candidate.Z))));
@@ -2809,6 +3021,22 @@ public sealed class MainForm : Form
                 _colliderRows.Where(candidate => candidate.Index != collider.Index)
                     .Select(candidate => (candidate.Index, Position: ColliderCenter(candidate))));
         }
+    }
+
+    private bool TryAddNamedBoneMirrorPair(BoneEditRow source)
+    {
+        var mirroredName = SwapSideTokens(source.Name);
+        if (string.Equals(mirroredName, source.Name, StringComparison.Ordinal))
+            return false;
+
+        var partner = _boneRows.FirstOrDefault(candidate =>
+            candidate.Index != source.Index &&
+            string.Equals(candidate.Name, mirroredName, StringComparison.OrdinalIgnoreCase));
+        if (partner == null)
+            return false;
+
+        _mirrorPairs[source.Index] = partner.Index;
+        return true;
     }
 
     private void AddMirrorPair(int sourceIndex, System.Numerics.Vector3 sourcePosition, IEnumerable<(int Index, System.Numerics.Vector3 Position)> candidates)
@@ -2897,6 +3125,48 @@ public sealed class MainForm : Form
             return true;
         }
 
+        if (_current.IsHkrg && _viewportBoneRowsBeforeTransform is { } hkrgBaseline)
+        {
+            // Ragdoll left/right bones do not share mirrored rest quaternions.
+            // Reflecting their absolute pose replaces the right bone's native
+            // orientation with a left-handed one. Instead mirror the delta
+            // produced by the current gesture, then layer it onto the
+            // partner's own baseline pose.
+            var sourceBaseline = hkrgBaseline.FirstOrDefault(bone => bone.Index == source.Index);
+            var partnerBaseline = hkrgBaseline.FirstOrDefault(bone => bone.Index == partner.Index);
+            if (sourceBaseline == null || partnerBaseline == null)
+                return false;
+
+            var sourceBaselineWorld = GetBoneWorldMatrix(sourceBaseline.Index, hkrgBaseline);
+            if (!System.Numerics.Matrix4x4.Invert(sourceBaselineWorld, out var inverseSourceBaseline))
+                return false;
+
+            var sourceCurrentWorld = GetBoneWorldMatrix(source.Index, _boneRows);
+            var sourceDelta = inverseSourceBaseline * sourceCurrentWorld;
+            var hkrgReflection = System.Numerics.Matrix4x4.CreateScale(-1.0f, 1.0f, 1.0f);
+            var mirroredDelta = hkrgReflection * sourceDelta * hkrgReflection;
+            var partnerBaselineWorld = GetBoneWorldMatrix(partnerBaseline.Index, hkrgBaseline);
+            var partnerWorld = partnerBaselineWorld * mirroredDelta;
+            var hkrgPartnerParentWorld = GetBoneWorldMatrix(partner.ParentIndex, _boneRows);
+            if (!System.Numerics.Matrix4x4.Invert(hkrgPartnerParentWorld, out var inversePartnerParent) ||
+                !System.Numerics.Matrix4x4.Decompose(partnerWorld * inversePartnerParent, out var hkrgScale, out var hkrgRotation, out var hkrgTranslation))
+            {
+                return false;
+            }
+
+            partner.X = hkrgTranslation.X;
+            partner.Y = hkrgTranslation.Y;
+            partner.Z = hkrgTranslation.Z;
+            partner.RotationX = hkrgRotation.X;
+            partner.RotationY = hkrgRotation.Y;
+            partner.RotationZ = hkrgRotation.Z;
+            partner.RotationW = hkrgRotation.W;
+            partner.ScaleX = hkrgScale.X;
+            partner.ScaleY = hkrgScale.Y;
+            partner.ScaleZ = hkrgScale.Z;
+            return true;
+        }
+
         // Mirror the complete world transform, then return it to the paired
         // bone's parent space. Mirroring a local quaternion directly works
         // only for root bones and leaves child bones twisting incorrectly.
@@ -2955,7 +3225,7 @@ public sealed class MainForm : Form
 
     private void AttachSelectedItemsToChosenBone()
     {
-        if (_current.IsReadOnlyExternal || _particleBindBoneCombo.SelectedItem is not BoneComboItem item)
+        if ((_current.IsReadOnlyExternal && !_current.IsHkrg) || _particleBindBoneCombo.SelectedItem is not BoneComboItem item)
             return;
 
         switch (_editorPage)
@@ -2982,12 +3252,19 @@ public sealed class MainForm : Form
 
     private void RefreshParticleBindingPanel()
     {
+        var hkrgBindTab = _current.IsHkrg &&
+            (_editorPage == EditorPage.Bones || _editorPage == EditorPage.Colliders);
         var attachedIndex = GetAttachmentBoneIndex();
         var previousIndex = attachedIndex >= 0
             ? attachedIndex
             : _particleBindBoneCombo.SelectedItem is BoneComboItem selected ? selected.Index : -1;
         _particleBindBoneCombo.Items.Clear();
-        foreach (var bone in _boneRows)
+        var targetBones = _current.IsHkrg && _editorPage == EditorPage.Bones
+            ? IsEditingHkrgModelSkeleton
+                ? _current.GetBoneRows(_clothList.SelectedIndex)
+                : _current.GetHkrgModelBoneRows()
+            : _boneRows;
+        foreach (var bone in targetBones)
             _particleBindBoneCombo.Items.Add(new BoneComboItem { Index = bone.Index, Name = bone.Name });
 
         if (_particleBindBoneCombo.Items.Count > 0)
@@ -3019,10 +3296,14 @@ public sealed class MainForm : Form
             ? $"Selected: {selectedCount} particles"
             : hasSelection ? $"Selected: 1 {itemLabel}" : $"Select a {itemLabel}.";
 
-        _particleBindGroup!.Text = "Attach to Bone";
+        _particleBindGroup!.Text = hkrgBindTab
+            ? _editorPage == EditorPage.Colliders
+                ? "Attach to Ragdoll Bone"
+                : IsEditingHkrgModelSkeleton ? "Bind to Ragdoll Bone" : "Bind to Bone"
+            : "Attach to Bone";
         _particleBindStatusLabel.Text = countLabel;
-        _particleBindButton.Text = "Attach";
-        _particleBindButton.Enabled = !_current.IsReadOnlyExternal && hasSelection && _particleBindBoneCombo.Items.Count > 0;
+        _particleBindButton.Text = _editorPage == EditorPage.Colliders ? "Attach" : hkrgBindTab ? "Bind" : "Attach";
+        _particleBindButton.Enabled = (!_current.IsReadOnlyExternal || _current.IsHkrg) && hasSelection && _particleBindBoneCombo.Items.Count > 0;
     }
 
     private int GetAttachmentBoneIndex() => _editorPage switch
@@ -3081,13 +3362,11 @@ public sealed class MainForm : Form
             _selectedParticleIndices.Add(index);
         }
 
-        _editorPage = page;
-        _editorTabs.SelectedIndex = page switch
-        {
-            EditorPage.Bones => 1,
-            EditorPage.Colliders => 2,
-            _ => 0
-        };
+        // HKRG has two bone tabs. Keep the layer that produced the pick;
+        // choosing by hard-coded tab index used to redirect full-model picks
+        // into the ragdoll skeleton.
+        var useHkrgModelSkeleton = page == EditorPage.Bones && IsEditingHkrgModelSkeleton;
+        SelectEditorTabForPage(page, useHkrgModelSkeleton);
         MoveEditorContentToSelectedTab();
         RefreshParticleGrid(resetCamera: false, selectedListIndex: listIndex);
     }
@@ -3157,34 +3436,51 @@ public sealed class MainForm : Form
         RunGuarded(() =>
         {
             var preview = _current.GetParticlePreview(_clothList.SelectedIndex);
-            var bone = preview.Bones.FirstOrDefault(candidate => candidate.Index == boneIndex);
+            var bone = GetActivePreviewBone(preview, boneIndex);
             var boneRow = _boneRows.FirstOrDefault(candidate => candidate.Index == boneIndex);
             if (bone == null || boneRow == null)
                 return;
 
             var snapshot = CaptureEditorSnapshot(EditorPage.Colliders, _clothList.SelectedIndex, _editorIndexList.SelectedIndex);
             TranslateCollider(collider, bone.Position - ColliderCenter(collider));
-            collider.BoneIndex = boneIndex;
-            collider.BoneName = boneRow.Name;
+            if (!_current.IsHkrg)
+            {
+                collider.BoneIndex = boneIndex;
+                collider.BoneName = boneRow.Name;
+            }
             _current.UpdateColliderRows(GetActiveColliderRowsForWrite());
             PushUndo(snapshot);
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: _editorIndexList.SelectedIndex);
-            _statusLabel.Text = $"Attached collider {collider.Index} to bone {boneRow.Name}.";
+            _statusLabel.Text = _current.IsHkrg
+                ? $"Moved rigid body {collider.Index} to ragdoll bone {boneRow.Name}. Its native ragdoll assignment is unchanged."
+                : $"Attached collider {collider.Index} to bone {boneRow.Name}.";
         });
     }
 
     private void AttachSelectedBoneToBone(int boneIndex)
     {
         var selectedBone = GetSelectedBone();
-        if (selectedBone == null || selectedBone.Index == boneIndex)
+        if (selectedBone == null || (!_current.IsHkrg && selectedBone.Index == boneIndex))
             return;
 
         RunGuarded(() =>
         {
             var preview = _current.GetParticlePreview(_clothList.SelectedIndex);
-            var target = preview.Bones.FirstOrDefault(candidate => candidate.Index == boneIndex);
-            var targetRow = _boneRows.FirstOrDefault(candidate => candidate.Index == boneIndex);
+            var originalBones = _boneRows.Select(CloneBone).ToList();
+            var originalColliders = _current.IsHkrg && !IsEditingHkrgModelSkeleton
+                ? _colliderRows.Select(CloneCollider).ToList()
+                : null;
+            var targetIsHkrgModelBone = _current.IsHkrg
+                ? !IsEditingHkrgModelSkeleton
+                : IsEditingHkrgModelSkeleton;
+            var target = GetPreviewBone(preview, boneIndex, targetIsHkrgModelBone);
+            var targetRows = _current.IsHkrg
+                ? targetIsHkrgModelBone
+                    ? _current.GetHkrgModelBoneRows()
+                    : _current.GetBoneRows(_clothList.SelectedIndex)
+                : _boneRows;
+            var targetRow = targetRows.FirstOrDefault(candidate => candidate.Index == boneIndex);
             if (target == null || targetRow == null)
                 return;
 
@@ -3197,12 +3493,27 @@ public sealed class MainForm : Form
             selectedBone.X = Math.Clamp(local.X, -30.0f, 30.0f);
             selectedBone.Y = Math.Clamp(local.Y, -30.0f, 30.0f);
             selectedBone.Z = Math.Clamp(local.Z, -30.0f, 30.0f);
-            _current.UpdateBoneRows(_clothList.SelectedIndex, _boneRows);
+            UpdateHkrgRigidBodiesForRagdollPose(originalBones, originalColliders);
+            UpdateActiveBoneRows(_clothList.SelectedIndex, _boneRows);
+            if (_current.IsHkrg && !IsEditingHkrgModelSkeleton)
+                _current.UpdateColliderRows(_colliderRows);
             PushUndo(snapshot);
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: _editorIndexList.SelectedIndex);
             _statusLabel.Text = $"Moved bone {selectedBone.Name} to bone {targetRow.Name}.";
         });
+    }
+
+    private BonePreviewPoint? GetActivePreviewBone(ParticlePreviewData preview, int boneIndex)
+    {
+        return GetPreviewBone(preview, boneIndex, IsEditingHkrgModelSkeleton);
+    }
+
+    private BonePreviewPoint? GetPreviewBone(ParticlePreviewData preview, int boneIndex, bool isHkrgModelBone)
+    {
+        return preview.Bones.FirstOrDefault(candidate =>
+            candidate.EditorIndex == boneIndex &&
+            (!_current.IsHkrg || candidate.IsReference == isHkrgModelBone));
     }
 
     private void LinkSelectedParticles()
@@ -3234,6 +3545,12 @@ public sealed class MainForm : Form
     {
         if (!_directEditMode || _current.IsReadOnlyExternal || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
+        if (_editorPage == EditorPage.Constraints)
+        {
+            _statusLabel.Text = "Constraint creation/deletion is not implemented yet. Edit existing constraint values instead.";
+            return;
+        }
+
 
         if (_editorPage == EditorPage.Particles && _selectedParticleIndices.Count == 0 && TryGetSelectedParticle(out var activeParticle))
             _selectedParticleIndices.Add(activeParticle.Index);
@@ -3294,7 +3611,9 @@ public sealed class MainForm : Form
         _addEditorItemButton.Text = _editorPage switch
         {
             EditorPage.Bones => "Add Bone",
+            EditorPage.Colliders when _current.IsHkrg => "Add Rigid Body",
             EditorPage.Colliders => "Add Collider",
+            EditorPage.Constraints => "Add Constraint",
             _ => "Add Particle"
         };
     }
@@ -3313,6 +3632,12 @@ public sealed class MainForm : Form
     {
         if (!_directEditMode || _current.IsReadOnlyExternal || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
+        if (_editorPage == EditorPage.Constraints)
+        {
+            _statusLabel.Text = "Constraint creation is not implemented yet. Edit existing HKRG constraints in the table.";
+            return;
+        }
+
 
         if (_editorPage == EditorPage.Colliders && colliderShapeType == null)
         {
@@ -3445,7 +3770,7 @@ public sealed class MainForm : Form
         return new OpenFileDialog
         {
             Title = "Open Physics File",
-            Filter = "Physics files|*.hkcl;*.bphcl;*.bphhb;*.json|HKCL|*.hkcl|BPHCL|*.bphcl|BPHHB helper bones|*.bphhb|JSON|*.json|All files|*.*",
+            Filter = "Physics files|*.hkcl;*.hkrg;*.bphcl;*.bphhb;*.bphyssb;*.json|HKCL cloth|*.hkcl|HKRG ragdoll|*.hkrg|BPHCL|*.bphcl|BPHHB helper bones|*.bphhb|BPHYSSB support bones|*.bphyssb|JSON|*.json|All files|*.*",
             CheckFileExists = true
         };
     }
@@ -3466,21 +3791,30 @@ public sealed class MainForm : Form
                 _current = loaded;
                 // Helper files have their own dedicated inspector and never use
                 // the merge/cloth workflow. Opening a real cloth restores it.
-                _directEditMode = _current.IsBphhb;
-                if (_current.IsBphhb)
+                _directEditMode = _current.IsHelperBoneSidecar || _current.IsHkrg;
+                if (_current.IsHelperBoneSidecar)
                     SelectHelperBonePage();
+                else if (_current.IsHkrg)
+                {
+                    ConfigureEditorTabsForDocument();
+                    SelectHkrgBonePage();
+                    // The model-bone tab is inserted dynamically for HKRG.
+                    // Put the shared editor in it before the first paint so
+                    // the page never flashes WinForms' default white surface.
+                    MoveEditorContentToSelectedTab();
+                }
                 UpdateModeLayout();
                 var extension = Path.GetExtension(path);
-                _currentSavePath = extension.Equals(".hkcl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".bphcl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".bphhb", StringComparison.OrdinalIgnoreCase)
+                _currentSavePath = extension.Equals(".hkcl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".hkrg", StringComparison.OrdinalIgnoreCase) || extension.Equals(".bphcl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".bphhb", StringComparison.OrdinalIgnoreCase) || extension.Equals(".bphyssb", StringComparison.OrdinalIgnoreCase)
                     ? path
                     : null;
-                _currentSavePlatform = extension.Equals(".hkcl", StringComparison.OrdinalIgnoreCase)
+                _currentSavePlatform = extension.Equals(".hkcl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".hkrg", StringComparison.OrdinalIgnoreCase)
                     ? HkclService.DetectHkclPlatform(path)
                     : HkclPlatform.WiiU;
                 ClearUndoHistory();
                 _loadingCurrentDocument = false;
                 RefreshCurrentLists();
-                var platformLabel = extension.Equals(".hkcl", StringComparison.OrdinalIgnoreCase)
+                var platformLabel = extension.Equals(".hkcl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".hkrg", StringComparison.OrdinalIgnoreCase)
                     ? $" ({(_currentSavePlatform == HkclPlatform.Switch ? "Switch" : "Wii U")})"
                     : string.Empty;
                 _statusLabel.Text = $"Loaded {Path.GetFileName(path)}{platformLabel}";
@@ -3501,6 +3835,9 @@ public sealed class MainForm : Form
         _pendingEditSnapshot = null;
         _pendingHelperBoneSnapshot = null;
         _viewportMoveSnapshot = null;
+        _viewportParticleRowsBeforeTransform = null;
+        _viewportBoneRowsBeforeTransform = null;
+        _viewportColliderRowsBeforeTransform = null;
         _viewportTransformChanged = false;
         _selectedParticleIndices.Clear();
         _mirrorPairs.Clear();
@@ -3518,7 +3855,7 @@ public sealed class MainForm : Form
         _editorDetailGrid.Rows.Clear();
         _particleRelationshipGrid.Rows.Clear();
         _helperBoneList.Items.Clear();
-        _helperBoneDetailGrid.Rows.Clear();
+        ClearHelperBoneDetailGrid();
         _particlePreview.SetData(null);
         _updatingParticleGrid = false;
     }
@@ -3535,6 +3872,18 @@ public sealed class MainForm : Form
 
     private void RefreshCurrentLists(int? preferredSelectionIndex = null)
     {
+        if (_current.IsHelperBoneSidecar)
+        {
+            // Support/helper-bone files are not cloth documents. Keep their
+            // dedicated inspector out of the cloth-list refresh path.
+            _clothList.Items.Clear();
+            _boneList.Items.Clear();
+            _detailsBox.Clear();
+            RefreshParticleGrid();
+            UpdateButtons();
+            return;
+        }
+
         _clothList.Items.Clear();
         foreach (var cloth in _current.GetClothSummaries())
             _clothList.Items.Add(cloth);
@@ -3592,6 +3941,7 @@ public sealed class MainForm : Form
         {
             _simulationTimer.Stop();
             _simulation = null;
+            _hkrgSimulation = null;
             _simulationButton.Text = "Run Simulation";
             SetSimulationButtonLock(false);
         }
@@ -3613,7 +3963,7 @@ public sealed class MainForm : Form
         _updatingParticleGrid = true;
         try
         {
-            var previousIndex = selectedListIndex ?? (_current.IsBphhb
+            var previousIndex = selectedListIndex ?? (_current.IsHelperBoneSidecar
                 ? _helperBoneList.SelectedIndex
                 : _editorIndexList.SelectedIndex);
             _particleRows.Clear();
@@ -3623,18 +3973,12 @@ public sealed class MainForm : Form
             _editorDetailGrid.Rows.Clear();
             _particleRelationshipGrid.Rows.Clear();
             _helperBoneList.Items.Clear();
-            _helperBoneDetailGrid.Rows.Clear();
-            if (!_current.HasDocument || _clothList.SelectedIndex < 0)
+            ClearHelperBoneDetailGrid();
+            if (_current.IsHelperBoneSidecar)
             {
-                _particlePreview.SetData(null);
-                return;
-            }
-
-            _particleRows = _current.GetParticleRows(_clothList.SelectedIndex).ToList();
-            _boneRows = _current.GetBoneRows(_clothList.SelectedIndex).ToList();
-            _colliderRows = _current.GetColliderRows(_clothList.SelectedIndex).ToList();
-            if (_current.IsBphhb)
-            {
+                // Do this before querying particles/colliders. A BPHYSSB has
+                // editable bone rows but no HKCL root or cloth simulation.
+                _boneRows = _current.GetBoneRows(0).ToList();
                 foreach (var bone in _boneRows)
                     _helperBoneList.Items.Add($"{bone.Index}: {bone.Name}");
 
@@ -3645,6 +3989,17 @@ public sealed class MainForm : Form
                 RefreshSelectedHelperBone();
                 return;
             }
+
+            if (!_current.HasDocument || _clothList.SelectedIndex < 0)
+            {
+                _particlePreview.SetData(null);
+                return;
+            }
+
+            _particleRows = _current.GetParticleRows(_clothList.SelectedIndex).ToList();
+            _boneRows = GetActiveBoneRows(_clothList.SelectedIndex).ToList();
+            _colliderRows = _current.GetColliderRows(_clothList.SelectedIndex).ToList();
+            _hkrgConstraintRows = _current.IsHkrg ? _current.GetHkrgConstraintRows().ToList() : new List<HkrgConstraintEditRow>();
 
             RefreshParticleBindingPanel();
             if (_editorPage == EditorPage.Bones)
@@ -3657,13 +4012,25 @@ public sealed class MainForm : Form
                 foreach (var collider in _colliderRows)
                     _editorIndexList.Items.Add($"{collider.Index}: {collider.Name}");
             }
+            else if (_editorPage == EditorPage.Constraints)
+            {
+                foreach (var constraint in _hkrgConstraintRows)
+                {
+                    var label = string.IsNullOrWhiteSpace(constraint.Name)
+                        ? constraint.ConstraintType
+                        : $"{constraint.Name} ({constraint.ConstraintType})";
+                    _editorIndexList.Items.Add($"{constraint.Index}: {label}");
+                }
+            }
             else
             {
                 foreach (var particle in _particleRows)
                     _editorIndexList.Items.Add($"#{particle.Index}");
             }
 
+
             _particlePreview.SetData(_current.GetParticlePreview(_clothList.SelectedIndex), resetCamera);
+            _particlePreview.SetReferenceBonesSelectable(IsEditingHkrgModelSkeleton);
             _particlePreview.SetSelectedParticleIndices(_selectedParticleIndices);
             if (_editorIndexList.Items.Count > 0 && previousIndex >= 0)
                 _editorIndexList.SelectedIndex = Math.Clamp(previousIndex, 0, _editorIndexList.Items.Count - 1);
@@ -3688,7 +4055,7 @@ public sealed class MainForm : Form
         _particlePreview.SelectedParticleIndex = -1;
         _particlePreview.SelectedBoneIndex = -1;
         _particlePreview.SelectedColliderIndex = -1;
-        if (_current.IsBphhb)
+        if (_current.IsHelperBoneSidecar)
         {
             RefreshSelectedHelperBone();
             return;
@@ -3702,11 +4069,12 @@ public sealed class MainForm : Form
         }
 
         if (_relationshipGroup != null)
-            _relationshipGroup.Visible = _editorPage == EditorPage.Particles;
+            _relationshipGroup.Visible = !_current.IsHkrg && _editorPage == EditorPage.Particles;
         if (_particleBindGroup != null)
         {
-            _particleBindGroup.Visible = !_current.IsBphhb;
-            _particleBindGroup.Enabled = !_current.IsReadOnlyExternal;
+            _particleBindGroup.Visible = !_current.IsHelperBoneSidecar &&
+                (!_current.IsHkrg || _editorPage is EditorPage.Bones or EditorPage.Colliders);
+            _particleBindGroup.Enabled = !_current.IsReadOnlyExternal || _current.IsHkrg;
         }
 
         if (_editorPage == EditorPage.Bones)
@@ -3735,6 +4103,17 @@ public sealed class MainForm : Form
             return;
         }
 
+        if (_editorPage == EditorPage.Constraints)
+        {
+            var constraint = _hkrgConstraintRows.ElementAtOrDefault(_editorIndexList.SelectedIndex);
+            if (constraint == null)
+                return;
+
+            FillHkrgConstraintDetailGrid(constraint);
+            RefreshParticleBindingPanel();
+            return;
+        }
+
         var particle = _particleRows.ElementAtOrDefault(_editorIndexList.SelectedIndex);
         if (particle == null)
             return;
@@ -3756,8 +4135,8 @@ public sealed class MainForm : Form
 
     private void RefreshSelectedHelperBone()
     {
-        _helperBoneDetailGrid.Rows.Clear();
-        if (!_current.IsBphhb || _helperBoneList.SelectedIndex < 0 || _helperBoneList.SelectedIndex >= _boneRows.Count)
+        ClearHelperBoneDetailGrid();
+        if (!_current.IsHelperBoneSidecar || _helperBoneList.SelectedIndex < 0 || _helperBoneList.SelectedIndex >= _boneRows.Count)
             return;
 
         var bone = _boneRows[_helperBoneList.SelectedIndex];
@@ -3773,6 +4152,16 @@ public sealed class MainForm : Form
         AddHelperBoneDetail("Rotation W", FormatFloat(bone.RotationW));
     }
 
+    private void ClearHelperBoneDetailGrid()
+    {
+        // A DataGridView cannot clear rows while one of those rows is still its
+        // current edit cell. This happens when a support-bone file opens directly.
+        if (_helperBoneDetailGrid.IsCurrentCellInEditMode)
+            _helperBoneDetailGrid.EndEdit();
+
+        _helperBoneDetailGrid.CurrentCell = null;
+        _helperBoneDetailGrid.Rows.Clear();
+    }
     private void AddHelperBoneDetail(string field, string value, bool readOnly = false)
     {
         var row = _helperBoneDetailGrid.Rows.Add(field, value);
@@ -3786,7 +4175,7 @@ public sealed class MainForm : Form
     private void CommitHelperBoneDetailChange()
     {
         if (_committingHelperBoneDetail || _updatingParticleGrid || _applyingSnapshot ||
-            _pendingHelperBoneSnapshot == null || !_current.IsBphhb ||
+            _pendingHelperBoneSnapshot == null || !_current.IsHelperBoneSidecar ||
             _helperBoneList.SelectedIndex < 0 || _helperBoneList.SelectedIndex >= _boneRows.Count)
         {
             return;
@@ -3862,7 +4251,7 @@ public sealed class MainForm : Form
 
     private void AddHelperBone()
     {
-        if (!_current.IsBphhb)
+        if (!_current.IsHelperBoneSidecar)
             return;
 
         RunGuarded(() =>
@@ -3873,13 +4262,13 @@ public sealed class MainForm : Form
             PushUndo(snapshot);
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: _boneRows.Count);
-            _statusLabel.Text = "Added a helper-bone clone. Rename it and adjust its base transform as needed.";
+            _statusLabel.Text = "Added a helper/support-bone clone. Rename it and adjust its base transform as needed.";
         });
     }
 
     private void DuplicateSelectedHelperBone()
     {
-        if (!_current.IsBphhb || _helperBoneList.SelectedIndex < 0)
+        if (!_current.IsHelperBoneSidecar || _helperBoneList.SelectedIndex < 0)
             return;
 
         RunGuarded(() =>
@@ -3890,13 +4279,13 @@ public sealed class MainForm : Form
             PushUndo(snapshot);
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: _boneRows.Count);
-            _statusLabel.Text = "Duplicated helper-bone graph record.";
+            _statusLabel.Text = "Duplicated helper/support-bone graph record.";
         });
     }
 
     private void MirrorHelperBonesAcrossX()
     {
-        if (!_current.IsBphhb || _helperBoneList.SelectedIndex < 0)
+        if (!_current.IsHelperBoneSidecar || _helperBoneList.SelectedIndex < 0)
             return;
 
         RunGuarded(() =>
@@ -3907,13 +4296,13 @@ public sealed class MainForm : Form
             PushUndo(snapshot);
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: selectedIndex);
-            _statusLabel.Text = "Mirrored the selected helper-bone base pose across X.";
+            _statusLabel.Text = "Mirrored the selected helper/support-bone base pose across X.";
         });
     }
 
     private void MoveSelectedHelperBone(int direction)
     {
-        if (!_current.IsBphhb || _helperBoneList.SelectedIndex < 0)
+        if (!_current.IsHelperBoneSidecar || _helperBoneList.SelectedIndex < 0)
             return;
 
         var sourceIndex = _helperBoneList.SelectedIndex;
@@ -3929,8 +4318,8 @@ public sealed class MainForm : Form
             _redoStack.Clear();
             RefreshParticleGrid(resetCamera: false, selectedListIndex: destinationIndex);
             _statusLabel.Text = direction < 0
-                ? "Moved the helper-bone graph entry up."
-                : "Moved the helper-bone graph entry down.";
+                ? "Moved the helper/support-bone graph entry up."
+                : "Moved the helper/support-bone graph entry down.";
         });
     }
 
@@ -4057,7 +4446,7 @@ public sealed class MainForm : Form
 
     private void ApplyParticleGridEdits()
     {
-        if ((_current.IsReadOnlyExternal && !_current.IsBphcl) || _updatingParticleGrid || !_current.HasDocument || _clothList.SelectedIndex < 0)
+        if ((_current.IsReadOnlyExternal && !_current.IsBphcl && !_current.IsHkrg) || _updatingParticleGrid || !_current.HasDocument || _clothList.SelectedIndex < 0)
             return;
 
         RunGuarded(() =>
@@ -4065,8 +4454,15 @@ public sealed class MainForm : Form
             _editorDetailGrid.EndEdit();
             if (_editorPage == EditorPage.Bones)
             {
+                var originalBones = _boneRows.Select(CloneBone).ToList();
+                var originalColliders = _current.IsHkrg && !IsEditingHkrgModelSkeleton
+                    ? _colliderRows.Select(CloneCollider).ToList()
+                    : null;
                 ApplySelectedBoneDetailsToCache();
-                _current.UpdateBoneRows(_clothList.SelectedIndex, _boneRows);
+                UpdateHkrgRigidBodiesForRagdollPose(originalBones, originalColliders);
+                UpdateActiveBoneRows(_clothList.SelectedIndex, _boneRows);
+                if (_current.IsHkrg && !IsEditingHkrgModelSkeleton)
+                    _current.UpdateColliderRows(_colliderRows);
             }
             else if (_editorPage == EditorPage.Colliders)
             {
@@ -4097,9 +4493,23 @@ public sealed class MainForm : Form
         _committingEditorDetail = true;
         try
         {
+            // HKRG snapshots intentionally use the complete raw document so
+            // undo/redo can restore rigid-body transforms exactly. That means
+            // they do not carry a projected bone-row list, unlike HKCL
+            // snapshots. Capture the current ragdoll rows before the edited
+            // cache is written so manual value edits can use the same body
+            // follow delta as viewport transforms.
+            var originalBones = _editorPage == EditorPage.Bones && _current.IsHkrg && !IsEditingHkrgModelSkeleton
+                ? snapshot.Bones ?? _current.GetBoneRows(_clothList.SelectedIndex).Select(CloneBone).ToList()
+                : snapshot.Bones;
+            var originalColliders = _editorPage == EditorPage.Bones && _current.IsHkrg && !IsEditingHkrgModelSkeleton
+                ? _colliderRows.Select(CloneCollider).ToList()
+                : null;
             ApplySelectedDetailsToCache();
             if (_editorPage == EditorPage.Particles)
                 SynchronizeParticleConstraintGeometry(snapshot.Particles);
+            if (_editorPage == EditorPage.Bones)
+                UpdateHkrgRigidBodiesForRagdollPose(originalBones, originalColliders);
             ApplyCurrentRowsToDocument();
             _pendingEditSnapshot = null;
             PushUndo(snapshot);
@@ -4202,7 +4612,7 @@ public sealed class MainForm : Form
 
     private bool CommitActiveHelperBoneDetail()
     {
-        if (!_current.IsBphhb || !_helperBoneDetailGrid.IsCurrentCellInEditMode ||
+        if (!_current.IsHelperBoneSidecar || !_helperBoneDetailGrid.IsCurrentCellInEditMode ||
             _helperBoneDetailGrid.CurrentCell is not { } cell ||
             !string.Equals(cell.OwningColumn?.Name, "Value", StringComparison.Ordinal) ||
             IsHelperBoneFieldReadOnly(cell.RowIndex))
@@ -4225,6 +4635,8 @@ public sealed class MainForm : Form
             ApplySelectedBoneDetailsToCache();
         else if (_editorPage == EditorPage.Colliders)
             ApplySelectedColliderDetailsToCache();
+        else if (_editorPage == EditorPage.Constraints)
+            ApplySelectedHkrgConstraintDetailsToCache();
         else
             ApplySelectedParticleDetailsToCache();
     }
@@ -4238,10 +4650,16 @@ public sealed class MainForm : Form
         {
             var selected = GetSelectedBone();
             if (selected != null)
-                _current.UpdateBoneRows(_clothList.SelectedIndex, new[] { selected });
+            {
+                UpdateActiveBoneRows(_clothList.SelectedIndex, GetActiveBoneRowsForWrite());
+                if (_current.IsHkrg && !IsEditingHkrgModelSkeleton)
+                    _current.UpdateColliderRows(_colliderRows);
+            }
         }
         else if (_editorPage == EditorPage.Colliders)
             _current.UpdateColliderRows(GetActiveColliderRowsForWrite());
+        else if (_editorPage == EditorPage.Constraints)
+            _current.UpdateHkrgConstraintRows(GetActiveHkrgConstraintRowsForWrite());
         else
             _current.UpdateParticleRows(_clothList.SelectedIndex, _particleRows);
     }
@@ -4258,7 +4676,7 @@ public sealed class MainForm : Form
     }
 
     private bool CanEditActiveEditorValues() =>
-        !_current.IsReadOnlyExternal || _current.IsBphcl;
+        !_current.IsReadOnlyExternal || _current.IsBphcl || _current.IsHkrg;
 
     private IReadOnlyList<ColliderEditRow> GetActiveColliderRowsForWrite()
     {
@@ -4277,6 +4695,30 @@ public sealed class MainForm : Form
         return rows;
     }
 
+    private IReadOnlyList<HkrgConstraintEditRow> GetActiveHkrgConstraintRowsForWrite()
+    {
+        var selected = _editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _hkrgConstraintRows.Count
+            ? _hkrgConstraintRows[_editorIndexList.SelectedIndex]
+            : null;
+        return selected == null ? _hkrgConstraintRows : new[] { selected };
+    }
+    private IReadOnlyList<BoneEditRow> GetActiveBoneRowsForWrite()
+    {
+        var selected = GetSelectedBone();
+        if (selected == null)
+            return _boneRows;
+
+        var rows = new List<BoneEditRow> { selected };
+        if (_mirrorPairs.TryGetValue(selected.Index, out var partnerIndex))
+        {
+            var partner = _boneRows.FirstOrDefault(row => row.Index == partnerIndex);
+            if (partner != null)
+                rows.Add(partner);
+        }
+
+        return rows;
+    }
+
     private void RefreshPreview(bool resetCamera)
     {
         if (_loadingCurrentDocument || !_current.HasDocument || _clothList.SelectedIndex < 0)
@@ -4284,6 +4726,7 @@ public sealed class MainForm : Form
 
         var camera = resetCamera ? null : _particlePreview.CaptureCameraState();
         _particlePreview.SetData(_current.GetParticlePreview(_clothList.SelectedIndex), resetCamera);
+        _particlePreview.SetReferenceBonesSelectable(IsEditingHkrgModelSkeleton);
         if (camera != null)
             _particlePreview.RestoreCameraState(camera);
         RefreshSelectedEditorItem();
@@ -4311,6 +4754,8 @@ public sealed class MainForm : Form
         {
             case EditorPage.Bones:
                 _particlePreview.UpdateBonePreviewRows(_boneRows);
+                if (_current.IsHkrg && !IsEditingHkrgModelSkeleton)
+                    _particlePreview.UpdateColliderPreviewRows(_colliderRows);
                 if (_editorIndexList.SelectedIndex >= 0 && _editorIndexList.SelectedIndex < _boneRows.Count)
                 {
                     var bone = _boneRows[_editorIndexList.SelectedIndex];
@@ -4319,6 +4764,8 @@ public sealed class MainForm : Form
                 break;
             case EditorPage.Colliders:
                 _particlePreview.UpdateColliderPreviewRows(_colliderRows);
+                break;
+            case EditorPage.Constraints:
                 break;
             default:
                 _particlePreview.UpdateParticlePreviewRows(_particleRows);
@@ -4341,20 +4788,30 @@ public sealed class MainForm : Form
             ClothIndex = clothIndex,
             Page = page,
             SelectedIndex = selectedIndex,
-            RawState = _current.CaptureState()
+            RawState = _current.CaptureState(),
+            IsHkrgModelSkeleton = IsEditingHkrgModelSkeleton
         };
     }
 
     private EditorSnapshot CaptureEditorSnapshot(EditorPage page, int clothIndex, int selectedIndex)
     {
+        // HKRG editor rows are projections of a shared ragdoll graph. A bone
+        // edit can move mapped rigid bodies and a rigid-body edit changes both
+        // motion state and local shape data, so every HKRG edit uses one raw
+        // document snapshot for exact undo/redo and tab-refresh safety.
+        if (_current.IsHkrg)
+            return CaptureFullEditorSnapshot(page, clothIndex, selectedIndex);
+
         return new EditorSnapshot
         {
             ClothIndex = clothIndex,
             Page = page,
             SelectedIndex = selectedIndex,
+            IsHkrgModelSkeleton = IsEditingHkrgModelSkeleton,
             Particles = page == EditorPage.Particles ? _current.GetParticleRows(clothIndex).Select(CloneParticle).ToList() : null,
-            Bones = page == EditorPage.Bones ? _current.GetBoneRows(clothIndex).Select(CloneBone).ToList() : null,
-            Colliders = page == EditorPage.Colliders ? _current.GetColliderRows(clothIndex).Select(CloneCollider).ToList() : null
+            Bones = page == EditorPage.Bones ? GetActiveBoneRows(clothIndex).Select(CloneBone).ToList() : null,
+            Colliders = page == EditorPage.Colliders ? _current.GetColliderRows(clothIndex).Select(CloneCollider).ToList() : null,
+            Constraints = page == EditorPage.Constraints && _current.IsHkrg ? _current.GetHkrgConstraintRows().Select(CloneConstraint).ToList() : null
         };
     }
 
@@ -4488,13 +4945,7 @@ public sealed class MainForm : Form
             {
                 _current.RestoreState(snapshot.RawState);
                 RefreshCurrentLists(activeClothIndex);
-                _editorPage = snapshot.Page;
-                _editorTabs.SelectedIndex = snapshot.Page switch
-                {
-                    EditorPage.Bones => 1,
-                    EditorPage.Colliders => 2,
-                    _ => 0
-                };
+                SelectEditorTabForPage(snapshot.Page, snapshot.IsHkrgModelSkeleton);
                 MoveEditorContentToSelectedTab();
                 RefreshParticleGrid(
                     resetCamera: false,
@@ -4505,17 +4956,16 @@ public sealed class MainForm : Form
             if (snapshot.Particles != null)
                 _current.UpdateParticleRows(snapshot.ClothIndex, snapshot.Particles.Select(CloneParticle));
             if (snapshot.Bones != null)
-                _current.UpdateBoneRows(snapshot.ClothIndex, snapshot.Bones.Select(CloneBone));
+            {
+                if (_current.IsHkrg && snapshot.IsHkrgModelSkeleton)
+                    _current.UpdateHkrgModelBoneRows(snapshot.Bones.Select(CloneBone));
+                else
+                    _current.UpdateBoneRows(snapshot.ClothIndex, snapshot.Bones.Select(CloneBone));
+            }
             if (snapshot.Colliders != null)
                 _current.UpdateColliderRows(snapshot.Colliders.Select(CloneCollider));
 
-            _editorPage = snapshot.Page;
-            _editorTabs.SelectedIndex = snapshot.Page switch
-            {
-                EditorPage.Bones => 1,
-                EditorPage.Colliders => 2,
-                _ => 0
-            };
+            SelectEditorTabForPage(snapshot.Page, snapshot.IsHkrgModelSkeleton);
             MoveEditorContentToSelectedTab();
             RefreshParticleGrid(
                 resetCamera: false,
@@ -4532,6 +4982,9 @@ public sealed class MainForm : Form
     {
         _pendingEditSnapshot = null;
         _viewportMoveSnapshot = null;
+        _viewportParticleRowsBeforeTransform = null;
+        _viewportBoneRowsBeforeTransform = null;
+        _viewportColliderRowsBeforeTransform = null;
         _viewportTransformChanged = false;
         _viewportWorldTranslation = System.Numerics.Vector3.Zero;
         _selectedParticleIndices.Clear();
@@ -4652,7 +5105,7 @@ public sealed class MainForm : Form
         _editorDetailGrid.Rows.Clear();
         AddParticleDetail("Index", bone.Index.ToString(CultureInfo.InvariantCulture), true);
         AddParticleDetail("Name", bone.Name, false);
-        AddParticleDetail("Parent", bone.ParentIndex.ToString(CultureInfo.InvariantCulture), _current.IsBphcl);
+        AddParticleDetail("Parent", bone.ParentIndex.ToString(CultureInfo.InvariantCulture), _current.IsBphcl || _current.IsHkrg);
         AddParticleDetail("X", FormatFloat(bone.X), false);
         AddParticleDetail("Y", FormatFloat(bone.Y), false);
         AddParticleDetail("Z", FormatFloat(bone.Z), false);
@@ -4668,7 +5121,7 @@ public sealed class MainForm : Form
 
         var bone = _boneRows[_editorIndexList.SelectedIndex];
         bone.Name = ReadDetailText("Name");
-        if (!_current.IsBphcl)
+        if (!_current.IsBphcl && !_current.IsHkrg)
         {
             bone.ParentIndex = ReadDetailInt("Parent");
         }
@@ -4722,7 +5175,7 @@ public sealed class MainForm : Form
 
         var collider = _colliderRows[_editorIndexList.SelectedIndex];
         collider.Name = ReadDetailText("Name");
-        if (!_current.IsBphcl)
+        if (!_current.IsBphcl && !_current.IsHkrg)
         {
             collider.BoneIndex = ReadDetailBoneIndex("Bone");
             collider.BoneName = _boneRows.FirstOrDefault(bone => bone.Index == collider.BoneIndex)?.Name ?? string.Empty;
@@ -4756,9 +5209,84 @@ public sealed class MainForm : Form
         collider.Radius = ReadDetailFloat("Radius");
     }
 
+
+    private void FillHkrgConstraintDetailGrid(HkrgConstraintEditRow constraint)
+    {
+        _editorDetailGrid.Rows.Clear();
+        AddParticleDetail("Index", constraint.Index.ToString(CultureInfo.InvariantCulture), true);
+        AddParticleDetail("Name", constraint.Name, false);
+        AddParticleDetail("Type", constraint.ConstraintType, true);
+        AddParticleDetail("Body A", FormatConstraintBody(constraint.BodyA, constraint.BodyAName), true);
+        AddParticleDetail("Body B", FormatConstraintBody(constraint.BodyB, constraint.BodyBName), true);
+        AddOptionalConstraintDetail("Twist min", constraint.TwistMinAngle, "TwistMinAngle");
+        AddOptionalConstraintDetail("Twist max", constraint.TwistMaxAngle, "TwistMaxAngle");
+        AddOptionalConstraintDetail("Twist tau", constraint.TwistTau, "TwistTau");
+        AddOptionalConstraintDetail("Twist damping", constraint.TwistDamping, "TwistDamping");
+        AddOptionalConstraintDetail("Cone min", constraint.ConeMinAngle, "ConeMinAngle");
+        AddOptionalConstraintDetail("Cone max", constraint.ConeMaxAngle, "ConeMaxAngle");
+        AddOptionalConstraintDetail("Cone tau", constraint.ConeTau, "ConeTau");
+        AddOptionalConstraintDetail("Cone damping", constraint.ConeDamping, "ConeDamping");
+        AddOptionalConstraintDetail("Plane min", constraint.PlaneMinAngle, "PlaneMinAngle");
+        AddOptionalConstraintDetail("Plane max", constraint.PlaneMaxAngle, "PlaneMaxAngle");
+        AddOptionalConstraintDetail("Plane tau", constraint.PlaneTau, "PlaneTau");
+        AddOptionalConstraintDetail("Plane damping", constraint.PlaneDamping, "PlaneDamping");
+        AddOptionalConstraintDetail("Hinge min", constraint.HingeMinAngle, "HingeMinAngle");
+        AddOptionalConstraintDetail("Hinge max", constraint.HingeMaxAngle, "HingeMaxAngle");
+        AddOptionalConstraintDetail("Hinge tau", constraint.HingeTau, "HingeTau");
+        AddOptionalConstraintDetail("Hinge damping", constraint.HingeDamping, "HingeDamping");
+        AddOptionalConstraintDetail("Angular friction", constraint.AngularFriction, "AngularFriction");
+    }
+
+    private void AddOptionalConstraintDetail(string label, float? value, string propertyName)
+    {
+        if (!value.HasValue)
+            return;
+
+        var rowIndex = _editorDetailGrid.Rows.Add(label, FormatFloat(value.Value));
+        _editorDetailGrid.Rows[rowIndex].Tag = propertyName;
+    }
+
+    private void ApplySelectedHkrgConstraintDetailsToCache()
+    {
+        if (_editorIndexList.SelectedIndex < 0 || _editorIndexList.SelectedIndex >= _hkrgConstraintRows.Count)
+            return;
+
+        var constraint = _hkrgConstraintRows[_editorIndexList.SelectedIndex];
+        constraint.Name = ReadDetailText("Name");
+        foreach (DataGridViewRow row in _editorDetailGrid.Rows)
+        {
+            if (row.Tag is not string propertyName)
+                continue;
+
+            var value = ReadDetailFloat(Convert.ToString(row.Cells["Field"].Value, CultureInfo.InvariantCulture) ?? propertyName);
+            switch (propertyName)
+            {
+                case "TwistMinAngle": constraint.TwistMinAngle = value; break;
+                case "TwistMaxAngle": constraint.TwistMaxAngle = value; break;
+                case "TwistTau": constraint.TwistTau = value; break;
+                case "TwistDamping": constraint.TwistDamping = value; break;
+                case "ConeMinAngle": constraint.ConeMinAngle = value; break;
+                case "ConeMaxAngle": constraint.ConeMaxAngle = value; break;
+                case "ConeTau": constraint.ConeTau = value; break;
+                case "ConeDamping": constraint.ConeDamping = value; break;
+                case "PlaneMinAngle": constraint.PlaneMinAngle = value; break;
+                case "PlaneMaxAngle": constraint.PlaneMaxAngle = value; break;
+                case "PlaneTau": constraint.PlaneTau = value; break;
+                case "PlaneDamping": constraint.PlaneDamping = value; break;
+                case "HingeMinAngle": constraint.HingeMinAngle = value; break;
+                case "HingeMaxAngle": constraint.HingeMaxAngle = value; break;
+                case "HingeTau": constraint.HingeTau = value; break;
+                case "HingeDamping": constraint.HingeDamping = value; break;
+                case "AngularFriction": constraint.AngularFriction = value; break;
+            }
+        }
+    }
+
+    private static string FormatConstraintBody(int index, string name) =>
+        index < 0 ? "None" : $"{index}: {name}";
     private void AddColliderBoneDetail(ColliderEditRow collider)
     {
-        if (_current.IsBphcl)
+        if (_current.IsBphcl || _current.IsHkrg)
         {
             AddParticleDetail("Bone", FormatBoneOption(collider.BoneIndex, collider.BoneName), true);
             return;
@@ -4937,6 +5465,36 @@ public sealed class MainForm : Form
         };
     }
 
+    private static HkrgConstraintEditRow CloneConstraint(HkrgConstraintEditRow row)
+    {
+        return new HkrgConstraintEditRow
+        {
+            Index = row.Index,
+            Name = row.Name,
+            ConstraintType = row.ConstraintType,
+            BodyA = row.BodyA,
+            BodyB = row.BodyB,
+            BodyAName = row.BodyAName,
+            BodyBName = row.BodyBName,
+            TwistMinAngle = row.TwistMinAngle,
+            TwistMaxAngle = row.TwistMaxAngle,
+            TwistTau = row.TwistTau,
+            TwistDamping = row.TwistDamping,
+            ConeMinAngle = row.ConeMinAngle,
+            ConeMaxAngle = row.ConeMaxAngle,
+            ConeTau = row.ConeTau,
+            ConeDamping = row.ConeDamping,
+            PlaneMinAngle = row.PlaneMinAngle,
+            PlaneMaxAngle = row.PlaneMaxAngle,
+            PlaneTau = row.PlaneTau,
+            PlaneDamping = row.PlaneDamping,
+            HingeMinAngle = row.HingeMinAngle,
+            HingeMaxAngle = row.HingeMaxAngle,
+            HingeTau = row.HingeTau,
+            HingeDamping = row.HingeDamping,
+            AngularFriction = row.AngularFriction
+        };
+    }
     private static string FormatFloat(float value)
     {
         return value.ToString("R", CultureInfo.InvariantCulture);
@@ -4972,7 +5530,7 @@ public sealed class MainForm : Form
 
         using var dialog = new SaveFileDialog
         {
-            Title = _current.IsBphhb ? "Export BPHHB JSON summary" : _current.IsBphcl ? "Export BPHCL JSON summary" : "Export HKCL JSON",
+            Title = _current.IsBphhb ? "Export BPHHB JSON summary" : _current.IsBphyssb ? "Export BPHYSSB JSON summary" : _current.IsBphcl ? "Export BPHCL JSON summary" : "Export HKCL JSON",
             Filter = "JSON|*.json|All files|*.*",
             FileName = _current.SuggestFileName(".json")
         };
@@ -5002,7 +5560,8 @@ public sealed class MainForm : Form
 
         var hkclFileName = Path.GetFileNameWithoutExtension(_current.SuggestFileName(".hkcl"));
         var suggestedHkclPath = BuildSuggestedBphysicsHkclPath(hkclFileName);
-        if (!BphysicsExportDialog.TryConfigure(this, suggestedHkclPath, out var hkclPath, out var supportBonePath))
+        var suggestedSupportBonePath = BuildSuggestedBphysicsSidecarPath(hkclFileName, ".bphyssb");
+        if (!BphysicsExportDialog.TryConfigure(this, suggestedHkclPath, suggestedSupportBonePath, out var hkclPath, out var supportBonePath))
             return;
 
         using var dialog = new SaveFileDialog
@@ -5027,10 +5586,15 @@ public sealed class MainForm : Form
 
     private static string BuildSuggestedBphysicsHkclPath(string hkclFileName)
     {
-        var firstSeparator = hkclFileName.IndexOf('_');
-        var secondSeparator = firstSeparator < 0 ? -1 : hkclFileName.IndexOf('_', firstSeparator + 1);
-        var folder = secondSeparator > 0 ? hkclFileName[..secondSeparator] : hkclFileName;
-        return $"{folder}/{hkclFileName}.hkcl";
+        return BuildSuggestedBphysicsSidecarPath(hkclFileName, ".hkcl");
+    }
+
+    private static string BuildSuggestedBphysicsSidecarPath(string fileName, string extension)
+    {
+        var firstSeparator = fileName.IndexOf('_');
+        var secondSeparator = firstSeparator < 0 ? -1 : fileName.IndexOf('_', firstSeparator + 1);
+        var folder = secondSeparator > 0 ? fileName[..secondSeparator] : fileName;
+        return $"{folder}/{fileName}{extension}";
     }
 
     private void ExportFreshHkclFromBphcl()
@@ -5095,7 +5659,11 @@ public sealed class MainForm : Form
         }
 
         var scaleSuggestions = _current.GetBphclConversionScaleSuggestions();
-        if (!BphclConversionScaleDialog.TryGetScales(this, scaleSuggestions, out var solverScales))
+        if (!BphclConversionScaleDialog.TryGetScales(
+                this,
+                scaleSuggestions,
+                out var solverScales,
+                out var constraintScales))
             return;
 
         var warning =
@@ -5118,7 +5686,9 @@ public sealed class MainForm : Form
 
         RunGuarded(() =>
         {
-            var fresh = _current.CreateFreshHkclFromCurrentBphclDocument(solverScales);
+            var fresh = _current.CreateFreshHkclFromCurrentBphclDocument(
+                solverScales,
+                constraintScales);
             fresh.SaveHkcl(dialog.FileName, HkclPlatform.WiiU);
 
             var verification = new HkclService();
@@ -5134,6 +5704,123 @@ public sealed class MainForm : Form
             }
 
             _statusLabel.Text = $"Exported and reopened converted HKCL: {Path.GetFileName(dialog.FileName)}";
+            PlaySaveSound();
+        });
+    }
+
+    private void ConvertCurrentPhysics()
+    {
+        if (_current.IsBphhb)
+        {
+            ExportBphyssbFromBphhb();
+            return;
+        }
+
+        if (_current.IsBphyssb)
+        {
+            ExportBphhbFromBphyssb();
+            return;
+        }
+
+        if (_current.IsBphcl)
+        {
+            ExportFreshHkclDocumentFromBphcl();
+            return;
+        }
+
+        ExportHkclToBphcl();
+    }
+
+    private void ExportBphyssbFromBphhb()
+    {
+        if (!_current.HasDocument || !_current.IsBphhb)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export BPHHB as BPHYSSB",
+            Filter = "BPHYSSB support bones|*.bphyssb|All files|*.*",
+            FileName = Path.GetFileNameWithoutExtension(_current.SuggestFileName(".bphhb")) + ".bphyssb"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        RunGuarded(() =>
+        {
+            var result = _current.ExportBphyssb(dialog.FileName);
+            _statusLabel.Text =
+                $"Exported and reopened BPHYSSB: {Path.GetFileName(dialog.FileName)} " +
+                $"({result.MainBoneCount} main, {result.SupportBoneCount} support bones)";
+            PlaySaveSound();
+        });
+    }
+
+    private void ExportBphhbFromBphyssb()
+    {
+        if (!_current.HasDocument || !_current.IsBphyssb)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export BPHYSSB as BPHHB",
+            Filter = "BPHHB helper bones|*.bphhb|All files|*.*",
+            FileName = Path.GetFileNameWithoutExtension(_current.SuggestFileName(".bphyssb")) + ".bphhb"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        RunGuarded(() =>
+        {
+            var result = _current.ExportBphhb(dialog.FileName);
+            var graph = result.Graph!;
+            _statusLabel.Text =
+                $"Exported BPHHB: {Path.GetFileName(dialog.FileName)} " +
+                $"({graph.Drivers.Count} driver, {graph.Driven.Count} driven bones)";
+            PlaySaveSound();
+        });
+    }
+    private void ExportHkclToBphcl()
+    {
+        if (!_current.HasDocument || _current.IsReadOnlyExternal || _current.IsBphcl || _current.IsHelperBoneSidecar)
+        {
+            MessageBox.Show(this, "Open a normal HKCL file first.", "HKCL to BPHCL conversion", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (MessageBox.Show(
+                this,
+                "Convert every cloth in this HKCL into one brand-new BPHCL file?\n\n" +
+                "This uses PhysicsTool's built-in native serializer and does not use an open donor or template file.",
+                "HKCL to BPHCL conversion",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export HKCL as BPHCL",
+            Filter = "BPHCL|*.bphcl|All files|*.*",
+            FileName = Path.GetFileNameWithoutExtension(_current.SuggestFileName(".hkcl")) + ".bphcl"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        RunGuarded(() =>
+        {
+            var graph = HkclToBphclStandaloneGraphBuilder.Build(_current);
+            File.WriteAllBytes(dialog.FileName, NativeBphclStandaloneGraphWriter.Write(graph));
+            var verification = NativeBphclDocument.Open(dialog.FileName);
+            if (verification.Cloths.Count != graph.Cloths.Count)
+            {
+                throw new InvalidOperationException(
+                    $"The converted BPHCL reopened with {verification.Cloths.Count} cloths; expected {graph.Cloths.Count}.");
+            }
+            if (!verification.IsAampReadable || !verification.AampClothEntryNames.SequenceEqual(graph.Cloths.Select(cloth => cloth.Name)))
+                throw new InvalidOperationException("The converted BPHCL did not preserve its generated AAMP cloth registration.");
+
+            _statusLabel.Text = $"Exported native BPHCL: {Path.GetFileName(dialog.FileName)}";
             PlaySaveSound();
         });
     }
@@ -5195,8 +5882,8 @@ public sealed class MainForm : Form
 
         using var dialog = new SaveFileDialog
         {
-            Title = _current.IsBphhb ? "Save BPHHB As" : _current.IsBphcl ? "Save BPHCL As" : "Save Physics As",
-            Filter = _current.IsBphhb ? "BPHHB helper bones|*.bphhb|All files|*.*" : _current.IsBphcl ? "BPHCL|*.bphcl|All files|*.*" : "Wii U HKCL|*.hkcl|Switch HKCL|*.hkcl|All files|*.*",
+            Title = _current.IsBphhb ? "Save BPHHB As" : _current.IsBphyssb ? "Save BPHYSSB As" : _current.IsBphcl ? "Save BPHCL As" : _current.IsHkrg ? "Save HKRG As" : "Save Physics As",
+            Filter = _current.IsBphhb ? "BPHHB helper bones|*.bphhb|All files|*.*" : _current.IsBphyssb ? "BPHYSSB support bones|*.bphyssb|All files|*.*" : _current.IsBphcl ? "BPHCL|*.bphcl|All files|*.*" : _current.IsHkrg ? "HKRG ragdoll|*.hkrg|All files|*.*" : "Wii U HKCL|*.hkcl|Switch HKCL|*.hkcl|All files|*.*",
             FileName = _current.SuggestFileName(_current.CurrentExtension),
             FilterIndex = !_current.IsReadOnlyExternal && _currentSavePlatform == HkclPlatform.Switch ? 2 : 1
         };
@@ -5204,7 +5891,9 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
-        var platform = !_current.IsReadOnlyExternal && dialog.FilterIndex == 2 ? HkclPlatform.Switch : HkclPlatform.WiiU;
+        var platform = _current.IsHkrg
+            ? _currentSavePlatform
+            : !_current.IsReadOnlyExternal && dialog.FilterIndex == 2 ? HkclPlatform.Switch : HkclPlatform.WiiU;
         RunGuarded(() =>
         {
             _current.SaveHkcl(dialog.FileName, platform);
@@ -5246,7 +5935,7 @@ public sealed class MainForm : Form
 
     private void DuplicateSelectedCloth()
     {
-        if (!_current.HasDocument || _current.IsBphhb || _clothList.SelectedIndex < 0 || _directEditMode)
+        if (!_current.HasDocument || _current.IsHelperBoneSidecar || _clothList.SelectedIndex < 0 || _directEditMode)
             return;
 
         var sourceName = GetSelectedClothName();
@@ -5445,6 +6134,7 @@ public sealed class MainForm : Form
 
     private void UpdateModeLayout()
     {
+        ConfigureEditorTabsForDocument();
         var direct = _directEditMode;
         if (_referenceGroup != null)
             _referenceGroup.Visible = !direct;
@@ -5456,7 +6146,8 @@ public sealed class MainForm : Form
         if (_fileSplit != null)
             _fileSplit.Panel1Collapsed = direct;
 
-        var helperInspector = _current.IsBphhb;
+        var helperInspector = _current.IsHelperBoneSidecar;
+        var hkrgInspector = _current.IsHkrg;
         if (_physicsEditorPanel != null)
             _physicsEditorPanel.Visible = !helperInspector;
         if (_helperBoneEditorPanel != null)
@@ -5470,34 +6161,69 @@ public sealed class MainForm : Form
         if (_editorSideSplit != null)
             _editorSideSplit.Panel2Collapsed = helperInspector;
         if (_directEditGroup != null)
-            _directEditGroup.Text = helperInspector ? "Helper-bone inspection" : "Physics direct editing";
-        if (_editorValueGroup != null)
-            _editorValueGroup.Text = helperInspector ? "Helper bone values" : "Editor values";
-        if (_editorTabs.TabPages.Count >= 3)
         {
-            _editorTabs.TabPages[0].Enabled = !helperInspector;
-            _editorTabs.TabPages[2].Enabled = !helperInspector;
+            _directEditGroup.Text = helperInspector
+                ? _current.IsBphyssb ? "Support-bone inspection" : "Helper-bone inspection"
+                : hkrgInspector
+                    ? "HKRG ragdoll editing"
+                    : "Physics direct editing";
         }
+        if (_editorValueGroup != null)
+        {
+            _editorValueGroup.Text = helperInspector
+                ? _current.IsBphyssb ? "Support bone values" : "Helper bone values"
+                : hkrgInspector
+                    ? "Ragdoll values"
+                    : "Editor values";
+        }
+        _particleEditorTab.Enabled = !helperInspector && !hkrgInspector;
+        _colliderEditorTab.Enabled = !helperInspector;
+        _constraintEditorTab.Enabled = !helperInspector && hkrgInspector;
         if (helperInspector && direct)
             SelectHelperBonePage();
+        else if (hkrgInspector && direct &&
+                 _editorTabs.SelectedTab != _modelBoneEditorTab &&
+                 _editorTabs.SelectedTab != _boneEditorTab &&
+                 _editorTabs.SelectedTab != _colliderEditorTab &&
+                 _editorTabs.SelectedTab != _constraintEditorTab)
+            SelectHkrgBonePage();
 
         UpdateAddButtonText();
         _directEditButton.Text = "Editor";
-        _directEditButton.Visible = !helperInspector;
+        _directEditButton.Visible = !helperInspector && !_current.IsHkrg;
         _directEditButton.UseVisualStyleBackColor = false;
         _directEditButton.BackColor = direct ? Color.FromArgb(85, 105, 130) : Color.FromArgb(64, 64, 64);
         _directEditButton.ForeColor = Color.Gainsboro;
         _directEditButton.Font = direct
             ? new Font(Font, FontStyle.Bold)
             : new Font(Font, FontStyle.Regular);
+        _simulationButton.Visible = !helperInspector;
+        _windSimulationButton.Visible = !helperInspector && !hkrgInspector;
+        _simulationOptionsButton.Visible = !helperInspector && !hkrgInspector;
+        _particleMassScaleButton.Visible = !hkrgInspector;
+        _clothSettingsButton.Visible = !hkrgInspector;
+        _mirrorClothButton.Visible = !hkrgInspector;
+        if (_particleBindGroup != null)
+            _particleBindGroup.Visible = !helperInspector &&
+                (!hkrgInspector || _editorPage is EditorPage.Bones or EditorPage.Colliders);
+        if (_relationshipGroup != null)
+            _relationshipGroup.Visible = !helperInspector && !hkrgInspector && _editorPage == EditorPage.Particles;
         _statusLabel.Text = direct
-            ? _current.IsBphhb
-                ? "Helper-bone editor: edit graph base poses, clone helper bones, or mirror the selected helper bone across X. This file does not contain the full actor skeleton."
+            ? helperInspector
+                ? _current.IsBphyssb
+                    ? "Support-bone editor: edit BotW support-bone names and base poses, clone support bones, or mirror the selected support bone across X."
+                    : "Helper-bone editor: edit graph base poses, clone helper bones, or mirror the selected helper bone across X. This file does not contain the full actor skeleton."
+                : _current.IsHkrg
+                    ? "HKRG ragdoll editor: select Bones for the full model rig, Ragdoll Bones for the physical subset, or Constraints for existing ragdoll/hinge limits."
                 : _current.IsBphcl
                     ? "BPHCL editor: particle values, bone poses, and existing collider transforms are native-editable. Structural changes remain inspection-only."
                     : "Direct edit mode: edit physics values, then save."
-            : _current.IsBphhb
-                ? "BPHHB mode: open Editor to inspect the helper-bone subset and its base transforms."
+            : helperInspector
+                ? _current.IsBphyssb
+                    ? "BPHYSSB mode: open Editor to inspect the BotW support-bone subset and base transforms."
+                    : "BPHHB mode: open Editor to inspect the helper-bone subset and its base transforms."
+                : _current.IsHkrg
+                    ? "HKRG mode: open the inspector to view the ragdoll skeleton and rigid bodies."
                 : _current.IsBphcl
                     ? "BPHCL mode: open/save and merge use the native BPHCL serializer."
                     : "Merge mode: open a reference physics file to copy/remove cloth entries.";
@@ -5508,16 +6234,24 @@ public sealed class MainForm : Form
         var hasCurrent = _current.HasDocument;
         var direct = _directEditMode;
         var readOnlyExternal = _current.IsReadOnlyExternal;
-        var nativeViewportEditable = !readOnlyExternal || _current.IsBphcl;
+        var nativeViewportEditable = !readOnlyExternal || _current.IsBphcl || _current.IsHkrg;
         SetButtonEnabled(_directEditButton, hasCurrent);
         SetButtonEnabled(_openReferenceButton, !direct);
         SetButtonEnabled(_swapFilesButton, !direct && hasCurrent && _reference.HasDocument);
         SetButtonEnabled(_exportJsonButton, hasCurrent);
         SetButtonEnabled(_saveWiiUButton, hasCurrent);
-        SetButtonEnabled(_convertButton, hasCurrent && _current.IsBphcl);
-        SetButtonEnabled(_removeButton, hasCurrent && !_current.IsBphhb && _clothList.SelectedIndex >= 0);
-        SetButtonEnabled(_duplicateButton, !direct && hasCurrent && !_current.IsBphhb && _clothList.SelectedIndex >= 0);
-        var supportsMerge = !_current.IsBphhb && !_reference.IsBphhb && (_current.IsBphcl == _reference.IsBphcl ||
+        var canConvertToBphcl = hasCurrent && !_current.IsReadOnlyExternal && !_current.IsBphcl && !_current.IsHelperBoneSidecar && !direct;
+        SetButtonEnabled(_convertButton, (hasCurrent && (_current.IsBphcl || _current.IsBphhb || _current.IsBphyssb)) || canConvertToBphcl);
+        _convertButton.Text = _current.IsBphcl
+            ? "Convert to HKCL"
+            : _current.IsBphhb
+                ? "Convert to BPHYSSB"
+                : _current.IsBphyssb
+                    ? "Convert to BPHHB"
+                    : "Convert to BPHCL";
+        SetButtonEnabled(_removeButton, hasCurrent && !_current.IsHelperBoneSidecar && !_current.IsHkrg && _clothList.SelectedIndex >= 0);
+        SetButtonEnabled(_duplicateButton, !direct && hasCurrent && !_current.IsHelperBoneSidecar && !_current.IsHkrg && _clothList.SelectedIndex >= 0);
+        var supportsMerge = !_current.IsHelperBoneSidecar && !_reference.IsHelperBoneSidecar && !_current.IsHkrg && !_reference.IsHkrg && (_current.IsBphcl == _reference.IsBphcl ||
             (!_current.IsBphcl && _reference.IsBphcl && _clothList.SelectedIndex >= 0));
         SetButtonEnabled(_mergeButton, !direct && hasCurrent && _reference.HasDocument && _referenceClothList.SelectedIndex >= 0 && supportsMerge);
         var canEditParticleValues = _current.CanEditParticleValues && _editorPage == EditorPage.Particles;
@@ -5529,22 +6263,25 @@ public sealed class MainForm : Form
         SetButtonEnabled(_clothSettingsButton,
             direct && hasCurrent && !_current.IsBphcl && !readOnlyExternal && _clothList.SelectedIndex >= 0);
         SetButtonEnabled(_mirrorClothButton,
-            direct && hasCurrent && !_current.IsBphhb && nativeViewportEditable && _clothList.SelectedIndex >= 0);
-        SetButtonEnabled(_helperAddBoneButton, direct && _current.IsBphhb && hasCurrent && _boneRows.Count > 0);
-        SetButtonEnabled(_helperDuplicateBoneButton, direct && _current.IsBphhb && hasCurrent && _helperBoneList.SelectedIndex >= 0);
-        SetButtonEnabled(_helperMirrorXButton, direct && _current.IsBphhb && hasCurrent && _boneRows.Count > 0);
-        SetButtonEnabled(_helperMoveUpButton, direct && _current.IsBphhb && hasCurrent && _helperBoneList.SelectedIndex > 0);
-        SetButtonEnabled(_helperMoveDownButton, direct && _current.IsBphhb && hasCurrent &&
+            direct && hasCurrent && !_current.IsHelperBoneSidecar && nativeViewportEditable && _clothList.SelectedIndex >= 0);
+        SetButtonEnabled(_helperAddBoneButton, direct && _current.IsHelperBoneSidecar && hasCurrent && _boneRows.Count > 0);
+        SetButtonEnabled(_helperDuplicateBoneButton, direct && _current.IsHelperBoneSidecar && hasCurrent && _helperBoneList.SelectedIndex >= 0);
+        SetButtonEnabled(_helperMirrorXButton, direct && _current.IsHelperBoneSidecar && hasCurrent && _boneRows.Count > 0);
+        SetButtonEnabled(_helperMoveUpButton, direct && _current.IsHelperBoneSidecar && hasCurrent && _helperBoneList.SelectedIndex > 0);
+        SetButtonEnabled(_helperMoveDownButton, direct && _current.IsHelperBoneSidecar && hasCurrent &&
             _helperBoneList.SelectedIndex >= 0 && _helperBoneList.SelectedIndex < _boneRows.Count - 1);
-        SetButtonEnabled(_helperUndoButton, direct && _current.IsBphhb && _undoStack.Count > 0);
-        SetButtonEnabled(_helperRedoButton, direct && _current.IsBphhb && _redoStack.Count > 0);
+        SetButtonEnabled(_helperUndoButton, direct && _current.IsHelperBoneSidecar && _undoStack.Count > 0);
+        SetButtonEnabled(_helperRedoButton, direct && _current.IsHelperBoneSidecar && _redoStack.Count > 0);
         SetButtonEnabled(_addEditorItemButton, direct && hasCurrent && !readOnlyExternal && _clothList.SelectedIndex >= 0);
         SetButtonEnabled(_mirrorModeButton, direct && hasCurrent && nativeViewportEditable && _clothList.SelectedIndex >= 0);
-        var simulationAvailable = direct && hasCurrent && !readOnlyExternal && _clothList.SelectedIndex >= 0 && _particleRows.Count > 0;
+        var simulationAvailable = _current.IsHkrg
+            ? hasCurrent
+            : direct && hasCurrent && !readOnlyExternal && _clothList.SelectedIndex >= 0 && _particleRows.Count > 0;
         if (!simulationAvailable && _simulationTimer.Enabled)
         {
             _simulationTimer.Stop();
             _simulation = null;
+            _hkrgSimulation = null;
             _simulationButton.Text = "Run Simulation";
             SetSimulationButtonLock(false);
         }
@@ -5671,6 +6408,11 @@ public sealed class MainForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 }
+
+
+
+
+
 
 
 

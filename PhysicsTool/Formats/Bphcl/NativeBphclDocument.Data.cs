@@ -121,10 +121,81 @@ public sealed partial class NativeBphclDocument
                 itemIndex,
                 name,
                 ReadUInt32Array(ReadArrayItem(item.DataOffset + 32)).Select(value => checked((int)value)).ToArray(),
+                ReadClothStateBufferAccesses(ReadArrayItem(item.DataOffset + 48)),
+                ReadClothStateTransformSetAccesses(ReadArrayItem(item.DataOffset + 64)),
                 ReadUInt32Array(ReadArrayItem(item.DataOffset + 80)).Select(value => checked((int)value)).ToArray()));
         }
         return result;
     }
+
+    private IReadOnlyList<NativeBphclClothStateBufferAccess> ReadClothStateBufferAccesses(NativeBphclItem? array)
+    {
+        if (array is null || array.Count == 0)
+            return Array.Empty<NativeBphclClothStateBufferAccess>();
+
+        var result = new List<NativeBphclClothStateBufferAccess>(checked((int)array.Count));
+        for (uint index = 0; index < array.Count; index++)
+        {
+            // hclClothState::BufferAccess is 16 bytes: buffer index, four
+            // component flags plus trianglesRead, padding, then shadow index.
+            var offset = checked(array.DataOffset + index * 16u);
+            result.Add(new NativeBphclClothStateBufferAccess(
+                ReadUInt32(offset),
+                ReadByte(offset + 4),
+                ReadByte(offset + 5),
+                ReadByte(offset + 6),
+                ReadByte(offset + 7),
+                ReadByte(offset + 8) != 0,
+                ReadUInt32(offset + 12)));
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<NativeBphclClothStateTransformSetAccess> ReadClothStateTransformSetAccesses(NativeBphclItem? array)
+    {
+        if (array is null || array.Count == 0)
+            return Array.Empty<NativeBphclClothStateTransformSetAccess>();
+
+        var result = new List<NativeBphclClothStateTransformSetAccess>(checked((int)array.Count));
+        for (uint index = 0; index < array.Count; index++)
+        {
+            // hclClothState::TransformSetAccess contains a 32-byte inline
+            // hclTransformSetUsage. The tracker array starts at +0x10 and
+            // contains one 72-byte entry per transform component.
+            var offset = checked(array.DataOffset + index * 32u);
+            result.Add(new NativeBphclClothStateTransformSetAccess(
+                ReadUInt32(offset),
+                ReadByte(offset + 8),
+                ReadByte(offset + 9),
+                ReadTransformTrackers(ReadArrayItem(offset + 16))));
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<NativeBphclTransformTracker> ReadTransformTrackers(NativeBphclItem? array)
+    {
+        if (array is null || array.Count == 0)
+            return Array.Empty<NativeBphclTransformTracker>();
+
+        const uint trackerSize = 72;
+        var result = new List<NativeBphclTransformTracker>(checked((int)array.Count));
+        for (uint index = 0; index < array.Count; index++)
+        {
+            var offset = checked(array.DataOffset + index * trackerSize);
+            result.Add(new NativeBphclTransformTracker(
+                ReadTransformTrackerBitField(offset),
+                ReadTransformTrackerBitField(offset + 24),
+                ReadTransformTrackerBitField(offset + 48)));
+        }
+
+        return result;
+    }
+
+    private NativeBphclBitField ReadTransformTrackerBitField(uint offset) => new(
+        ReadUInt32Array(ReadArrayItem(offset)),
+        ReadUInt32(offset + 16));
 
     private NativeBphclSimCloth ReadSimCloth(int index, int itemIndex)
     {
@@ -163,14 +234,32 @@ public sealed partial class NativeBphclDocument
             }
         }
 
-        var constraintItems = ReadReferenceArray(item.DataOffset + 136)
-            .Concat(ReadReferenceArray(item.DataOffset + 152))
-            .ToArray();
-        var constraintSets = constraintItems
-            .Select((constraintItemIndex, constraintIndex) => ReadConstraintSet(constraintIndex, constraintItemIndex))
+        // hclSimClothData keeps static and anti-pinch sets in separate
+        // arrays. They may share the same Havok class, so retain the source
+        // bucket instead of flattening both lists into anonymous entries.
+        var staticConstraintItems = ReadReferenceArray(item.DataOffset + 136);
+        var antiPinchConstraintItems = ReadReferenceArray(item.DataOffset + 152);
+        var constraintSets = staticConstraintItems
+            .Select((constraintItemIndex, constraintIndex) =>
+                ReadConstraintSet(constraintIndex, constraintItemIndex, isAntiPinch: false))
+            .Concat(antiPinchConstraintItems.Select((constraintItemIndex, antiPinchIndex) =>
+                ReadConstraintSet(staticConstraintItems.Count + antiPinchIndex, constraintItemIndex, isAntiPinch: true)))
             .ToArray();
         var simulationOperatorIds = ReadUInt32Array(ReadMemberArray(item, "m_simOpIds"));
         var staticCollisionMasks = ReadUInt32Array(ReadMemberArray(item, "m_staticCollisionMasks"));
+        var pinchingEntries = ReadArrayItem(item.DataOffset + 408);
+        var collidablePinchingData = pinchingEntries is null
+            ? Array.Empty<NativeBphclCollidablePinchingData>()
+            : Enumerable.Range(0, checked((int)pinchingEntries.Count))
+                .Select(index =>
+                {
+                    var offset = checked(pinchingEntries.DataOffset + (uint)(index * 8));
+                    return new NativeBphclCollidablePinchingData(
+                        ReadByte(offset) != 0,
+                        unchecked((sbyte)ReadByte(offset + 1)),
+                        ReadSingle(offset + 4));
+                })
+                .ToArray();
 
         // Keep the per-simulation controls separate from SimulationInfo.
         // They are native hclSimClothData fields, rather than fields on the
@@ -205,6 +294,7 @@ public sealed partial class NativeBphclDocument
             ReadUInt32(item.DataOffset + 344),
             ReadByte(item.DataOffset + 384) != 0,
             ReadByteArray(ReadArrayItem(item.DataOffset + 392)).Select(value => value != 0).ToArray(),
+            collidablePinchingData,
             ReadUInt16(item.DataOffset + 424),
             ReadUInt16(item.DataOffset + 426),
             ReadUInt32(item.DataOffset + 428));
@@ -371,13 +461,22 @@ public sealed partial class NativeBphclDocument
                     simulationClothIndex = checked((int)ReadUInt32(item.DataOffset + 72));
                     simulateConfigs = ReadSimulateConfigs(ReadArrayItem(item.DataOffset + 80));
                     break;
+                case "hclObjectSpaceSkinOperator":
                 case "hclObjectSpaceSkinPOperator":
                 case "hclObjectSpaceSkinPNOperator":
                 case "hclObjectSpaceSkinPNTOperator":
                 case "hclObjectSpaceSkinPNTBOperator":
-                case "hclBoneSpaceSkinPOperator":
                     outputBuffer = checked((int)ReadUInt32(item.DataOffset + 104));
                     transformSet = checked((int)ReadUInt32(item.DataOffset + 108));
+                    break;
+                case "hclBoneSpaceSkinOperator":
+                case "hclBoneSpaceSkinPOperator":
+                    // Bone-space skin has a smaller parent operator: its
+                    // output/transform routing sits before the inline
+                    // hclBoneSpaceDeformer at +0x60, not at the object-space
+                    // offsets used by hclObjectSpaceSkinP.
+                    outputBuffer = checked((int)ReadUInt32(item.DataOffset + 88));
+                    transformSet = checked((int)ReadUInt32(item.DataOffset + 92));
                     break;
                 case "hclSimpleMeshBoneDeformOperator":
                     inputBuffer = checked((int)ReadUInt32(item.DataOffset + 72));
@@ -425,10 +524,8 @@ public sealed partial class NativeBphclDocument
         if (item is null || item.Count == 0)
             return Array.Empty<NativeBphclSimulateConfig>();
 
-        // hclSimulateOperator::Config is 0x30 bytes. The first array controls
-        // constraint execution. The pointer-like field at +0x18 is not an
-        // hkArray in every known BPHCL layout, so it must not be followed as
-        // one until its native representation is fully documented.
+        // hclSimulateOperator::Config contains an Int32 execution list and a
+        // bool mask indexed by its own per-instance collidable array.
         const uint configSize = 48;
         var result = new List<NativeBphclSimulateConfig>(checked((int)item.Count));
         for (uint index = 0; index < item.Count; index++)
@@ -436,7 +533,7 @@ public sealed partial class NativeBphclDocument
             var offset = checked(item.DataOffset + index * configSize);
             result.Add(new NativeBphclSimulateConfig(
                 ReadInt32Array(ReadArrayItem(offset + 8u)),
-                Array.Empty<int>(),
+                ReadSelectedColliderIndices(ReadArrayItem(offset + 24u)),
                 ReadByte(offset + 40u),
                 ReadByte(offset + 41u),
                 ReadByte(offset + 42u) != 0,
@@ -445,6 +542,12 @@ public sealed partial class NativeBphclDocument
         return result;
     }
 
+    private IReadOnlyList<int> ReadSelectedColliderIndices(NativeBphclItem? item) =>
+        ReadByteArray(item)
+            .Select((enabled, index) => (enabled, index))
+            .Where(entry => entry.enabled != 0)
+            .Select(entry => entry.index)
+            .ToArray();
     private IReadOnlyList<int> ReadInt32Array(NativeBphclItem? item)
     {
         if (item is null || item.Count == 0)
@@ -462,7 +565,7 @@ public sealed partial class NativeBphclDocument
         var result = new List<NativeBphclObjectSpaceSkin>();
         foreach (var op in operators)
         {
-            if (!string.Equals(op.ClassName, "hclObjectSpaceSkinPOperator", StringComparison.Ordinal))
+            if (!IsObjectSpaceSkinOperator(op.ClassName))
                 continue;
 
             var item = GetItem(op.ItemIndex);
@@ -490,6 +593,16 @@ public sealed partial class NativeBphclDocument
 
         return result;
     }
+    private static bool IsObjectSpaceSkinOperator(string className) =>
+        string.Equals(className, "hclObjectSpaceSkinOperator", StringComparison.Ordinal) ||
+        string.Equals(className, "hclObjectSpaceSkinPOperator", StringComparison.Ordinal) ||
+        string.Equals(className, "hclObjectSpaceSkinPNOperator", StringComparison.Ordinal) ||
+        string.Equals(className, "hclObjectSpaceSkinPNTOperator", StringComparison.Ordinal) ||
+        string.Equals(className, "hclObjectSpaceSkinPNTBOperator", StringComparison.Ordinal);
+
+    private static bool IsBoneSpaceSkinOperator(string className) =>
+        string.Equals(className, "hclBoneSpaceSkinOperator", StringComparison.Ordinal) ||
+        string.Equals(className, "hclBoneSpaceSkinPOperator", StringComparison.Ordinal);
 
     private NativeBphclObjectSpaceDeformer ReadObjectSpaceDeformer(uint dataOffset)
     {
@@ -513,7 +626,7 @@ public sealed partial class NativeBphclDocument
         var result = new List<NativeBphclBoneSpaceSkin>();
         foreach (var op in operators)
         {
-            if (!string.Equals(op.ClassName, "hclBoneSpaceSkinPOperator", StringComparison.Ordinal))
+            if (!IsBoneSpaceSkinOperator(op.ClassName))
                 continue;
 
             var item = GetItem(op.ItemIndex);
@@ -562,7 +675,8 @@ public sealed partial class NativeBphclDocument
             return Array.Empty<NativeBphclPackedArray>();
 
         var elementType = GetTypeName(item.TypeIndex) ?? $"type {item.TypeIndex}";
-        var elementSize = TypeDefinitions.FirstOrDefault(type => type.TypeIndex == item.TypeIndex)?.Size;
+        var elementSize = TypeDefinitions.FirstOrDefault(type => type.TypeIndex == item.TypeIndex)?.Size
+            ?? GetKnownSkinBlockSize(elementType);
         if (elementSize is not > 0)
             throw new InvalidDataException($"BPHCL packed skinning array {elementType} has no reflected element size.");
 
@@ -573,6 +687,57 @@ public sealed partial class NativeBphclDocument
         var bytes = new byte[byteCount];
         Buffer.BlockCopy(Bytes, DataSection.PayloadOffset + checked((int)item.DataOffset), bytes, 0, byteCount);
         return new[] { new NativeBphclPackedArray(elementType, checked((int)elementSize.Value), bytes) };
+    }
+
+    // A TYPE table can legally name a packed helper without emitting its own
+    // TBDY record. Havok still knows the native stride; use the documented
+    // fixed layouts so readers can inspect standalone files built from the
+    // compact catalog as well as files that spell every helper body out.
+    private static uint? GetKnownSkinBlockSize(string typeName)
+    {
+        var objectBlend = GetBlendCount(typeName, "hclObjectSpaceDeformer::");
+        if (objectBlend is int objectCount)
+            return checked((uint)(32 + objectCount * 16 * sizeof(ushort) + (objectCount > 1 ? objectCount * 16 : 0)));
+
+        var boneBlend = GetBlendCount(typeName, "hclBoneSpaceDeformer::");
+        if (boneBlend is int boneCount)
+        {
+            var (vertices, bones) = boneCount switch
+            {
+                4 => (4, 16),
+                3 => (5, 15),
+                2 => (8, 16),
+                1 => (16, 16),
+                _ => (0, 0)
+            };
+            if (vertices > 0)
+            {
+                var raw = (vertices + bones) * sizeof(ushort);
+                return checked((uint)((raw + 15) / 16 * 16));
+            }
+        }
+        return null;
+    }
+
+    private static int? GetBlendCount(string typeName, string prefix)
+    {
+        if (!typeName.StartsWith(prefix, StringComparison.Ordinal) ||
+            !typeName.EndsWith("BlendEntryBlock", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return typeName[prefix.Length..^"BlendEntryBlock".Length] switch
+        {
+            "Eight" => 8,
+            "Seven" => 7,
+            "Six" => 6,
+            "Five" => 5,
+            "Four" => 4,
+            "Three" => 3,
+            "Two" => 2,
+            "One" => 1,
+            _ => null
+        };
     }
 
     private IReadOnlyList<NativeBphclPositionBlock> ReadPositionBlocks(
@@ -643,6 +808,9 @@ public sealed partial class NativeBphclDocument
 
     private uint? GetMemberOffset(uint typeIndex, string memberName)
     {
+        var normalizedName = memberName.StartsWith("m_", StringComparison.Ordinal)
+            ? memberName[2..]
+            : memberName;
         var visited = new HashSet<uint>();
         while (typeIndex != 0 && visited.Add(typeIndex))
         {
@@ -650,7 +818,9 @@ public sealed partial class NativeBphclDocument
             if (type is null)
                 return null;
             var member = type.Members.FirstOrDefault(candidate =>
-                string.Equals(candidate.Name, memberName, StringComparison.Ordinal));
+                string.Equals(candidate.Name, memberName, StringComparison.Ordinal) ||
+                string.Equals(candidate.Name, normalizedName, StringComparison.Ordinal) ||
+                string.Equals($"m_{candidate.Name}", memberName, StringComparison.Ordinal));
             if (member is not null)
                 return member.Offset;
             typeIndex = type.ParentTypeIndex;
@@ -722,7 +892,7 @@ public sealed partial class NativeBphclDocument
         return result;
     }
 
-    private NativeBphclConstraintSet ReadConstraintSet(int index, int itemIndex)
+    private NativeBphclConstraintSet ReadConstraintSet(int index, int itemIndex, bool isAntiPinch)
     {
         const uint objectHeaderSize = 24;
         var item = GetItem(itemIndex);
@@ -731,6 +901,7 @@ public sealed partial class NativeBphclDocument
             name = className;
 
         // Every specialised hcl constraint begins with hclConstraintSet.
+        var (localConstraints, localStiffnessConstraints) = ReadLocalRangeConstraints(item.DataOffset, className);
         return new NativeBphclConstraintSet(
             index,
             name,
@@ -739,14 +910,25 @@ public sealed partial class NativeBphclDocument
             ReadUInt32(item.DataOffset + 36),
             itemIndex,
             item.DataOffset,
+            isAntiPinch,
             ReadConstraintLinks(item.DataOffset, className),
-            ReadLocalRangeConstraints(item.DataOffset, className),
+            localConstraints,
+            localStiffnessConstraints,
             ReadTransitionParticleData(item.DataOffset, className),
             ReadConstraintValues(item.DataOffset, className));
     }
 
     private IReadOnlyList<NativeBphclConstraintLink> ReadConstraintLinks(uint constraintOffset, string className)
     {
+        if (string.Equals(className, "hclBonePlanesConstraintSet", StringComparison.Ordinal))
+        {
+            var planeType = TypeDefinitions.FirstOrDefault(type =>
+                string.Equals(GetTypeName(type.TypeIndex), "hclBonePlanesConstraintSet::BonePlane", StringComparison.Ordinal));
+            return planeType is null || planeType.Members.Count == 0
+                ? Array.Empty<NativeBphclConstraintLink>()
+                : ReadConstraintRecords(ReadArrayItem(constraintOffset + 40), planeType);
+        }
+
         var linkType = TypeDefinitions.FirstOrDefault(type =>
             string.Equals(GetTypeName(type.TypeIndex), $"{className}::Link", StringComparison.Ordinal));
         if (linkType is null || linkType.Members.Count == 0)
@@ -762,28 +944,26 @@ public sealed partial class NativeBphclDocument
         return ReadConstraintRecords(linkArray, linkType);
     }
 
-    private IReadOnlyList<NativeBphclConstraintLink> ReadLocalRangeConstraints(uint constraintOffset, string className)
+    private (IReadOnlyList<NativeBphclConstraintLink> Regular, IReadOnlyList<NativeBphclConstraintLink> Stiffness)
+        ReadLocalRangeConstraints(uint constraintOffset, string className)
     {
         if (!string.Equals(className, "hclLocalRangeConstraintSet", StringComparison.Ordinal))
-            return Array.Empty<NativeBphclConstraintLink>();
+            return (Array.Empty<NativeBphclConstraintLink>(), Array.Empty<NativeBphclConstraintLink>());
 
         var localType = TypeDefinitions.FirstOrDefault(type =>
             string.Equals(GetTypeName(type.TypeIndex), "hclLocalRangeConstraintSet::LocalConstraint", StringComparison.Ordinal));
         var stiffnessType = TypeDefinitions.FirstOrDefault(type =>
             string.Equals(GetTypeName(type.TypeIndex), "hclLocalRangeConstraintSet::LocalStiffnessConstraint", StringComparison.Ordinal));
-        if (localType is null || localType.Members.Count == 0)
-            return Array.Empty<NativeBphclConstraintLink>();
-
-        // TotK commonly stores these in localStiffnessConstraints rather than
-        // localConstraints. Both layouts describe the same local range, with
-        // the stiffness form carrying one extra per-record value.
-        var regular = ReadConstraintRecords(ReadArrayItem(constraintOffset + 40), localType);
-        if (regular.Count > 0)
-            return regular;
-
-        return stiffnessType is null || stiffnessType.Members.Count == 0
+        // TotK may populate either or both arrays. The stiffness form carries
+        // an extra per-record coefficient, so dropping it whenever the normal
+        // array has entries loses source behavior.
+        var regular = localType is null || localType.Members.Count == 0
+            ? Array.Empty<NativeBphclConstraintLink>()
+            : ReadConstraintRecords(ReadArrayItem(constraintOffset + 40), localType);
+        var stiffness = stiffnessType is null || stiffnessType.Members.Count == 0
             ? Array.Empty<NativeBphclConstraintLink>()
             : ReadConstraintRecords(ReadArrayItem(constraintOffset + 56), stiffnessType);
+        return (regular, stiffness);
     }
 
     private IReadOnlyList<NativeBphclConstraintLink> ReadTransitionParticleData(uint constraintOffset, string className)
@@ -834,9 +1014,16 @@ public sealed partial class NativeBphclDocument
             var editableValueOffsets = new Dictionary<string, uint>(StringComparer.Ordinal);
             int? particleA = null;
             int? particleB = null;
+            Vector4? planeEquationBone = null;
 
             foreach (var member in recordType.Members)
             {
+                if (member.Name == "planeEquationBone" &&
+                    string.Equals(GetTypeName(member.TypeIndex), "hkVector4", StringComparison.Ordinal))
+                {
+                    planeEquationBone = ReadVector4(linkOffset + member.Offset);
+                    continue;
+                }
                 var value = ReadPrimitive(member.TypeIndex, linkOffset + member.Offset);
                 if (value is null)
                     continue;
@@ -854,7 +1041,8 @@ public sealed partial class NativeBphclDocument
                 particleB,
                 values,
                 linkOffset,
-                editableValueOffsets));
+                editableValueOffsets,
+                planeEquationBone));
         }
         return links;
     }
@@ -869,7 +1057,9 @@ public sealed partial class NativeBphclDocument
             if (fieldSize == 0)
                 return 0;
             size = Math.Max(size, member.Offset + fieldSize);
-            alignment = Math.Max(alignment, Math.Min(fieldSize, 4u));
+            // Havok aligns SIMD vectors and matrices to 16 bytes inside
+            // record arrays. Scalar-only link records remain 4-byte aligned.
+            alignment = Math.Max(alignment, Math.Min(fieldSize, 16u));
         }
         return checked((int)((size + alignment - 1) / alignment * alignment));
     }
@@ -879,6 +1069,7 @@ public sealed partial class NativeBphclDocument
         "hkUint8" or "hkInt8" or "hkBool" => 1,
         "hkUint16" or "hkInt16" => 2,
         "hkUint32" or "hkInt32" or "hkReal" => 4,
+        "hkVector4" => 16,
         _ => 0
     };
 
@@ -921,7 +1112,9 @@ public sealed partial class NativeBphclDocument
                     ReadVector4(shapeItem.DataOffset + 48),
                     ReadSingle(shapeItem.DataOffset + 80),
                     ReadSingle(shapeItem.DataOffset + 80),
-                    Vector4.Zero, shapeItem.DataOffset),
+                    Vector4.Zero, shapeItem.DataOffset,
+                    ReadVector4(shapeItem.DataOffset + 64),
+                    ReadSingle(shapeItem.DataOffset + 84)),
                 "hclSphereShape" => new NativeBphclColliderShape(
                     shapeTypeName, shapeKind,
                     ReadVector4(shapeItem.DataOffset + 32),
@@ -944,7 +1137,21 @@ public sealed partial class NativeBphclDocument
             };
         }
 
-        return new NativeBphclCollider(index, name, itemIndex, item.DataOffset, translation, axisX, axisY, axisZ, shape, ReadByte(item.DataOffset + 159) != 0);
+        return new NativeBphclCollider(
+            index,
+            name,
+            itemIndex,
+            item.DataOffset,
+            translation,
+            axisX,
+            axisY,
+            axisZ,
+            shape,
+            ReadSingle(item.DataOffset + 152),
+            unchecked((sbyte)ReadByte(item.DataOffset + 156)),
+            ReadByte(item.DataOffset + 157) != 0,
+            ReadByte(item.DataOffset + 158) != 0,
+            ReadByte(item.DataOffset + 159) != 0);
     }
 
     private IReadOnlyList<NativeBphclBone> ReadSkeletonBones(uint skeletonOffset)
@@ -970,6 +1177,7 @@ public sealed partial class NativeBphclDocument
                 ReadByte(boneOffset + 8u) != 0,
                 poses is not null && index < poses.Count ? ReadVector4(poseOffset) : Vector4.Zero,
                 poses is not null && index < poses.Count ? ReadVector4(poseOffset + 16u) : Vector4.Zero,
+                poses is not null && index < poses.Count ? ReadVector4(poseOffset + 32u) : Vector4.One,
                 poseOffset));
         }
         return bones;

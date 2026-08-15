@@ -82,7 +82,39 @@ public sealed record NativeBphclClothState(
     int ItemIndex,
     string Name,
     IReadOnlyList<int> OperatorItemIndices,
+    IReadOnlyList<NativeBphclClothStateBufferAccess> BufferAccesses,
+    IReadOnlyList<NativeBphclClothStateTransformSetAccess> TransformSetAccesses,
     IReadOnlyList<int> SimClothItemIndices);
+
+// hclClothState stores these inline, not as references to buffer objects.
+// Preserve the actual access flags and shadow buffer: they control which
+// vertex buffers Havok uses during animation-to-simulation transitions.
+public sealed record NativeBphclClothStateBufferAccess(
+    uint BufferIndex,
+    byte ComponentFlags0,
+    byte ComponentFlags1,
+    byte ComponentFlags2,
+    byte ComponentFlags3,
+    bool TrianglesRead,
+    uint ShadowBufferIndex);
+
+public sealed record NativeBphclClothStateTransformSetAccess(
+    uint TransformSetIndex,
+    byte ComponentFlags0,
+    byte ComponentFlags1,
+    IReadOnlyList<NativeBphclTransformTracker> TransformTrackers);
+
+// hclTransformSetUsage keeps three tracker bitfields for each transform
+// component. These masks decide which animated bones feed a cloth state and
+// which bones the state is allowed to write back after simulation.
+public sealed record NativeBphclTransformTracker(
+    NativeBphclBitField Read,
+    NativeBphclBitField ReadBeforeWrite,
+    NativeBphclBitField Written);
+
+public sealed record NativeBphclBitField(
+    IReadOnlyList<uint> Words,
+    uint NumBits);
 
 // Buffer definitions describe the real vertex topology consumed by cloth
 // operators. Particle count alone is not enough to safely reconstruct a
@@ -255,6 +287,15 @@ public sealed record NativeBphclLandscapeCollisionData(
     float PinchDetectionRadius,
     float CollisionTolerance);
 
+/// <summary>
+/// Per-instance collider pinch settings stored beside a simulation's collider
+/// references. Their order is the same order used by collision-mask bits.
+/// </summary>
+public sealed record NativeBphclCollidablePinchingData(
+    bool Enabled,
+    sbyte Priority,
+    float Radius);
+
 // These flags sit beside the particle and constraint data. They are easy to
 // overlook because they are not part of the simulation-info subobject, but
 // Havok uses them while it initializes a simulation instance.
@@ -269,6 +310,7 @@ public sealed record NativeBphclSimulationRuntime(
     uint NumLandscapeCollidableParticles,
     bool PinchDetectionEnabled,
     IReadOnlyList<bool> PerParticlePinchDetectionEnabledFlags,
+    IReadOnlyList<NativeBphclCollidablePinchingData> CollidablePinchingData,
     ushort MinPinchedParticleIndex,
     ushort MaxPinchedParticleIndex,
     uint MaxCollisionPairs);
@@ -301,12 +343,15 @@ public sealed record NativeBphclConstraintSet(
     uint ConstraintType,
     int ItemIndex,
     uint DataOffset,
+    bool IsAntiPinch,
     IReadOnlyList<NativeBphclConstraintLink> Links,
     IReadOnlyList<NativeBphclConstraintLink> LocalConstraints,
+    IReadOnlyList<NativeBphclConstraintLink> LocalStiffnessConstraints,
     IReadOnlyList<NativeBphclConstraintLink> TransitionParticles,
     IReadOnlyDictionary<string, double> Values)
 {
     public int LinkCount => Links.Count;
+    public int RecordCount => Links.Count + LocalConstraints.Count + LocalStiffnessConstraints.Count + TransitionParticles.Count;
 }
 
 public sealed record NativeBphclConstraintLink(
@@ -315,7 +360,8 @@ public sealed record NativeBphclConstraintLink(
     int? ParticleB,
     IReadOnlyDictionary<string, double> Values,
     uint DataOffset,
-    IReadOnlyDictionary<string, uint> EditableValueOffsets);
+    IReadOnlyDictionary<string, uint> EditableValueOffsets,
+    Vector4? PlaneEquationBone = null);
 
 // This deliberately represents numeric edits within an existing reflected
 // record. It is not an array editor: link insertion/removal needs ITEM/PTCH
@@ -356,7 +402,9 @@ public sealed record NativeBphclColliderShape(
     float Radius,
     float EndRadius,
     Vector4 PlaneEquation,
-    uint DataOffset);
+    uint DataOffset,
+    Vector4 Direction = default,
+    float CapsuleLengthSquaredInverse = 0.0f);
 
 /// <summary>Only existing transform and shape values are writable; names and
 /// collider ownership need relocation-aware structural editing.</summary>
@@ -379,6 +427,10 @@ public sealed record NativeBphclCollider(
     Vector4 AxisY,
     Vector4 AxisZ,
     NativeBphclColliderShape Shape,
+    float PinchDetectionRadius,
+    sbyte PinchDetectionPriority,
+    bool PinchDetectionEnabled,
+    bool VirtualCollisionPointCollisionEnabled,
     bool Enabled);
 
 public sealed record NativeBphclSkeleton(
@@ -398,6 +450,7 @@ public sealed record NativeBphclBone(
     bool LockTranslation,
     Vector4 Translation,
     Vector4 Rotation,
+    Vector4 Scale,
     uint PoseDataOffset);
 
 /// <summary>Only an existing bone reference pose is writable in place.</summary>

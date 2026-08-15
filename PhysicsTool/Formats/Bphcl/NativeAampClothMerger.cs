@@ -322,7 +322,10 @@ internal static class NativeAampClothMerger
         var targetArchive = AampArchive.Read(targetAamp, 0, checked((uint)targetAamp.Length));
         var targetList = targetArchive.FindList(listHash);
         var sourceList = sourceArchive.FindList(listHash);
-        var donor = sourceList.Objects.SingleOrDefault(item => string.Equals(item.Name, name, StringComparison.Ordinal));
+        // Fresh standalone conversions can legitimately contain the same AAMP name more
+        // than once when several cloths share a collider. A target AAMP list still
+        // owns a single entry per name, so import the first source definition.
+        var donor = sourceList.Objects.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.Ordinal));
         if (donor == null)
         {
             if (required)

@@ -16,8 +16,8 @@ internal sealed class BphclConversionScaleDialog : Form
         _scales = scales;
         Text = "BPHCL to HKCL conversion scales";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(660, 360);
-        Size = new Size(760, 520);
+        MinimumSize = new Size(780, 360);
+        Size = new Size(1120, 540);
         BackColor = Color.FromArgb(42, 42, 42);
         ForeColor = Color.Gainsboro;
 
@@ -26,22 +26,57 @@ internal sealed class BphclConversionScaleDialog : Form
             Dock = DockStyle.Top,
             Height = 62,
             Padding = new Padding(12, 10, 12, 6),
-            Text = "Choose a solver scale for each cloth. It multiplies dynamic particle mass and divides " +
-                   "inverse mass by the same amount. Constraint stiffness uses the same scale.\r\n" +
-                   "A verified vanilla match is used when one exists; otherwise the converter uses a topology fallback.",
+            Text = "Mass scale multiplies dynamic particle mass and regenerates inverse mass. Constraint scale " +
+                   "changes the soft standard/bend coefficients. It starts at the same suggested value, but can " +
+                   "be adjusted separately for an unmatched cloth.\r\n" +
+                   "A verified vanilla match is used when one exists; otherwise the converter uses a topology fallback. " +
+                   "Watch Max Inv: larger values react faster and can become unstable.",
             ForeColor = Color.Gainsboro,
             BackColor = Color.FromArgb(42, 42, 42)
         };
 
         ConfigureGrid();
+        _grid.CellEndEdit += (_, e) =>
+        {
+            if (e.ColumnIndex == 9)
+                UpdateMassDiagnostics(e.RowIndex);
+        };
+        _grid.EditingControlShowing += (_, e) =>
+        {
+            if (e.Control is TextBox textBox)
+            {
+                textBox.TextChanged -= MassScaleTextBoxChanged;
+                if (_grid.CurrentCell?.ColumnIndex == 9)
+                    textBox.TextChanged += MassScaleTextBoxChanged;
+            }
+        };
         foreach (var scale in scales)
-            _grid.Rows.Add(scale.ClothIndex, scale.ClothName, scale.SuggestionBasis, scale.DefaultScale.ToString("G7", CultureInfo.InvariantCulture), scale.DefaultScale.ToString("G7", CultureInfo.InvariantCulture));
+        {
+            var suggestedMass = scale.DefaultMassScale.ToString("G7", CultureInfo.InvariantCulture);
+            var suggestedConstraints = scale.DefaultConstraintScale.ToString("G7", CultureInfo.InvariantCulture);
+            _grid.Rows.Add(
+                scale.ClothIndex,
+                scale.ClothName,
+                scale.SuggestionBasis,
+                scale.DynamicParticleCount,
+                scale.SourceDynamicMass.ToString("G7", CultureInfo.InvariantCulture),
+                scale.SuggestedBotwDynamicMass.ToString("G7", CultureInfo.InvariantCulture),
+                scale.SuggestedMaxInverseMass.ToString("G7", CultureInfo.InvariantCulture),
+                suggestedMass,
+                suggestedConstraints,
+                suggestedMass,
+                suggestedConstraints);
+        }
 
         var useDefaults = CreateButton("Use suggested scales");
         useDefaults.Click += (_, _) =>
         {
             for (var row = 0; row < _grid.Rows.Count; row++)
-                _grid.Rows[row].Cells[4].Value = _grid.Rows[row].Cells[3].Value;
+            {
+                _grid.Rows[row].Cells[9].Value = _grid.Rows[row].Cells[7].Value;
+                _grid.Rows[row].Cells[10].Value = _grid.Rows[row].Cells[8].Value;
+                UpdateMassDiagnostics(row);
+            }
         };
 
         var cancel = CreateButton("Cancel");
@@ -71,33 +106,92 @@ internal sealed class BphclConversionScaleDialog : Form
     public static bool TryGetScales(
         IWin32Window owner,
         IReadOnlyList<BphclConversionScale> scales,
-        out IReadOnlyDictionary<int, float> values)
+        out IReadOnlyDictionary<int, float> massValues,
+        out IReadOnlyDictionary<int, float> constraintValues)
     {
         using var dialog = new BphclConversionScaleDialog(scales);
         if (dialog.ShowDialog(owner) != DialogResult.OK)
         {
-            values = new Dictionary<int, float>();
+            massValues = new Dictionary<int, float>();
+            constraintValues = new Dictionary<int, float>();
             return false;
         }
 
-        var parsed = new Dictionary<int, float>();
+        var parsedMass = new Dictionary<int, float>();
+        var parsedConstraints = new Dictionary<int, float>();
         for (var row = 0; row < dialog._grid.Rows.Count; row++)
         {
-            var text = Convert.ToString(dialog._grid.Rows[row].Cells[4].Value, CultureInfo.InvariantCulture) ?? string.Empty;
-            if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var scale) ||
-                !float.IsFinite(scale) || scale <= 0.0f)
+            if (!TryReadScale(dialog._grid.Rows[row].Cells[9].Value, out var massScale))
             {
-                MessageBox.Show(owner, $"Enter a positive finite scale for cloth {row}.", "Invalid conversion scale", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                values = new Dictionary<int, float>();
+                MessageBox.Show(owner, $"Enter a positive finite mass scale for cloth {row}.", "Invalid conversion scale", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                massValues = new Dictionary<int, float>();
+                constraintValues = new Dictionary<int, float>();
                 return false;
             }
 
-            parsed[scales[row].ClothIndex] = scale;
+            if (!TryReadScale(dialog._grid.Rows[row].Cells[10].Value, out var constraintScale))
+            {
+                MessageBox.Show(owner, $"Enter a positive finite constraint scale for cloth {row}.", "Invalid conversion scale", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                massValues = new Dictionary<int, float>();
+                constraintValues = new Dictionary<int, float>();
+                return false;
+            }
+
+            parsedMass[scales[row].ClothIndex] = massScale;
+            parsedConstraints[scales[row].ClothIndex] = constraintScale;
         }
 
-        values = parsed;
+        massValues = parsedMass;
+        constraintValues = parsedConstraints;
         return true;
     }
+
+    private static bool TryReadScale(object? cellValue, out float scale)
+    {
+        var text = Convert.ToString(cellValue, CultureInfo.InvariantCulture) ?? string.Empty;
+        return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out scale) &&
+               float.IsFinite(scale) && scale > 0.0f;
+    }
+    private void MassScaleTextBoxChanged(object? sender, EventArgs e)
+    {
+        if (_grid.CurrentCell?.ColumnIndex == 9 && sender is TextBox textBox)
+            UpdateMassDiagnostics(_grid.CurrentCell.RowIndex, textBox.Text);
+    }
+
+    private void UpdateMassDiagnostics(int rowIndex, object? massScaleValue = null)
+    {
+        if (rowIndex < 0 || rowIndex >= _scales.Count || rowIndex >= _grid.Rows.Count)
+            return;
+
+        var row = _grid.Rows[rowIndex];
+        var scaleInfo = _scales[rowIndex];
+        if (!TryReadScale(massScaleValue ?? row.Cells[9].Value, out var massScale))
+        {
+            row.Cells[5].Value = "invalid";
+            row.Cells[6].Value = "invalid";
+            row.Cells[5].Style.ForeColor = Color.LightCoral;
+            row.Cells[6].Style.ForeColor = Color.LightCoral;
+            return;
+        }
+
+        var botwMass = scaleInfo.SourceDynamicMass * massScale;
+        var maxInverse = scaleInfo.DefaultMassScale > float.Epsilon
+            ? scaleInfo.SuggestedMaxInverseMass * (scaleInfo.DefaultMassScale / massScale)
+            : 0.0f;
+
+        row.Cells[5].Value = botwMass.ToString("G7", CultureInfo.InvariantCulture);
+        row.Cells[6].Value = maxInverse.ToString("G7", CultureInfo.InvariantCulture);
+
+        var diagnosticColor = maxInverse switch
+        {
+            > 50.0f => Color.LightCoral,
+            > 20.0f => Color.Khaki,
+            _ => Color.Gainsboro
+        };
+        row.Cells[5].Style.ForeColor = Color.Gainsboro;
+        row.Cells[6].Style.ForeColor = diagnosticColor;
+    }
+
 
     private void ConfigureGrid()
     {
@@ -121,9 +215,15 @@ internal sealed class BphclConversionScaleDialog : Form
         };
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Index", ReadOnly = true, Width = 55 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Cloth", ReadOnly = true, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 240 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Basis", ReadOnly = true, Width = 170 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Suggested", ReadOnly = true, Width = 110 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "BotW scale", Width = 110 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Basis", ReadOnly = true, Width = 190 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Dyn", ReadOnly = true, Width = 48 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Source Mass", ReadOnly = true, Width = 92 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "BotW Mass", ReadOnly = true, Width = 90 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Max Inv", ReadOnly = true, Width = 82 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Suggested Mass", ReadOnly = true, Width = 112 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Suggested Constraints", ReadOnly = true, Width = 136 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Mass Scale", Width = 100 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Constraint Scale", Width = 116 });
     }
 
     private static Button CreateButton(string text)

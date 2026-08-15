@@ -54,6 +54,40 @@ public static class BphhbBridge
     private const uint DriverListHash = 3993686733u;
     private const uint DrivenListHash = 1256621249u;
     private const uint PoseDrivenListHash = 1386686749u;
+    private const uint NameHash = 1579384326u;
+    private const uint CurveDriverHash = 249727330u;
+    private const uint CurveAttributeHash = 75375380u;
+    private const uint CurveKey0Hash = 1692570776u;
+    private const uint CurveKey1Hash = 333816846u;
+    private const uint CurveKey2Hash = 2330785204u;
+    private const uint OutputConnection0Hash = 2390703269u;
+    private const uint OutputConnection1Hash = 918772672u;
+    private const uint BaseTranslationHash = 4181521146u;
+    private const uint BaseRotationHash = 1609157221u;
+    private const uint AimAxisHash = 3442436866u;
+    private const uint UpAxisHash = 907422927u;
+    private const uint RollOutputHash = 2869652774u;
+    private const uint BendHOutputHash = 3079588026u;
+    private const uint BendVOutputHash = 122218518u;
+    private const uint TranslateXOutputHash = 3595547632u;
+    private const uint TranslateYOutputHash = 1861473429u;
+    private const uint TranslateZOutputHash = 2084993915u;
+
+    private const uint SupportHeaderStepHash = 423031007u;
+    private const uint SupportBoneAttributeHash = 554147540u;
+    private const uint SupportConnectionHash = 704082790u;
+    private const uint SupportConnection0Hash = 2693310104u;
+    private const uint SupportConnection1Hash = 3616511502u;
+    private const uint SupportBoneHash = 893828983u;
+    private const uint SupportAimHash = 828945678u;
+    private const uint SupportUpHash = 1133833840u;
+    private const uint SupportSpaceHash = 695386426u;
+    private const uint SupportBendHHash = 318199082u;
+    private const uint SupportBendVHash = 3908593737u;
+    private const uint SupportRollHash = 783626958u;
+    private const uint SupportTranslateXHash = 2040119991u;
+    private const uint SupportTranslateYHash = 245297697u;
+    private const uint SupportTranslateZHash = 2543297435u;
 
     public static BphhbDocumentSummary Load(string path)
     {
@@ -131,6 +165,238 @@ public static class BphhbBridge
         return Load(outputPath);
     }
 
+    /// <summary>
+    /// Rebuilds a TotK helper-bone graph from BotW's native support-bone graph.
+    /// BPHYSSB does not retain every BPHHB field, so an invalid or missing BotW
+    /// space link falls back to the record's own bone instead of inventing a
+    /// parent reference that is unrelated to the exported helper graph.
+    /// </summary>
+    public static BphhbDocumentSummary Export(BphyssbDocumentSummary source, string outputPath)
+    {
+        if (!Path.GetExtension(outputPath).Equals(".bphhb", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("BPHHB exports must use the .bphhb extension.");
+
+        File.WriteAllBytes(outputPath, BuildFromBphyssb(source));
+        var result = Load(outputPath);
+        if (result.Graph == null)
+            throw new InvalidDataException("The converted BPHHB could not be decoded after it was written.");
+        return result;
+    }
+
+    private static byte[] BuildFromBphyssb(BphyssbDocumentSummary source)
+    {
+        var archive = source.Archive
+            ?? throw new InvalidOperationException("This BPHYSSB file could not be decoded into an editable AAMP graph.");
+        if (!string.Equals(archive.Type, "physsb", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Expected a physsb AAMP archive, found '{archive.Type}'.");
+
+        var sourceData = archive.Root.Children.FirstOrDefault(child =>
+            child.FindChild(BotwAampWriter.Crc32("bone_list")) != null &&
+            child.FindChild(BotwAampWriter.Crc32("connection_curve_list")) != null &&
+            child.FindChild(BotwAampWriter.Crc32("main_bone_list")) != null &&
+            child.FindChild(BotwAampWriter.Crc32("support_bone_list")) != null)
+            ?? throw new InvalidDataException("BPHYSSB does not contain a complete support-bone graph.");
+
+        var sourceBones = RequireSourceList(sourceData, "bone_list");
+        var sourceCurves = RequireSourceList(sourceData, "connection_curve_list");
+        var sourceSingles = sourceData.FindChild(BotwAampWriter.Crc32("output_single_list"));
+        var sourceDoubles = sourceData.FindChild(BotwAampWriter.Crc32("output_double_list"));
+        var sourceMain = RequireSourceList(sourceData, "main_bone_list");
+        var sourceSupport = RequireSourceList(sourceData, "support_bone_list");
+
+        var root = new BotwAampWriter.AampListNode("param_root");
+        var header = new BotwAampWriter.AampObjectNode("helper_bone_header");
+        var sourceHeader = archive.Root.Objects.FirstOrDefault();
+        if (sourceHeader?.Find(SupportHeaderStepHash) is { } step)
+            header.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(step.Hash, step.Type, step.Bytes));
+        else
+            header.Parameters.Add(RawFloat(SupportHeaderStepHash, 0.1f));
+        root.Objects.Add(header);
+
+        var data = new BotwAampWriter.AampListNode("helper_bone_data");
+        root.Children.Add(data);
+        var bones = new BotwAampWriter.AampListNode("bone_list");
+        var curves = new BotwAampWriter.AampListNode("connection_curve_list");
+        var outputs = new BotwAampWriter.AampListNode("output_list");
+        var drivers = new BotwAampWriter.AampListNode("driver_bone_list");
+        var driven = new BotwAampWriter.AampListNode("driven_bone_list");
+        var poses = new BotwAampWriter.AampListNode("pose_driven_list");
+        data.Children.Add(bones);
+        data.Children.Add(curves);
+        data.Children.Add(outputs);
+        data.Children.Add(drivers);
+        data.Children.Add(driven);
+        data.Children.Add(poses);
+
+        foreach (var sourceBone in sourceBones.Objects)
+        {
+            var targetBone = new BotwAampWriter.AampObjectNode($"bone_{bones.Objects.Count}");
+            CopyAampParameter(targetBone, sourceBone, NameHash);
+            bones.Objects.Add(targetBone);
+        }
+
+        for (var index = 0; index < sourceMain.Objects.Count; index++)
+        {
+            var sourceDriver = sourceMain.Objects[index];
+            var targetDriver = new BotwAampWriter.AampObjectNode($"driver_bone_{index}");
+            var boneId = ReadRequiredAampInt(sourceDriver, SupportBoneHash, "main_bone_list");
+            targetDriver.Parameters.Add(RawInt(BoneIdHash, boneId));
+            targetDriver.Parameters.Add(RawInt(BaseBoneIdHash, ResolveBaseBone(sourceDriver, boneId, sourceBones.Objects.Count)));
+            CopyAampParameter(targetDriver, sourceDriver, BaseTranslationHash);
+            CopyAampParameter(targetDriver, sourceDriver, BaseRotationHash);
+            CopyAampParameter(targetDriver, sourceDriver, SupportAimHash, AimAxisHash);
+            CopyAampParameter(targetDriver, sourceDriver, SupportUpHash, UpAxisHash);
+            drivers.Objects.Add(targetDriver);
+        }
+
+        for (var index = 0; index < sourceCurves.Objects.Count; index++)
+        {
+            var sourceCurve = sourceCurves.Objects[index];
+            var packed = ReadRequiredAampInt(sourceCurve, SupportBoneAttributeHash, "connection_curve_list");
+            var driverIndex = (int)((uint)packed >> 16);
+            if (driverIndex < 0 || driverIndex >= sourceMain.Objects.Count)
+                throw new InvalidDataException($"BPHYSSB curve #{index} references driver #{driverIndex}, but only {sourceMain.Objects.Count} driver records exist.");
+
+            var targetCurve = new BotwAampWriter.AampObjectNode($"connection_curve_{index}");
+            targetCurve.Parameters.Add(RawInt(CurveDriverHash, driverIndex));
+            targetCurve.Parameters.Add(RawInt(CurveAttributeHash, UnpackBoneAttribute(packed & 0xFFFF, index)));
+            CopyAampParameter(targetCurve, sourceCurve, CurveKey0Hash);
+            CopyAampParameter(targetCurve, sourceCurve, CurveKey1Hash);
+            CopyAampParameter(targetCurve, sourceCurve, CurveKey2Hash);
+            curves.Objects.Add(targetCurve);
+        }
+
+        var outputMap = new Dictionary<int, int>();
+        if (sourceSingles != null)
+        {
+            for (var index = 0; index < sourceSingles.Objects.Count; index++)
+            {
+                var targetOutput = new BotwAampWriter.AampObjectNode($"output_{outputs.Objects.Count}");
+                targetOutput.Parameters.Add(RawInt(OutputConnection0Hash, DecodeCurveReference(ReadRequiredAampInt(sourceSingles.Objects[index], SupportConnectionHash, "output_single_list"))));
+                targetOutput.Parameters.Add(RawInt(OutputConnection1Hash, -1));
+                outputMap[index] = outputs.Objects.Count;
+                outputs.Objects.Add(targetOutput);
+            }
+        }
+        if (sourceDoubles != null)
+        {
+            for (var index = 0; index < sourceDoubles.Objects.Count; index++)
+            {
+                var targetOutput = new BotwAampWriter.AampObjectNode($"output_{outputs.Objects.Count}");
+                targetOutput.Parameters.Add(RawInt(OutputConnection0Hash, DecodeCurveReference(ReadRequiredAampInt(sourceDoubles.Objects[index], SupportConnection0Hash, "output_double_list"))));
+                targetOutput.Parameters.Add(RawInt(OutputConnection1Hash, DecodeCurveReference(ReadRequiredAampInt(sourceDoubles.Objects[index], SupportConnection1Hash, "output_double_list"))));
+                outputMap[EncodeDoubleOutputReference(index)] = outputs.Objects.Count;
+                outputs.Objects.Add(targetOutput);
+            }
+        }
+
+        for (var index = 0; index < sourceSupport.Objects.Count; index++)
+        {
+            var sourceBone = sourceSupport.Objects[index];
+            var boneId = ReadRequiredAampInt(sourceBone, SupportBoneHash, "support_bone_list");
+            var targetDriven = new BotwAampWriter.AampObjectNode($"driven_bone_{index}");
+            targetDriven.Parameters.Add(RawInt(BoneIdHash, boneId));
+            targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("translate_driven_id"), -1));
+            targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("rotate_driven_id"), -1));
+            driven.Objects.Add(targetDriven);
+
+            var targetPose = new BotwAampWriter.AampObjectNode($"pose_driven_{index}");
+            targetPose.Parameters.Add(RawInt(BaseBoneIdHash, ResolveBaseBone(sourceBone, boneId, sourceBones.Objects.Count)));
+            CopyAampParameter(targetPose, sourceBone, BaseTranslationHash);
+            CopyAampParameter(targetPose, sourceBone, BaseRotationHash);
+            CopyAampParameter(targetPose, sourceBone, SupportAimHash, AimAxisHash);
+            CopyAampParameter(targetPose, sourceBone, SupportUpHash, UpAxisHash);
+
+            // Matched Armor 180 helper/support files show that named rotation
+            // channels retain their meaning across the formats.
+            targetPose.Parameters.Add(RawInt(RollOutputHash, MapBphyOutput(sourceBone, SupportRollHash, outputMap)));
+            targetPose.Parameters.Add(RawInt(BendHOutputHash, MapBphyOutput(sourceBone, SupportBendHHash, outputMap)));
+            targetPose.Parameters.Add(RawInt(BendVOutputHash, MapBphyOutput(sourceBone, SupportBendVHash, outputMap)));
+            targetPose.Parameters.Add(RawInt(TranslateXOutputHash, MapBphyOutput(sourceBone, SupportTranslateXHash, outputMap)));
+            targetPose.Parameters.Add(RawInt(TranslateYOutputHash, MapBphyOutput(sourceBone, SupportTranslateYHash, outputMap)));
+            targetPose.Parameters.Add(RawInt(TranslateZOutputHash, MapBphyOutput(sourceBone, SupportTranslateZHash, outputMap)));
+            poses.Objects.Add(targetPose);
+        }
+
+        AddHeaderCount(header, "bone_num", bones.Objects.Count);
+        AddHeaderCount(header, "connection_curve_num", curves.Objects.Count);
+        AddHeaderCount(header, "output_num", outputs.Objects.Count);
+        AddHeaderCount(header, "driver_bone_num", drivers.Objects.Count);
+        AddHeaderCount(header, "driven_bone_num", driven.Objects.Count);
+        AddHeaderCount(header, "pose_driven_num", poses.Objects.Count);
+        AddHeaderCount(header, "position_driven_num", 0);
+        AddHeaderCount(header, "rotate_driven_num", 0);
+        AddHeaderCount(header, "aim_driven_num", 0);
+
+        return BotwAampWriter.WriteArchive(
+            "phhb",
+            root,
+            source.ArchiveVersion,
+            source.FormatVersion,
+            source.ParameterIoVersion);
+    }
+
+    private static AampReadList RequireSourceList(AampReadList parent, string name) =>
+        parent.FindChild(BotwAampWriter.Crc32(name))
+        ?? throw new InvalidDataException($"BPHYSSB is missing '{name}'.");
+
+    private static int ResolveBaseBone(AampReadObject record, int boneId, int boneCount)
+    {
+        var space = ReadOptionalAampInt(record, SupportSpaceHash);
+        return space >= 0 && space < boneCount ? space : boneId;
+    }
+
+    private static int UnpackBoneAttribute(int channel, int curveIndex) => channel switch
+    {
+        2 => 0,
+        0 => 1,
+        1 => 2,
+        _ => throw new InvalidDataException($"BPHYSSB curve #{curveIndex} uses unsupported channel {channel}.")
+    };
+
+    private static int DecodeCurveReference(int reference)
+    {
+        if (reference < 0)
+            return -1;
+        return ((uint)reference & 0xFFFF0000u) == 0x00010000u
+            ? reference & 0xFFFF
+            : reference;
+    }
+
+    private static int EncodeDoubleOutputReference(int index) => index < 0 ? -1 : 0x00010000 | index;
+
+    private static int MapBphyOutput(AampReadObject record, uint hash, IReadOnlyDictionary<int, int> outputMap)
+    {
+        var output = ReadOptionalAampInt(record, hash);
+        return output >= 0 && outputMap.TryGetValue(output, out var target) ? target : -1;
+    }
+
+    private static int ReadRequiredAampInt(AampReadObject record, uint hash, string owner)
+    {
+        var value = record.Find(hash);
+        if (value is not { Type: 2 })
+            throw new InvalidDataException($"BPHYSSB '{owner}' is missing integer parameter 0x{hash:X8}.");
+        return value.AsInt32();
+    }
+
+    private static int ReadOptionalAampInt(AampReadObject record, uint hash) =>
+        record.Find(hash) is { Type: 2 } value ? value.AsInt32() : -1;
+
+    private static void CopyAampParameter(BotwAampWriter.AampObjectNode target, AampReadObject source, uint sourceHash, uint? targetHash = null)
+    {
+        var value = source.Find(sourceHash)
+            ?? throw new InvalidDataException($"BPHYSSB record is missing parameter 0x{sourceHash:X8}.");
+        target.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(targetHash ?? value.Hash, value.Type, value.Bytes));
+    }
+
+    private static void AddHeaderCount(BotwAampWriter.AampObjectNode header, string name, int value) =>
+        header.Parameters.Add(RawInt(BotwAampWriter.Crc32(name), value));
+
+    private static BotwAampWriter.AampParameterNode RawInt(uint hash, int value) =>
+        BotwAampWriter.AampParameterNode.Raw(hash, 2, BitConverter.GetBytes(value));
+
+    private static BotwAampWriter.AampParameterNode RawFloat(uint hash, float value) =>
+        BotwAampWriter.AampParameterNode.Raw(hash, 1, BitConverter.GetBytes(value));
     /// <summary>
     /// Updates the named helper-bone record and its matching base pose records.
     /// BPHHB carries only the helper graph, not the complete actor skeleton.

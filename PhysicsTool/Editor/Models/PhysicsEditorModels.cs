@@ -62,6 +62,244 @@ public sealed class ParticleRelationshipRow
     public bool IsEditable => ConstraintSetIndex >= 0 && (LinkIndex >= 0 || LocalConstraintIndex >= 0);
 }
 
+// Used by format adapters and exporters. The UI continues to show the
+// authored set name, while serializers need the actual Havok runtime class.
+public sealed record ConstraintSetSummary(
+    int Index,
+    string ClassName,
+    string Name,
+    uint ConstraintId = 0,
+    uint ConstraintType = 0);
+// Bend-stiffness links use four particles and carry geometric weights. They
+// are serializer data rather than normal two-particle editor relationships.
+public sealed record BendStiffnessConstraintSetData(
+    int ConstraintSetIndex,
+    string Name,
+    uint ConstraintId,
+    uint ConstraintType,
+    bool ClampBendStiffness,
+    float MaxRestPoseHeightSq,
+    bool UseRestPoseConfig,
+    IReadOnlyList<BendStiffnessConstraintData> Links);
+
+public sealed record BendStiffnessConstraintData(
+    int LinkIndex,
+    int ParticleA,
+    int ParticleB,
+    int ParticleC,
+    int ParticleD,
+    float BendStiffness,
+    float RestCurvature,
+    float WeightA,
+    float WeightB,
+    float WeightC,
+    float WeightD);
+
+// Transition constraints are a distinct solver phase. They are not links:
+// each record controls one particle's handoff between animation and the cloth
+// solver, so standalone conversion must retain them separately.
+public sealed record TransitionConstraintSetData(
+    int ConstraintSetIndex,
+    string Name,
+    uint ConstraintId,
+    uint ConstraintType,
+    float ToAnimationPeriod,
+    float ToAnimationPlusDelayPeriod,
+    float ToSimulationPeriod,
+    float ToSimulationPlusDelayPeriod,
+    uint ReferenceMeshBufferIndex,
+    IReadOnlyList<TransitionConstraintParticleData> Particles);
+
+public sealed record TransitionConstraintParticleData(
+    int Index,
+    int ParticleIndex,
+    int ReferenceVertex,
+    float ToAnimationDelay,
+    float ToSimulationDelay,
+    float ToSimulationMaximumDistance);
+
+// Local-range records keep simulated particles near their skinned reference
+// vertices. In BPHCL, maximumDistance is stored as a shape radius, while the
+// normal limits let a range be one-sided along the surface normal.
+public sealed record LocalRangeConstraintSetData(
+    int ConstraintSetIndex,
+    string Name,
+    uint ConstraintId,
+    uint ConstraintType,
+    uint ReferenceMeshBufferIndex,
+    float Stiffness,
+    int ShapeType,
+    bool ApplyNormalComponent,
+    IReadOnlyList<LocalRangeConstraintData> Constraints);
+
+public sealed record LocalRangeConstraintData(
+    int Index,
+    int ParticleIndex,
+    int ReferenceVertex,
+    float ShapeRadius,
+    float MaxNormalDistance,
+    float MinNormalDistance);
+
+// Bone planes constrain individual particles against a plane expressed in a
+// cloth transform-set bone's local space. They are neither links nor ranges,
+// so native conversion retains their records separately.
+public sealed record BonePlaneConstraintSetData(
+    int ConstraintSetIndex,
+    string Name,
+    uint ConstraintId,
+    uint ConstraintType,
+    uint TransformSetIndex,
+    IReadOnlyList<BonePlaneConstraintData> Planes);
+
+public sealed record BonePlaneConstraintData(
+    int Index,
+    Vector4 PlaneEquationBone,
+    int ParticleIndex,
+    int TransformIndex,
+    float Stiffness);
+
+// SimpleMeshBoneDeform turns the simulated virtual-cloth surface back into
+// animated skeleton transforms. The offsets are native Havok byte offsets:
+// 64 bytes per bone matrix and 6 bytes per triangle index triplet.
+public sealed record SimpleMeshBoneDeformData(
+    int OperatorIndex,
+    int InputBufferIndex,
+    int OutputTransformSetIndex,
+    int BoneAxis,
+    IReadOnlyList<SimpleMeshTriangleBonePairData> TriangleBonePairs,
+    IReadOnlyList<Matrix4x4> LocalBoneTransforms);
+
+public sealed record SimpleMeshTriangleBonePairData(
+    ushort BoneOffset,
+    ushort TriangleOffset);
+
+// Input skinning moves animated skeleton transforms into the virtual cloth
+// buffer before simulation. Keep the packed blend topology explicit so native
+// BPHCL output does not need a runtime donor or guessed weight records.
+public sealed record SkinOperatorData(
+    int OperatorIndex,
+    string ClassName,
+    int OutputBufferIndex,
+    int TransformSetIndex,
+    IReadOnlyList<Matrix4x4> BoneFromSkinMeshTransforms,
+    IReadOnlyList<ushort> TransformSubset,
+    IReadOnlyList<SkinBlendArrayData> BlendArrays,
+    IReadOnlyList<byte> ControlBytes,
+    ushort StartVertexIndex,
+    ushort EndVertexIndex,
+    ushort BatchSizeSpu,
+    bool PartialWrite,
+    IReadOnlyList<SkinPositionBlockData> LocalPositionBlocks,
+    IReadOnlyList<SkinPositionBlockData> LocalUnpackedPositionBlocks);
+
+public sealed record SkinBlendArrayData(
+    string MemberName,
+    int BlendCount,
+    int VertexCount,
+    int BoneCount,
+    IReadOnlyList<SkinBlendBlockData> Blocks);
+
+public sealed record SkinBlendBlockData(
+    IReadOnlyList<ushort> VertexIndices,
+    IReadOnlyList<ushort> BoneIndices,
+    IReadOnlyList<byte> BoneWeights);
+
+// Native object-space BPHCL localPs data is already packed as 64 int16 values.
+// Preserve it for native graph rebuilds; generated HKCL conversions use Positions.
+public sealed record SkinPositionBlockData(
+    IReadOnlyList<Vector4> Positions,
+    IReadOnlyList<short>? NativePackedValues = null);
+
+// Retains the source Havok execution graph for conversion. This is kept out
+// of the UI model because it describes file-runtime plumbing, not authoring
+// controls, and lets native BPHCL output preserve source routing exactly.
+public sealed record ClothRuntimeData(
+    IReadOnlyList<ClothBufferDefinitionData> Buffers,
+    IReadOnlyList<ClothTransformSetDefinitionData> TransformSets,
+    IReadOnlyList<ClothOperatorData> Operators,
+    IReadOnlyList<ClothStateRuntimeData> States);
+
+public sealed record ClothBufferDefinitionData(
+    int Index,
+    string ClassName,
+    string MeshName,
+    string BufferName,
+    int Type,
+    int SubType,
+    int VertexCount,
+    int TriangleCount,
+    IReadOnlyList<ushort> TriangleIndices);
+
+public sealed record ClothTransformSetDefinitionData(
+    int Index,
+    string Name,
+    int Type,
+    int TransformCount);
+
+public sealed record ClothOperatorData(
+    int Index,
+    string ClassName,
+    int? InputBufferIndex,
+    int? OutputBufferIndex,
+    int? TransformSetIndex,
+    int? VertexCount,
+    int? StartVertexIn,
+    int? StartVertexOut,
+    IReadOnlyList<short> VertexInputFromVertexOutput,
+    bool GatherNormals,
+    bool PartialGather,
+    IReadOnlyList<ClothVertexParticlePairData> VertexParticlePairs,
+    int? SimulationClothIndex,
+    int? ReferenceBufferIndex,
+    IReadOnlyList<ClothSimulateConfigData> SimulateConfigs);
+
+public sealed record ClothVertexParticlePairData(ushort VertexIndex, ushort ParticleIndex);
+
+public sealed record ClothSimulateConfigData(
+    IReadOnlyList<int> ConstraintExecution,
+    IReadOnlyList<int> InstanceCollidablesUsed,
+    byte SubSteps,
+    byte NumberOfSolveIterations,
+    bool UseAllInstanceCollidables,
+    bool AdaptConstraintStiffness);
+
+public sealed record ClothStateRuntimeData(
+    int Index,
+    string Name,
+    IReadOnlyList<int> OperatorIndices,
+    IReadOnlyList<int> BufferIndices,
+    IReadOnlyList<int> TransformSetIndices,
+    IReadOnlyList<int> SimulationIndices,
+    IReadOnlyList<ClothStateBufferAccessData>? BufferAccesses = null,
+    IReadOnlyList<ClothStateTransformSetAccessData>? TransformSetAccesses = null);
+
+// hclClothState keeps these structures inline. The short index lists are
+// useful to the editor, but the access flags and transform trackers are
+// required by Havok when a state starts or resumes simulation.
+public sealed record ClothStateBufferAccessData(
+    int BufferIndex,
+    byte ComponentFlags0,
+    byte ComponentFlags1,
+    byte ComponentFlags2,
+    byte ComponentFlags3,
+    bool TrianglesRead,
+    int ShadowBufferIndex);
+
+public sealed record ClothStateBitFieldData(
+    IReadOnlyList<uint> Words,
+    uint NumBits);
+
+public sealed record ClothStateTransformTrackerData(
+    ClothStateBitFieldData Read,
+    ClothStateBitFieldData ReadBeforeWrite,
+    ClothStateBitFieldData Written);
+
+public sealed record ClothStateTransformSetAccessData(
+    int TransformSetIndex,
+    byte ComponentFlags0,
+    byte ComponentFlags1,
+    IReadOnlyList<ClothStateTransformTrackerData> TransformTrackers);
+
 // Collision masks are stored as bits in the native formats. The editor uses
 // these options to expose the cloth-local collider list instead of raw bits.
 public sealed record ParticleColliderOption(int BitIndex, int ColliderIndex, string Name);
@@ -81,6 +319,12 @@ public sealed class BoneEditRow
     public float ScaleX { get; set; } = 1.0f;
     public float ScaleY { get; set; } = 1.0f;
     public float ScaleZ { get; set; } = 1.0f;
+
+    // HKCL/BPHCL reference poses are three Vector4 rows. The editor exposes
+    // only author-facing XYZ/quaternion data, but fresh BPHCL exports must
+    // retain the row W values because native skeletons use them at runtime.
+    public float TranslationW { get; set; }
+    public float ScaleW { get; set; }
 }
 
 public sealed class ColliderEditRow
@@ -113,6 +357,33 @@ public sealed class ColliderEditRow
     public Matrix4x4 Transform { get; set; } = Matrix4x4.Identity;
 }
 
+public sealed class HkrgConstraintEditRow
+{
+    public int Index { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string ConstraintType { get; set; } = string.Empty;
+    public int BodyA { get; set; } = -1;
+    public int BodyB { get; set; } = -1;
+    public string BodyAName { get; set; } = string.Empty;
+    public string BodyBName { get; set; } = string.Empty;
+    public float? TwistMinAngle { get; set; }
+    public float? TwistMaxAngle { get; set; }
+    public float? TwistTau { get; set; }
+    public float? TwistDamping { get; set; }
+    public float? ConeMinAngle { get; set; }
+    public float? ConeMaxAngle { get; set; }
+    public float? ConeTau { get; set; }
+    public float? ConeDamping { get; set; }
+    public float? PlaneMinAngle { get; set; }
+    public float? PlaneMaxAngle { get; set; }
+    public float? PlaneTau { get; set; }
+    public float? PlaneDamping { get; set; }
+    public float? HingeMinAngle { get; set; }
+    public float? HingeMaxAngle { get; set; }
+    public float? HingeTau { get; set; }
+    public float? HingeDamping { get; set; }
+    public float? AngularFriction { get; set; }
+}
 public sealed class ParticlePreviewData
 {
     public List<ParticlePreviewPoint> Particles { get; } = new();
@@ -122,12 +393,24 @@ public sealed class ParticlePreviewData
     public List<ParticlePreviewBoneBinding> BoneBindings { get; } = new();
     public List<BonePreviewPoint> Bones { get; } = new();
     public List<ColliderPreviewShape> Colliders { get; } = new();
+    public List<RagdollConstraintPreviewLink> RagdollConstraints { get; } = new();
     public Vector3 ViewRoot { get; set; } = Vector3.Zero;
     public bool HasViewRoot { get; set; }
     public Vector3 Gravity { get; set; } = new(0.0f, -9.81f, 0.0f);
     public float DampingPerSecond { get; set; }
 }
 
+
+public sealed class RagdollConstraintPreviewLink
+{
+    public int Index { get; set; }
+    public int BodyA { get; set; }
+    public int BodyB { get; set; }
+    public int BoneA { get; set; } = -1;
+    public int BoneB { get; set; } = -1;
+    public string Name { get; set; } = string.Empty;
+    public string Kind { get; set; } = string.Empty;
+}
 public sealed class ParticlePreviewLocalRange
 {
     public int ParticleIndex { get; set; }
@@ -188,6 +471,14 @@ public sealed class BonePreviewPoint
     public int Index { get; set; }
     public int ParentIndex { get; set; }
     public string Name { get; set; } = string.Empty;
+    // Some formats carry a complete visual skeleton alongside the smaller
+    // physics skeleton. Reference bones are drawn for orientation, but cannot
+    // be picked or transformed through the physics editor.
+    public bool IsReference { get; set; }
+    // Index used by the active editor tab. HKRG can show model and ragdoll
+    // skeletons together, each with its own compact 0-based index range.
+    public int EditorIndex { get; set; } = -1;
+    public bool IsSelectable { get; set; } = true;
     public Vector3 Position { get; set; }
     public Vector3 AxisX { get; set; } = Vector3.UnitX;
     public Vector3 AxisY { get; set; } = Vector3.UnitY;
@@ -217,3 +508,4 @@ public sealed class ColliderPreviewShape
     public Vector3 PlaneNormal { get; set; } = Vector3.UnitY;
     public ColliderPreviewKind Kind { get; set; } = ColliderPreviewKind.Capsule;
 }
+

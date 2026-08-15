@@ -49,7 +49,7 @@ internal static class BphclStructuralScaleMatcher
         P("Hair_Back_Havok", 7.50394678f, 15, 9, 6, 9, 57, 5, 8, 20, .133263201f, .0223333295f)
     ];
 
-    public static bool TrySuggest(NativeBphclSimCloth simulation, int boneCount, out float scale, out string basis)
+    public static bool TrySuggest(NativeBphclSimCloth simulation, int boneCount, string clothName, out float scale, out string basis)
     {
         var source = StructuralFingerprint.Create(simulation, boneCount);
         var best = Profiles
@@ -64,11 +64,66 @@ internal static class BphclStructuralScaleMatcher
             return false;
         }
 
+        var sourceFamily = GetClothFamily(clothName);
+        var matchedFamily = GetClothFamily(best.Profile.Name);
+        if (!string.IsNullOrEmpty(sourceFamily) &&
+            !AreCompatibleFamilies(sourceFamily, matchedFamily))
+        {
+            scale = 1.0f;
+            var rejectedConfidence = (int)MathF.Round(best.Score * 100.0f);
+            basis = $"Topology fallback; rejected {best.Profile.Name} ({rejectedConfidence}%) because {sourceFamily} is not {matchedFamily}";
+            return false;
+        }
+
         scale = best.Profile.Scale;
         var confidence = (int)MathF.Round(best.Score * 100.0f);
         var qualifier = best.Score >= 0.80f ? "Strong" : "Probable";
         basis = $"{qualifier} structural match: {best.Profile.Name} ({confidence}%)";
         return true;
+    }
+
+
+    private static bool AreCompatibleFamilies(string sourceFamily, string matchedFamily)
+    {
+        if (string.Equals(sourceFamily, matchedFamily, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return (sourceFamily, matchedFamily) switch
+        {
+            ("Sleeve", "Sode") => true,
+            ("Sode", "Sleeve") => true,
+            ("HairBack", "Hair") => true,
+            ("Hair", "HairBack") => true,
+            _ => false
+        };
+    }
+
+    private static string GetClothFamily(string name)
+    {
+        var normalized = name.StartsWith("Link:", StringComparison.OrdinalIgnoreCase) ? name[5..] : name;
+        normalized = normalized.StartsWith("SimulationMesh_", StringComparison.OrdinalIgnoreCase)
+            ? normalized[15..]
+            : normalized;
+
+        if (normalized.Contains("Hair_Back", StringComparison.OrdinalIgnoreCase)) return "HairBack";
+        if (normalized.Contains("Hair", StringComparison.OrdinalIgnoreCase)) return "Hair";
+        if (normalized.Contains("Earring", StringComparison.OrdinalIgnoreCase)) return "Earring";
+        if (normalized.Contains("Sleeve", StringComparison.OrdinalIgnoreCase)) return "Sleeve";
+        if (normalized.Contains("Sode", StringComparison.OrdinalIgnoreCase)) return "Sode";
+        if (normalized.Contains("Necklace", StringComparison.OrdinalIgnoreCase)) return "Necklace";
+        if (normalized.Contains("Skirt", StringComparison.OrdinalIgnoreCase)) return "Skirt";
+        if (normalized.Contains("Tunic", StringComparison.OrdinalIgnoreCase)) return "Tunic";
+        if (normalized.Contains("Belt", StringComparison.OrdinalIgnoreCase)) return "Belt";
+        if (normalized.Contains("Muffler", StringComparison.OrdinalIgnoreCase)) return "Muffler";
+        if (normalized.Contains("Rope", StringComparison.OrdinalIgnoreCase)) return "Rope";
+        if (normalized.Contains("Knot", StringComparison.OrdinalIgnoreCase)) return "Knot";
+        if (normalized.Contains("Hat", StringComparison.OrdinalIgnoreCase)) return "Hat";
+        if (normalized.Contains("Pony", StringComparison.OrdinalIgnoreCase)) return "Pony";
+        if (normalized.Contains("Dread", StringComparison.OrdinalIgnoreCase)) return "Dread";
+        if (normalized.Contains("Caudal", StringComparison.OrdinalIgnoreCase)) return "Caudal";
+        if (normalized.Contains("Carabiner", StringComparison.OrdinalIgnoreCase)) return "Carabiner";
+        if (normalized.Contains("Headrope", StringComparison.OrdinalIgnoreCase)) return "Headrope";
+        return string.Empty;
     }
 
     private static StructuralProfile P(
@@ -98,7 +153,7 @@ internal static class BphclStructuralScaleMatcher
                 dynamicParticles.Length,
                 simulation.Particles.Count - dynamicParticles.Length,
                 simulation.TriangleCount,
-                simulation.ConstraintSets.Sum(set => set.Links.Count + set.LocalConstraints.Count + set.TransitionParticles.Count),
+                simulation.ConstraintSets.Sum(set => set.RecordCount),
                 simulation.ConstraintSets.Count,
                 simulation.CollidableItemIndices.Count,
                 boneCount,

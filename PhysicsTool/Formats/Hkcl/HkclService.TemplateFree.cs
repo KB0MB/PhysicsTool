@@ -22,8 +22,38 @@ public sealed partial class HkclService
             .Select((cloth, index) =>
             {
                 var simulation = cloth.SimCloths.SingleOrDefault();
-                var (scale, basis) = GetBphclSolverScaleSuggestion(index, cloth.Name, simulation);
-                return new BphclConversionScale(index, StripBphclPrefix(cloth.Name), scale, basis);
+                var dynamicParticles = simulation?.Particles.Where(particle => !particle.Fixed).ToArray()
+                    ?? Array.Empty<NativeBphclParticle>();
+                var sourceDynamicMass = dynamicParticles.Sum(particle => particle.Mass);
+                var (massScale, basis) = GetBphclSolverScaleSuggestion(index, cloth.Name, simulation);
+                // A structural match can be useful for particle mass, but it
+                // does not establish that BotW uses the same link/bend
+                // stiffness conversion. Only measured source profiles provide
+                // an independent constraint multiplier.
+                var constraintScale = BphclConversionProfileCatalog.TryGetConstraintScale(
+                    _bphcl?.SourcePath ?? _path,
+                    cloth.Name,
+                    out var measuredConstraintScale)
+                    ? measuredConstraintScale
+                    : 1.0f;
+                if (!NearlyEqual(massScale, constraintScale))
+                    basis += "; constraint values retained from source";
+                var suggestedBotwMass = sourceDynamicMass * massScale;
+                var suggestedMaxInverseMass = dynamicParticles
+                    .Where(particle => particle.Mass > float.Epsilon)
+                    .Select(particle => 1.0f / (particle.Mass * massScale))
+                    .DefaultIfEmpty(0.0f)
+                    .Max();
+                return new BphclConversionScale(
+                    index,
+                    StripBphclPrefix(cloth.Name),
+                    dynamicParticles.Length,
+                    sourceDynamicMass,
+                    massScale,
+                    constraintScale,
+                    suggestedBotwMass,
+                    suggestedMaxInverseMass,
+                    basis);
             })
             .ToList();
     }
@@ -38,7 +68,8 @@ public sealed partial class HkclService
     /// </summary>
     public HkclService CreateFreshHkclFromCurrentBphcl(
         int sourceClothIndex,
-        IReadOnlyDictionary<int, float>? solverScaleOverrides = null)
+        IReadOnlyDictionary<int, float>? solverScaleOverrides = null,
+        IReadOnlyDictionary<int, float>? constraintScaleOverrides = null)
     {
         var sourceDocument = _bphcl?.NativeDocument
             ?? throw new InvalidOperationException("Open a BPHCL file before creating a fresh HKCL export.");
@@ -106,7 +137,15 @@ public sealed partial class HkclService
         ApplyBphclSimulationSettings(cloth, sourceSimulation);
 
         var solverScale = ResolveBphclSolverScale(sourceClothIndex, sourceSimulation, solverScaleOverrides);
-        ApplyBphclParticles(cloth, sourceSimulation, solverScale);
+        var constraintScale = ResolveBphclConstraintScale(
+            sourceClothIndex,
+            solverScale,
+            constraintScaleOverrides);
+        ApplyBphclParticles(
+            cloth,
+            sourceSimulation,
+            solverScale,
+            preserveSourceLandscapeCollisionBit: false);
         ApplyBphclBufferAndOperatorLayout(
             cloth,
             sourceCloth,
@@ -126,17 +165,33 @@ public sealed partial class HkclService
             skeleton,
             boneMap,
             sourceSimulation.CollidableItemIndices);
+        var activeConvertedColliders = OrderConvertedCollidersBySourceItems(
+            sourceDocument.Colliders,
+            colliders,
+            sourceSimulation.CollidableItemIndices);
         ApplyBphclCollidableTransformMap(
             cloth,
             sourceSimulation.CollidableTransformMap,
             activeSourceColliders.Count,
-            boneMap);
+            boneMap,
+            skeleton,
+            activeConvertedColliders);
         InitializeFreshColliderRuntimeMetadata(cloth, colliders);
-        // BPHCL's link stiffness is already a solver coefficient. The
-        // conversion scale is only for particle mass/inverse mass; multiplying
-        // stiffness as well changes the cloth's actual constraint response.
-        ApplyBphclConstraintLinks(cloth, sourceSimulation, preserveTemplateLayout: false);
-        ApplyBphclConstraintExecution(cloth, sourceSimulation, sourceCloth.Operators);
+        // Real matched pairs scale soft solver coefficients with the same
+        // cloth-specific ratio as dynamic mass. Hard stretch stiffness stays
+        // normalized and is copied verbatim.
+        ApplyBphclConstraintLinks(
+            cloth,
+            sourceSimulation,
+            _bphcl?.SourcePath,
+            sourceCloth.Name,
+            preserveTemplateLayout: false,
+            solverScale: constraintScale);
+        ApplyBphclConstraintExecution(
+            cloth,
+            sourceSimulation,
+            sourceCloth.Name,
+            sourceCloth.Operators);
         ApplyBphclSimpleMeshBoneDeform(cloth, sourceCloth.SimpleMeshBoneDeformers, boneMap);
         BuildFreshClothStates(cloth, sourceCloth);
 
@@ -171,6 +226,26 @@ public sealed partial class HkclService
         return GetBphclSolverScaleSuggestion(clothIndex, sourceName, simulation).Scale;
     }
 
+    private float ResolveBphclConstraintScale(
+        int clothIndex,
+        float massScale,
+        IReadOnlyDictionary<int, float>? overrides)
+    {
+        if (overrides != null && overrides.TryGetValue(clothIndex, out var scale) &&
+            float.IsFinite(scale) && scale > 0.0f)
+        {
+            return scale;
+        }
+
+        var sourceName = _bphcl?.NativeDocument?.Cloths.ElementAtOrDefault(clothIndex)?.Name ?? string.Empty;
+        return BphclConversionProfileCatalog.TryGetConstraintScale(
+            _bphcl?.SourcePath ?? _path,
+            sourceName,
+            out var measuredConstraintScale)
+            ? measuredConstraintScale
+            : 1.0f;
+    }
+
     private (float Scale, string Basis) GetBphclSolverScaleSuggestion(
         int clothIndex,
         string clothName,
@@ -183,7 +258,7 @@ public sealed partial class HkclService
             return (verifiedScale, verifiedBasis);
 
         var boneCount = _bphcl?.NativeDocument?.Skeletons.ElementAtOrDefault(clothIndex)?.BoneCount ?? 0;
-        if (BphclStructuralScaleMatcher.TrySuggest(simulation, boneCount, out var structuralScale, out var structuralBasis))
+        if (BphclStructuralScaleMatcher.TrySuggest(simulation, boneCount, clothName, out var structuralScale, out var structuralBasis))
             return (structuralScale, structuralBasis);
 
         return (Math.Max(1, simulation.Particles.Count), "Topology fallback");
@@ -196,7 +271,8 @@ public sealed partial class HkclService
     /// transform map.
     /// </summary>
     public HkclService CreateFreshHkclFromCurrentBphclDocument(
-        IReadOnlyDictionary<int, float>? solverScaleOverrides = null)
+        IReadOnlyDictionary<int, float>? solverScaleOverrides = null,
+        IReadOnlyDictionary<int, float>? constraintScaleOverrides = null)
     {
         var sourceDocument = _bphcl?.NativeDocument
             ?? throw new InvalidOperationException("Open a BPHCL file before creating a fresh HKCL export.");
@@ -271,7 +347,11 @@ public sealed partial class HkclService
             ApplyBphclSimulationSettings(cloth, simulation);
 
             var solverScale = ResolveBphclSolverScale(index, simulation, solverScaleOverrides);
-            ApplyBphclParticles(cloth, simulation, solverScale);
+            ApplyBphclParticles(
+                cloth,
+                simulation,
+                solverScale,
+                preserveSourceLandscapeCollisionBit: false);
             ApplyBphclBufferAndOperatorLayout(
                 cloth,
                 sourceCloth,
@@ -305,15 +385,34 @@ public sealed partial class HkclService
                 context.Cloth,
                 context.Simulation.CollidableTransformMap,
                 context.Simulation.CollidableItemIndices.Count,
-                context.BoneMap);
+                context.BoneMap,
+                context.Skeleton,
+                OrderConvertedCollidersBySourceItems(
+                    sourceDocument.Colliders,
+                    contextColliders,
+                    context.Simulation.CollidableItemIndices));
             InitializeFreshColliderRuntimeMetadata(context.Cloth, contextColliders);
 
             var solverScale = ResolveBphclSolverScale(
                 contexts.IndexOf(context),
                 context.Simulation,
                 solverScaleOverrides);
-            ApplyBphclConstraintLinks(context.Cloth, context.Simulation, preserveTemplateLayout: false);
-            ApplyBphclConstraintExecution(context.Cloth, context.Simulation, context.SourceCloth.Operators);
+            var constraintScale = ResolveBphclConstraintScale(
+                contexts.IndexOf(context),
+                solverScale,
+                constraintScaleOverrides);
+            ApplyBphclConstraintLinks(
+                context.Cloth,
+                context.Simulation,
+                _bphcl?.SourcePath,
+                context.SourceCloth.Name,
+                preserveTemplateLayout: false,
+                solverScale: constraintScale);
+            ApplyBphclConstraintExecution(
+                context.Cloth,
+                context.Simulation,
+                context.SourceCloth.Name,
+                context.SourceCloth.Operators);
             ApplyBphclSimpleMeshBoneDeform(context.Cloth, context.SourceCloth.SimpleMeshBoneDeformers, context.BoneMap);
             BuildFreshClothStates(context.Cloth, context.SourceCloth);
 
@@ -563,8 +662,14 @@ public sealed partial class HkclService
         _ => className
     };
 
-    private static void InitializeFreshColliderRuntimeMetadata(object cloth, IReadOnlyList<object> colliders)
+    private static void InitializeFreshColliderRuntimeMetadata(
+        object cloth,
+        IReadOnlyList<object> colliders)
     {
+        // BotW's collision runtime expects these HKCL-native defaults. TotK
+        // stores a richer pinching/virtual-collision model, so copying its
+        // bookkeeping fields verbatim can leave otherwise valid capsules
+        // inert after conversion.
         foreach (var collider in colliders)
         {
             SetValue(collider, "pinchDetectionEnabled", false);
@@ -598,7 +703,17 @@ public sealed partial class HkclService
     private static void BuildFreshClothStates(hclClothData cloth, NativeBphclCloth source)
     {
         var states = source.States.Count == 0
-            ? new[] { new NativeBphclClothState(0, -1, "Default", Array.Empty<int>(), Array.Empty<int>()) }
+            ? new[]
+            {
+                new NativeBphclClothState(
+                    0,
+                    -1,
+                    "Default",
+                    Array.Empty<int>(),
+                    Array.Empty<NativeBphclClothStateBufferAccess>(),
+                    Array.Empty<NativeBphclClothStateTransformSetAccess>(),
+                    Array.Empty<int>())
+            }
             : source.States;
         var transformCount = checked((int)(source.TransformSetDefinitions.FirstOrDefault()?.TransformCount ?? 0));
         var skinTransforms = source.ObjectSpaceSkins
@@ -649,12 +764,22 @@ public sealed partial class HkclService
                 sourceState,
                 skinBufferIndex,
                 isDefaultState);
+            // TotK's state tracker records are valid for TotK's transform
+            // scheduler, but their component routing is not interchangeable
+            // with BotW's HKCL runtime. In particular, copying them verbatim
+            // can omit active collider-bone transforms from BotW's per-frame
+            // read set: the capsules remain visible at rest but never update
+            // as collision participants. Build the proven BotW access layout
+            // instead, retaining every skinned input plus every active
+            // collider transform for the default state.
             var transformAccesses = transformCount == 0
                 ? new List<hclClothStateTransformSetAccess>()
                 : new List<hclClothStateTransformSetAccess>
                 {
                     CreateFreshTransformSetAccess(
+                        0,
                         (byte)(isDefaultState ? 11 : 9),
+                        0,
                         isDefaultState
                             ? skinTransforms.Concat(colliderTransforms)
                             : skinTransforms,
@@ -679,9 +804,15 @@ public sealed partial class HkclService
         int skinBufferIndex,
         bool isDefaultState)
     {
+        // Buffer component flags are runtime-generation specific. TotK's
+        // state records use combinations such as 15 and extra gathered-buffer
+        // routes that BotW's HKCL scheduler does not interpret like its own
+        // 7/9 layout. The result can simulate particles but skip collision
+        // response. Rebuild the known BotW state access pattern instead of
+        // copying the source BPHCL access records verbatim.
         var result = new List<hclClothStateBufferAccess>
         {
-            CreateFreshBufferAccess(skinBufferIndex, 7, 0, false, skinBufferIndex)
+            CreateFreshBufferAccess(skinBufferIndex, 7, 0, 0, 0, false, skinBufferIndex)
         };
 
         if (isDefaultState)
@@ -689,27 +820,44 @@ public sealed partial class HkclService
             var simulationBuffer = source.SimpleMeshBoneDeformers
                 .Select(deformer => checked((int)deformer.InputBufferIndex))
                 .FirstOrDefault(skinBufferIndex);
-            result[0].m_bufferUsage.m_perComponentFlags_1 = 9;
-            result.Add(CreateFreshBufferAccess(simulationBuffer, 9, 0, true, simulationBuffer));
+            var simulationComponentFlags = ShouldPreserveSourceDefaultSimulationBufferFlags(source) ? (byte)15 : (byte)9;
+            result[0].m_bufferUsage.m_perComponentFlags_1 = simulationComponentFlags;
+            result.Add(CreateFreshBufferAccess(simulationBuffer, simulationComponentFlags, 0, 0, 0, true, simulationBuffer));
             return result;
         }
 
-        var gatheredBuffer = state.OperatorItemIndices
-            .Where(index => index >= 0 && index < source.Operators.Count)
-            .Select(index => source.Operators[index])
-            .Where(@operator => string.Equals(@operator.ClassName, "hclGatherAllVerticesOperator", StringComparison.Ordinal))
-            .Select(@operator => @operator.OutputBufferIndex)
-            .FirstOrDefault(index => index.HasValue);
-        if (gatheredBuffer.HasValue && gatheredBuffer.Value != skinBufferIndex)
-            result.Add(CreateFreshBufferAccess(gatheredBuffer.Value, 6, 0, false, gatheredBuffer.Value));
+        if (string.Equals(source.Name, "HairLong_1086_SimulationMesh", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(source.Name, "Momi_1086_SimulationMesh", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(source.Name, "Tactile_1086_SimulationMesh", StringComparison.OrdinalIgnoreCase))
+        {
+            var carriedBuffer = state.OperatorItemIndices
+                .Where(index => index >= 0 && index < source.Operators.Count)
+                .Select(index => source.Operators[index])
+                .Where(@operator =>
+                    string.Equals(@operator.ClassName, "hclGatherAllVerticesOperator", StringComparison.Ordinal) ||
+                    string.Equals(@operator.ClassName, "hclCopyVerticesOperator", StringComparison.Ordinal))
+                .Select(@operator => @operator.OutputBufferIndex)
+                .FirstOrDefault(index => index.HasValue);
+            if (carriedBuffer.HasValue && carriedBuffer.Value != skinBufferIndex)
+                result.Add(CreateFreshBufferAccess(carriedBuffer.Value, 6, 0, 0, 0, false, carriedBuffer.Value));
+        }
 
         return result;
     }
+
+    private static bool ShouldPreserveSourceDefaultSimulationBufferFlags(NativeBphclCloth source)
+        => source.Name.Contains("_1061", StringComparison.OrdinalIgnoreCase) &&
+           (source.Name.Contains("Maedare", StringComparison.OrdinalIgnoreCase) ||
+            source.Name.Contains("Necklace", StringComparison.OrdinalIgnoreCase) ||
+            source.Name.Contains("Outer", StringComparison.OrdinalIgnoreCase) ||
+            source.Name.Contains("Sleeve", StringComparison.OrdinalIgnoreCase));
 
     private static hclClothStateBufferAccess CreateFreshBufferAccess(
         int bufferIndex,
         byte componentFlags0,
         byte componentFlags1,
+        byte componentFlags2,
+        byte componentFlags3,
         bool trianglesRead,
         int shadowBufferIndex) => new()
     {
@@ -718,15 +866,53 @@ public sealed partial class HkclService
         {
             m_perComponentFlags_0 = componentFlags0,
             m_perComponentFlags_1 = componentFlags1,
-            m_perComponentFlags_2 = 0,
-            m_perComponentFlags_3 = 0,
+            m_perComponentFlags_2 = componentFlags2,
+            m_perComponentFlags_3 = componentFlags3,
             m_trianglesRead = trianglesRead
         },
         m_shadowBufferIndex = checked((uint)shadowBufferIndex)
     };
 
     private static hclClothStateTransformSetAccess CreateFreshTransformSetAccess(
-        byte componentFlags,
+        NativeBphclClothStateTransformSetAccess source,
+        IEnumerable<int> fallbackReadTransforms,
+        IEnumerable<int> fallbackWrittenTransforms,
+        int fallbackTransformCount)
+    {
+        if (source.TransformTrackers.Count > 0)
+        {
+            return new hclClothStateTransformSetAccess
+            {
+                m_transformSetIndex = source.TransformSetIndex,
+                m_transformSetUsage = new hclTransformSetUsage
+                {
+                    m_perComponentFlags_0 = source.ComponentFlags0,
+                    m_perComponentFlags_1 = source.ComponentFlags1,
+                    m_perComponentTransformTrackers = source.TransformTrackers
+                        .Select(tracker => new hclTransformSetUsageTransformTracker
+                        {
+                            m_read = CreateFreshBitField(tracker.Read),
+                            m_readBeforeWrite = CreateFreshBitField(tracker.ReadBeforeWrite),
+                            m_written = CreateFreshBitField(tracker.Written)
+                        })
+                        .ToList()
+                }
+            };
+        }
+
+        return CreateFreshTransformSetAccess(
+            source.TransformSetIndex,
+            source.ComponentFlags0,
+            source.ComponentFlags1,
+            fallbackReadTransforms,
+            fallbackWrittenTransforms,
+            fallbackTransformCount);
+    }
+
+    private static hclClothStateTransformSetAccess CreateFreshTransformSetAccess(
+        uint transformSetIndex,
+        byte componentFlags0,
+        byte componentFlags1,
         IEnumerable<int> readTransforms,
         IEnumerable<int> writtenTransforms,
         int transformCount)
@@ -737,11 +923,11 @@ public sealed partial class HkclService
 
         return new hclClothStateTransformSetAccess
         {
-            m_transformSetIndex = 0,
+            m_transformSetIndex = transformSetIndex,
             m_transformSetUsage = new hclTransformSetUsage
             {
-                m_perComponentFlags_0 = componentFlags,
-                m_perComponentFlags_1 = 0,
+                m_perComponentFlags_0 = componentFlags0,
+                m_perComponentFlags_1 = componentFlags1,
                 m_perComponentTransformTrackers = new List<hclTransformSetUsageTransformTracker>
                 {
                     new()
@@ -760,6 +946,15 @@ public sealed partial class HkclService
             }
         };
     }
+
+    private static hkBitField CreateFreshBitField(NativeBphclBitField source) => new()
+    {
+        m_storage = new hkBitFieldStoragehkArrayunsignedinthkContainerHeapAllocator
+        {
+            m_words = source.Words.ToList(),
+            m_numBits = checked((int)source.NumBits)
+        }
+    };
 
     private static hkBitField CreateFreshBitField(IEnumerable<int> indices, int numBits)
     {
@@ -811,3 +1006,4 @@ public sealed partial class HkclService
         }
     }
 }
+

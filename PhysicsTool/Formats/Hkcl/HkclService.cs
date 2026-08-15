@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -28,19 +28,24 @@ public sealed partial class HkclService
     private hkRootLevelContainer? _root;
     private BphclDocumentSummary? _bphcl;
     private BphhbDocumentSummary? _bphhb;
+    private BphyssbDocumentSummary? _bphyssb;
+    private bool _isHkrg;
     private string? _path;
 
-    public bool HasDocument => _root != null || _bphcl != null || _bphhb != null;
+    public bool HasDocument => _root != null || _bphcl != null || _bphhb != null || _bphyssb != null;
     public string? SourcePath => _path;
     public bool IsBphcl => _bphcl != null;
     public bool IsBphhb => _bphhb != null;
-    public bool IsReadOnlyExternal => IsBphcl || IsBphhb;
+    public bool IsBphyssb => _bphyssb != null;
+    public bool IsHelperBoneSidecar => IsBphhb || IsBphyssb;
+    public bool IsHkrg => _isHkrg;
+    public bool IsReadOnlyExternal => IsBphcl || IsHelperBoneSidecar || IsHkrg;
     // BPHCL particle records have known fixed-size native layouts. Their
     // position and basic physics values can be changed safely, while BPHCL
     // structural data remains read-only until its ITEM/PTCH writer is proven.
-    public bool CanEditParticleValues => !IsBphhb;
-    public bool CanEditConstraintValues => !IsBphhb;
-    public string CurrentExtension => IsBphcl ? ".bphcl" : IsBphhb ? ".bphhb" : ".hkcl";
+    public bool CanEditParticleValues => !IsHelperBoneSidecar;
+    public bool CanEditConstraintValues => !IsHelperBoneSidecar;
+    public string CurrentExtension => IsBphcl ? ".bphcl" : IsBphhb ? ".bphhb" : IsBphyssb ? ".bphyssb" : IsHkrg ? ".hkrg" : ".hkcl";
 
     /// <summary>
     /// Reads the Havok packfile layout flags without deserializing the document.
@@ -75,7 +80,9 @@ public sealed partial class HkclService
         {
             _bphcl = BphclBridge.Load(path);
             _bphhb = null;
+            _bphyssb = null;
             _root = null;
+            _isHkrg = false;
             _path = path;
             return;
         }
@@ -84,13 +91,28 @@ public sealed partial class HkclService
         {
             _bphhb = BphhbBridge.Load(path);
             _bphcl = null;
+            _bphyssb = null;
             _root = null;
+            _isHkrg = false;
+            _path = path;
+            return;
+        }
+
+        if (extension == ".bphyssb")
+        {
+            _bphyssb = BphyssbBridge.Load(path);
+            _bphcl = null;
+            _bphhb = null;
+            _root = null;
+            _isHkrg = false;
             _path = path;
             return;
         }
 
         _bphcl = null;
         _bphhb = null;
+        _bphyssb = null;
+        _isHkrg = extension == ".hkrg";
         _root = extension == ".json" ? LoadJson(path) : LoadHkcl(path);
         _path = path;
     }
@@ -106,6 +128,12 @@ public sealed partial class HkclService
         if (_bphhb != null)
         {
             File.WriteAllText(path, BphhbBridge.ExportSummary(_bphhb).ToString(Formatting.Indented));
+            return;
+        }
+
+        if (_bphyssb != null)
+        {
+            File.WriteAllText(path, BphyssbBridge.ExportSummary(_bphyssb).ToString(Formatting.Indented));
             return;
         }
 
@@ -134,6 +162,19 @@ public sealed partial class HkclService
             return;
         }
 
+        if (_bphyssb != null)
+        {
+            _bphyssb = BphyssbBridge.Save(_bphyssb, path);
+            _path = path;
+            return;
+        }
+
+        if (IsHkrg && !Path.GetExtension(path).Equals(".hkrg", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("HKRG documents must be saved with the .hkrg extension.");
+
+        if (IsHkrg && !HkrgConstraintFramesAreFinite())
+            RepairHkrgConstraintFramesForCurrentPose(updateMotorTargets: false);
+
         var root = RequireRoot();
         var header = platform == HkclPlatform.WiiU
             ? HKXHeader.BotwWiiu()
@@ -145,6 +186,30 @@ public sealed partial class HkclService
         serializer.Serialize(root, writer, header);
     }
 
+    /// <summary>
+    /// Exports the currently loaded TotK helper-bone graph as BotW's native
+    /// support-bone sidecar. This is deliberately separate from SaveHkcl: the
+    /// formats are both AAMP, but they are different graph layouts.
+    /// </summary>
+    public BphyssbExportSummary ExportBphyssb(string path)
+    {
+        if (_bphhb == null)
+            throw new InvalidOperationException("Open a BPHHB helper-bone file before exporting a BPHYSSB support-bone file.");
+
+        return BphyssbBridge.Export(_bphhb, path);
+    }
+
+    /// <summary>
+    /// Exports the currently loaded BotW support-bone graph as TotK's native
+    /// helper-bone sidecar. This stays independent from cloth conversion.
+    /// </summary>
+    public BphhbDocumentSummary ExportBphhb(string path)
+    {
+        if (_bphyssb == null)
+            throw new InvalidOperationException("Open a BPHYSSB support-bone file before exporting a BPHHB helper-bone file.");
+
+        return BphhbBridge.Export(_bphyssb, path);
+    }
     public string CaptureState()
     {
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -152,6 +217,12 @@ public sealed partial class HkclService
 
         if (_bphhb is { } bphhb)
             return "BPHHB:" + Convert.ToBase64String(bphhb.Bytes);
+
+        if (_bphyssb is { } bphyssb)
+            return "BPHYSSB:" + Convert.ToBase64String(bphyssb.Bytes);
+
+        if (IsHkrg)
+            return "HKRG:" + SerializeRaw(RequireRoot());
 
         if (IsReadOnlyExternal)
             throw new InvalidOperationException("External physics document state snapshots are not implemented yet.");
@@ -166,7 +237,9 @@ public sealed partial class HkclService
             var document = NativeBphclDocument.Parse(Convert.FromBase64String(state[6..]));
             _bphcl = CreateBphclSummary(document, _path ?? "Physics.bphcl");
             _bphhb = null;
+            _bphyssb = null;
             _root = null;
+            _isHkrg = false;
             return;
         }
 
@@ -174,12 +247,36 @@ public sealed partial class HkclService
         {
             _bphhb = BphhbBridge.LoadBytes(Convert.FromBase64String(state[6..]), _path ?? "Physics.bphhb");
             _bphcl = null;
+            _bphyssb = null;
             _root = null;
+            _isHkrg = false;
+            return;
+        }
+
+        if (state.StartsWith("BPHYSSB:", StringComparison.Ordinal))
+        {
+            _bphyssb = BphyssbBridge.LoadBytes(Convert.FromBase64String(state[8..]), _path ?? "Physics.bphyssb");
+            _bphcl = null;
+            _bphhb = null;
+            _root = null;
+            _isHkrg = false;
+            return;
+        }
+
+        if (state.StartsWith("HKRG:", StringComparison.Ordinal))
+        {
+            _bphcl = null;
+            _bphhb = null;
+            _bphyssb = null;
+            _isHkrg = true;
+            _root = DeserializeRoot(state[5..]);
             return;
         }
 
         _bphcl = null;
         _bphhb = null;
+        _bphyssb = null;
+        _isHkrg = false;
         _root = DeserializeRoot(state);
     }
 
@@ -197,6 +294,9 @@ public sealed partial class HkclService
         if (_bphcl != null)
             return _bphcl.Cloths.ElementAtOrDefault(clothIndex)?.Value<string>("name") ?? $"Cloth {clothIndex}";
 
+        if (IsHkrg)
+            return clothIndex == 0 ? "Ragdoll" : $"Ragdoll {clothIndex}";
+
         if (_root == null)
             return $"Cloth {clothIndex}";
 
@@ -211,6 +311,19 @@ public sealed partial class HkclService
 
         if (_bphhb != null)
             return new[] { $"0: Helper bone configuration  |  bones: {_bphhb.HelperBoneNames.Count}  |  BPHHB" };
+
+        if (_bphyssb != null)
+            return new[] { $"0: Support bone configuration  |  bones: {_bphyssb.SupportBoneNames.Count}  |  BPHYSSB" };
+
+        if (IsHkrg)
+        {
+            var ragdoll = GetHkrgRagdollInstance();
+            var constraints = GetList(GetValue(ragdoll, "constraints"))?.Count ?? 0;
+            return new[]
+            {
+                $"0: Ragdoll  |  rigid bodies: {GetHkrgRigidBodies().Count}  |  constraints: {constraints}  |  HKRG"
+            };
+        }
 
         if (_root == null)
             return Array.Empty<string>();
@@ -250,6 +363,21 @@ public sealed partial class HkclService
 
         if (_bphhb != null)
             return _bphhb.HelperBoneNames.Select((name, index) => $"{index}: {name}  |  helper bone").ToArray();
+
+        if (_bphyssb != null)
+            return _bphyssb.SupportBoneNames.Select((name, index) => $"{index}: {name}  |  support bone").ToArray();
+
+        if (IsHkrg)
+        {
+            var ragdollBones = GetHkrgBoneRows();
+            return ragdollBones.Select(bone =>
+            {
+                var parentName = bone.ParentIndex >= 0 && bone.ParentIndex < ragdollBones.Count
+                    ? ragdollBones[bone.ParentIndex].Name
+                    : "none";
+                return $"{bone.Index}: {bone.Name}  |  parent: {parentName} ({bone.ParentIndex})";
+            }).ToArray();
+        }
 
         if (_root == null)
             return Array.Empty<string>();
@@ -340,6 +468,25 @@ public sealed partial class HkclService
             return helperBuilder.ToString();
         }
 
+        if (_bphyssb != null)
+        {
+            var supportBuilder = new StringBuilder();
+            supportBuilder.AppendLine("Support bone configuration");
+            supportBuilder.AppendLine(new string('-', 64));
+            supportBuilder.AppendLine("Format: BPHYSSB / AAMP physsb");
+            supportBuilder.AppendLine($"Archive version: {_bphyssb.ArchiveVersion}");
+            supportBuilder.AppendLine($"Support bones: {_bphyssb.SupportBoneNames.Count}");
+            supportBuilder.AppendLine($"Lists: {_bphyssb.ListCount}");
+            supportBuilder.AppendLine($"Objects: {_bphyssb.ObjectCount}");
+            supportBuilder.AppendLine($"Parameters: {_bphyssb.ParameterCount}");
+            supportBuilder.AppendLine();
+            supportBuilder.AppendLine("This is a native BPHYSSB editor for BotW support-bone names and base-pose records.");
+            return supportBuilder.ToString();
+        }
+
+        if (IsHkrg)
+            return GetHkrgDetails();
+
         if (_root == null)
             return string.Empty;
 
@@ -382,7 +529,7 @@ public sealed partial class HkclService
 
     public IReadOnlyList<ParticleEditRow> GetParticleRows(int clothIndex)
     {
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
             return Array.Empty<ParticleEditRow>();
 
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -402,7 +549,11 @@ public sealed partial class HkclService
                 Friction = particle.Friction,
                 CollisionMask = simulation.StaticCollisionMasks.Count > particle.Index
                     ? simulation.StaticCollisionMasks[particle.Index]
-                    : GetBphclCollisionMask(simulation, particle, particle.Index)
+                    : GetBphclCollisionMask(
+                        simulation,
+                        particle,
+                        particle.Index,
+                        preserveSourceLandscapeCollisionBit: true)
             }).ToArray() ?? Array.Empty<ParticleEditRow>();
         }
 
@@ -470,6 +621,150 @@ public sealed partial class HkclService
             MinRotationBlend = Convert.ToSingle(GetValue(transfer, "minRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture),
             MaxRotationBlend = Convert.ToSingle(GetValue(transfer, "maxRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture)
         };
+    }
+
+    // The standalone HKCL -> BPHCL writer needs the fields that sit beside
+    // hclSimClothData's particle arrays. They are runtime initialization data,
+    // not editor settings, so keep them as an explicit export snapshot.
+    public NativeBphclSimulationRuntime GetSimulationRuntimeData(int clothIndex)
+    {
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var nativeSimulation = bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault();
+            if (nativeSimulation == null)
+                throw new ArgumentOutOfRangeException(nameof(clothIndex));
+            return nativeSimulation.Runtime;
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
+        var simulation = GetFirst(GetValue(cloth, "simClothDatas"))
+            ?? throw new InvalidOperationException("The selected cloth has no simulation data.");
+        var transfer = GetValue(simulation, "transferMotionData");
+        var landscape = GetValue(simulation, "landscapeCollisionData");
+        var particleRows = GetParticleRowsForCloth(cloth);
+        var pinchFlags = (GetList(GetValue(simulation, "perParticlePinchDetectionEnabledFlags")) ?? Array.Empty<object>())
+            .Select(ToRuntimeBool)
+            .ToArray();
+        var pinchingData = (GetList(GetValue(simulation, "collidablePinchingDatas")) ?? Array.Empty<object>())
+            .Select(entry => new NativeBphclCollidablePinchingData(
+                ToRuntimeBool(GetValue(entry, "pinchDetectionEnabled")),
+                unchecked((sbyte)ToInt(GetValue(entry, "pinchDetectionPriority"), 0)),
+                Convert.ToSingle(GetValue(entry, "pinchDetectionRadius") ?? 0.0f, CultureInfo.InvariantCulture)))
+            .ToArray();
+
+        var maximumParticleRadius = particleRows.Count == 0
+            ? 0.0f
+            : particleRows.Max(particle => particle.Radius);
+        var totalMass = particleRows.Sum(particle => particle.Mass);
+        return new NativeBphclSimulationRuntime(
+            ToRuntimeBool(GetValue(simulation, "doNormals")),
+            Convert.ToSingle(GetValue(simulation, "maxParticleRadius") ?? maximumParticleRadius, CultureInfo.InvariantCulture),
+            Convert.ToSingle(GetValue(simulation, "totalMass") ?? totalMass, CultureInfo.InvariantCulture),
+            new NativeBphclTransferMotionData(
+                ToInt(GetValue(transfer, "transformSetIndex"), 0),
+                ToInt(GetValue(transfer, "transformIndex"), 0),
+                ToRuntimeBool(GetValue(transfer, "transferTranslationMotion")),
+                Convert.ToSingle(GetValue(transfer, "minTranslationSpeed") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(transfer, "maxTranslationSpeed") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(transfer, "minTranslationBlend") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(transfer, "maxTranslationBlend") ?? 0.0f, CultureInfo.InvariantCulture),
+                ToRuntimeBool(GetValue(transfer, "transferRotationMotion")),
+                Convert.ToSingle(GetValue(transfer, "minRotationSpeed") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(transfer, "maxRotationSpeed") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(transfer, "minRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(transfer, "maxRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture)),
+            ToRuntimeBool(GetValue(simulation, "transferMotionEnabled")),
+            ToRuntimeBool(GetValue(simulation, "landscapeCollisionEnabled")),
+            new NativeBphclLandscapeCollisionData(
+                Convert.ToSingle(GetValue(landscape, "landscapeRadius") ?? 0.0f, CultureInfo.InvariantCulture),
+                ToRuntimeBool(GetValue(landscape, "enableStuckParticleDetection")),
+                Convert.ToSingle(GetValue(landscape, "stuckParticlesStretchFactorSq") ?? 0.0f, CultureInfo.InvariantCulture),
+                ToRuntimeBool(GetValue(landscape, "pinchDetectionEnabled")),
+                ToRuntimeByte(GetValue(landscape, "pinchDetectionPriority")),
+                Convert.ToSingle(GetValue(landscape, "pinchDetectionRadius") ?? 0.0f, CultureInfo.InvariantCulture),
+                Convert.ToSingle(GetValue(landscape, "collisionTolerance") ?? 0.0f, CultureInfo.InvariantCulture)),
+            ToUInt32(GetValue(simulation, "numLandscapeCollidableParticles"), 0u),
+            ToRuntimeBool(GetValue(simulation, "pinchDetectionEnabled")),
+            pinchFlags,
+            pinchingData,
+            checked((ushort)Math.Clamp(ToInt(GetValue(simulation, "minPinchedParticleIndex"), 0), 0, ushort.MaxValue)),
+            checked((ushort)Math.Clamp(ToInt(GetValue(simulation, "maxPinchedParticleIndex"), 0), 0, ushort.MaxValue)),
+            ToUInt32(GetValue(simulation, "maxCollisionPairs"), 0u));
+    }
+
+    // Exports the exact per-simulation collider attachment map. Collider
+    // objects are global, but transform indices and offsets are simulation
+    // state; recreating them from a displayed transform loses native bases.
+    public IReadOnlyList<StandaloneBphclColliderBinding> GetStandaloneColliderBindings(int clothIndex)
+    {
+        if (_bphcl?.NativeDocument is { } native)
+        {
+            var nativeSimulation = native.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault();
+            if (nativeSimulation is null)
+                return Array.Empty<StandaloneBphclColliderBinding>();
+
+            var collidersByItem = native.Colliders.ToDictionary(collider => collider.ItemIndex, collider => collider.Index);
+            return nativeSimulation.CollidableItemIndices
+                .Select((itemIndex, slot) =>
+                {
+                    if (!collidersByItem.TryGetValue(itemIndex, out var colliderIndex) ||
+                        slot >= nativeSimulation.CollidableTransformMap.TransformIndices.Count ||
+                        slot >= nativeSimulation.CollidableTransformMap.Offsets.Count)
+                    {
+                        return null;
+                    }
+
+                    return new StandaloneBphclColliderBinding(
+                        colliderIndex,
+                        checked((int)nativeSimulation.CollidableTransformMap.TransformIndices[slot]),
+                        nativeSimulation.CollidableTransformMap.Offsets[slot]);
+                })
+                .Where(binding => binding is not null)
+                .Cast<StandaloneBphclColliderBinding>()
+                .ToArray();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
+        var colliders = GetCollidables(root);
+        var hkclSimulation = GetFirst(GetValue(cloth, "simClothDatas"));
+        var references = GetList(GetValue(hkclSimulation, "perInstanceCollidables")) ?? Array.Empty<object>();
+        var map = GetValue(hkclSimulation, "collidableTransformMap");
+        var indices = map == null ? null : GetList(GetValue(map, "transformIndices"));
+        var offsets = map == null ? null : GetList(GetValue(map, "offsets"));
+        var bindings = new List<StandaloneBphclColliderBinding>();
+
+        for (var slot = 0; slot < references.Count; slot++)
+        {
+            var colliderIndex = IndexOfReference(colliders, references[slot]);
+            if (colliderIndex < 0)
+                continue;
+
+            var boneIndex = indices != null && slot < indices.Count ? ToInt(indices[slot], -1) : -1;
+            var offset = offsets != null && slot < offsets.Count && offsets[slot] is Matrix4x4 matrix
+                ? matrix
+                : Matrix4x4.Identity;
+            if (boneIndex >= 0)
+                bindings.Add(new StandaloneBphclColliderBinding(colliderIndex, boneIndex, offset));
+        }
+
+        return bindings;
+    }
+    public IReadOnlyList<byte> GetTriangleFlips(int clothIndex)
+    {
+        if (_bphcl?.NativeDocument is { } bphcl)
+            return bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault()?.TriangleFlips ?? Array.Empty<byte>();
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
+        var simulation = GetFirst(GetValue(cloth, "simClothDatas"));
+        return (GetList(GetValue(simulation, "triangleFlips")) ?? Array.Empty<object>())
+            .Select(value => checked((byte)ToInt(value, 0)))
+            .ToArray();
     }
 
     public void UpdateSimulationSettings(int clothIndex, ClothSimulationSettings settings)
@@ -550,7 +845,7 @@ public sealed partial class HkclService
 
     public IReadOnlyList<ParticleRelationshipRow> GetParticleRelationships(int clothIndex, int particleIndex)
     {
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
             return Array.Empty<ParticleRelationshipRow>();
 
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -607,7 +902,11 @@ public sealed partial class HkclService
                         LocalConstraintIndex = local.Index,
                         ParticleA = particleIndex,
                         MaximumDistance = GetNativeConstraintValue(local, "maximumDistance")
-                            ?? GetNativeConstraintValue(local, "maxDistance"),
+                            ?? GetNativeConstraintValue(local, "maxDistance")
+                            // TotK calls this local-range limit shapeRadius.
+                            // Expose it through the shared editor field so the
+                            // BPHCL UI and conversion diagnostics agree.
+                            ?? GetNativeConstraintValue(local, "shapeRadius"),
                         Details = string.Join("; ", local.Values.Select(value =>
                             $"{value.Key}={value.Value.ToString("G7", CultureInfo.InvariantCulture)}"))
                     });
@@ -661,6 +960,918 @@ public sealed partial class HkclService
         return rows;
     }
 
+    public IReadOnlyList<ConstraintSetSummary> GetConstraintSetSummaries(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<ConstraintSetSummary>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            return bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault()?.ConstraintSets
+                .Select(set => new ConstraintSetSummary(
+                    set.Index,
+                    set.ClassName,
+                    set.Name,
+                    set.ConstraintId,
+                    set.ConstraintType))
+                .ToArray()
+                ?? Array.Empty<ConstraintSetSummary>();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (cloth == null)
+            return Array.Empty<ConstraintSetSummary>();
+
+        var simData = GetFirst(GetValue(cloth, "simClothDatas"));
+        var constraints = GetList(GetValue(simData, "staticConstraintSets"))
+            ?? GetList(GetValue(cloth, "constraintSets"))
+            ?? Array.Empty<object>();
+        return constraints
+            .Select((constraint, index) => new ConstraintSetSummary(
+                index,
+                constraint.GetType().Name,
+                GetString(constraint, "name") ?? constraint.GetType().Name,
+                ToUInt32(GetValue(constraint, "constraintId"), 0u),
+                ToUInt32(GetValue(constraint, "constraintType"), 0u)))
+            .ToArray();
+    }
+
+    // hclBendStiffnessConstraintSet has four-particle records that do not fit
+    // the editor's ordinary two-particle link model. Preserve them verbatim
+    // for native BPHCL reconstruction.
+    public IReadOnlyList<BendStiffnessConstraintSetData> GetBendStiffnessConstraintSets(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<BendStiffnessConstraintSetData>();
+
+        static float NativeValue(IReadOnlyDictionary<string, double> values, string name) =>
+            values.TryGetValue(name, out var value) ? (float)value : 0.0f;
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var simulation = bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault();
+            return simulation?.ConstraintSets
+                .Where(set => string.Equals(set.ClassName, "hclBendStiffnessConstraintSet", StringComparison.Ordinal))
+                .Select(set => new BendStiffnessConstraintSetData(
+                    set.Index,
+                    set.Name,
+                    set.ConstraintId,
+                    set.ConstraintType,
+                    NativeValue(set.Values, "clampBendStiffness") != 0.0f,
+                    NativeValue(set.Values, "maxRestPoseHeightSq"),
+                    NativeValue(set.Values, "useRestPoseConfig") != 0.0f,
+                    set.Links.Select(link => new BendStiffnessConstraintData(
+                        link.Index,
+                        link.ParticleA ?? 0,
+                        link.ParticleB ?? 0,
+                        (int)NativeValue(link.Values, "particleC"),
+                        (int)NativeValue(link.Values, "particleD"),
+                        NativeValue(link.Values, "bendStiffness"),
+                        NativeValue(link.Values, "restCurvature"),
+                        NativeValue(link.Values, "weightA"),
+                        NativeValue(link.Values, "weightB"),
+                        NativeValue(link.Values, "weightC"),
+                        NativeValue(link.Values, "weightD"))).ToArray()))
+                .ToArray()
+                ?? Array.Empty<BendStiffnessConstraintSetData>();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (cloth is null)
+            return Array.Empty<BendStiffnessConstraintSetData>();
+
+        var simulationData = GetFirst(GetValue(cloth, "simClothDatas"));
+        var constraints = GetList(GetValue(simulationData, "staticConstraintSets"))
+            ?? GetList(GetValue(cloth, "constraintSets"))
+            ?? Array.Empty<object>();
+        return constraints.Select((constraint, index) => (constraint, index))
+            .Where(entry => string.Equals(entry.constraint.GetType().Name, "hclBendStiffnessConstraintSet", StringComparison.Ordinal))
+            .Select(entry =>
+            {
+                var links = GetList(GetValue(entry.constraint, "links")) ?? Array.Empty<object>();
+                return new BendStiffnessConstraintSetData(
+                    entry.index,
+                    GetString(entry.constraint, "name") ?? "hclBendStiffnessConstraintSet",
+                    ToUInt32(GetValue(entry.constraint, "constraintId"), 0u),
+                    ToUInt32(GetValue(entry.constraint, "constraintType"), 0u),
+                    ToRuntimeBool(GetValue(entry.constraint, "clampBendStiffness")),
+                    ReadConstraintFloat(entry.constraint, "maxRestPoseHeightSq") ?? 0.0f,
+                    ToRuntimeBool(GetValue(entry.constraint, "useRestPoseConfig")),
+                    links.Select((link, linkIndex) => new BendStiffnessConstraintData(
+                        linkIndex,
+                        ToInt(GetValue(link, "particleA"), 0),
+                        ToInt(GetValue(link, "particleB"), 0),
+                        ToInt(GetValue(link, "particleC"), 0),
+                        ToInt(GetValue(link, "particleD"), 0),
+                        ReadConstraintFloat(link, "bendStiffness") ?? 0.0f,
+                        ReadConstraintFloat(link, "restCurvature") ?? 0.0f,
+                        ReadConstraintFloat(link, "weightA") ?? 0.0f,
+                        ReadConstraintFloat(link, "weightB") ?? 0.0f,
+                        ReadConstraintFloat(link, "weightC") ?? 0.0f,
+                        ReadConstraintFloat(link, "weightD") ?? 0.0f)).ToArray());
+            })
+            .ToArray();
+    }
+    // The transition set controls the animation-to-simulation handoff. It is
+    // intentionally exposed as serializer data rather than UI relationships:
+    // its records are per-particle timing data, not particle-particle links.
+    public IReadOnlyList<TransitionConstraintSetData> GetTransitionConstraintSets(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<TransitionConstraintSetData>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            return bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault()?.ConstraintSets
+                .Where(set => string.Equals(set.ClassName, "hclTransitionConstraintSet", StringComparison.Ordinal))
+                .Select(set => new TransitionConstraintSetData(
+                    set.Index,
+                    set.Name,
+                    set.ConstraintId,
+                    set.ConstraintType,
+                    GetNativeConstraintValue(set.Values, "toAnimPeriod") ?? 0.0f,
+                    GetNativeConstraintValue(set.Values, "toAnimPlusDelayPeriod") ?? 0.0f,
+                    GetNativeConstraintValue(set.Values, "toSimPeriod") ?? 0.0f,
+                    GetNativeConstraintValue(set.Values, "toSimPlusDelayPeriod") ?? 0.0f,
+                    (uint)(GetNativeConstraintValue(set.Values, "referenceMeshBufferIdx") ?? 0.0f),
+                    set.TransitionParticles.Select(record => new TransitionConstraintParticleData(
+                        record.Index,
+                        (int)(GetNativeConstraintValue(record, "particleIndex") ?? 0.0f),
+                        (int)(GetNativeConstraintValue(record, "referenceVertex") ?? 0.0f),
+                        GetNativeConstraintValue(record, "toAnimDelay") ?? 0.0f,
+                        GetNativeConstraintValue(record, "toSimDelay") ?? 0.0f,
+                        GetNativeConstraintValue(record, "toSimMaxDistance") ?? 0.0f)).ToArray()))
+                .ToArray()
+                ?? Array.Empty<TransitionConstraintSetData>();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (cloth == null)
+            return Array.Empty<TransitionConstraintSetData>();
+
+        var simData = GetFirst(GetValue(cloth, "simClothDatas"));
+        var constraints = GetList(GetValue(simData, "staticConstraintSets"))
+            ?? GetList(GetValue(cloth, "constraintSets"))
+            ?? Array.Empty<object>();
+        var result = new List<TransitionConstraintSetData>();
+        for (var setIndex = 0; setIndex < constraints.Count; setIndex++)
+        {
+            var constraint = constraints[setIndex];
+            if (!string.Equals(constraint.GetType().Name, "hclTransitionConstraintSet", StringComparison.Ordinal))
+                continue;
+
+            var records = GetList(GetValue(constraint, "perParticleData")) ?? Array.Empty<object>();
+            result.Add(new TransitionConstraintSetData(
+                setIndex,
+                GetString(constraint, "name") ?? constraint.GetType().Name,
+                ToUInt32(GetValue(constraint, "constraintId"), 0u),
+                ToUInt32(GetValue(constraint, "constraintType"), 0u),
+                ReadConstraintFloat(constraint, "toAnimPeriod") ?? 0.0f,
+                ReadConstraintFloat(constraint, "toAnimPlusDelayPeriod") ?? 0.0f,
+                ReadConstraintFloat(constraint, "toSimPeriod") ?? 0.0f,
+                ReadConstraintFloat(constraint, "toSimPlusDelayPeriod") ?? 0.0f,
+                ToUInt32(GetValue(constraint, "referenceMeshBufferIdx"), 0u),
+                records.Select((record, recordIndex) => new TransitionConstraintParticleData(
+                    recordIndex,
+                    ToInt(GetValue(record, "particleIndex"), 0),
+                    ToInt(GetValue(record, "referenceVertex"), 0),
+                    ReadConstraintFloat(record, "toAnimDelay") ?? 0.0f,
+                    ReadConstraintFloat(record, "toSimDelay") ?? 0.0f,
+                    ReadConstraintFloat(record, "toSimMaxDistance") ?? 0.0f)).ToArray()));
+        }
+
+        return result;
+    }
+
+    // Local ranges are not particle-to-particle links. They pin a particle to
+    // a radius around a specific reference-mesh vertex, so every field is
+    // needed when rebuilding a native BPHCL constraint set.
+    public IReadOnlyList<LocalRangeConstraintSetData> GetLocalRangeConstraintSets(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<LocalRangeConstraintSetData>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var simulation = bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault();
+            return simulation?.ConstraintSets
+                .Where(set => string.Equals(set.ClassName, "hclLocalRangeConstraintSet", StringComparison.Ordinal))
+                .Select(set => new LocalRangeConstraintSetData(
+                    set.Index,
+                    set.Name,
+                    set.ConstraintId,
+                    set.ConstraintType,
+                    (uint)(GetNativeConstraintValue(set.Values, "referenceMeshBufferIdx") ?? 0.0f),
+                    GetNativeConstraintValue(set.Values, "stiffness") ?? 0.0f,
+                    (int)(GetNativeConstraintValue(set.Values, "shapeType") ?? 0.0f),
+                    (GetNativeConstraintValue(set.Values, "applyNormalComponent") ?? 0.0f) != 0.0f,
+                    set.LocalConstraints.Select(record => new LocalRangeConstraintData(
+                        record.Index,
+                        (int)(GetNativeConstraintValue(record, "particleIndex") ?? 0.0f),
+                        (int)(GetNativeConstraintValue(record, "referenceVertex") ?? 0.0f),
+                        GetNativeConstraintValue(record, "shapeRadius")
+                            ?? GetNativeConstraintValue(record, "maximumDistance")
+                            ?? GetNativeConstraintValue(record, "maxDistance")
+                            ?? 0.0f,
+                        GetNativeConstraintValue(record, "maxNormalDistance") ?? float.MaxValue,
+                        GetNativeConstraintValue(record, "minNormalDistance") ?? -float.MaxValue)).ToArray()))
+                .ToArray()
+                ?? Array.Empty<LocalRangeConstraintSetData>();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (cloth == null)
+            return Array.Empty<LocalRangeConstraintSetData>();
+
+        var simData = GetFirst(GetValue(cloth, "simClothDatas"));
+        var constraintSets = GetList(GetValue(simData, "staticConstraintSets"))
+            ?? GetList(GetValue(cloth, "constraintSets"))
+            ?? Array.Empty<object>();
+        var result = new List<LocalRangeConstraintSetData>();
+        for (var setIndex = 0; setIndex < constraintSets.Count; setIndex++)
+        {
+            var constraint = constraintSets[setIndex];
+            if (!string.Equals(constraint.GetType().Name, "hclLocalRangeConstraintSet", StringComparison.Ordinal))
+                continue;
+
+            var records = GetList(GetValue(constraint, "localConstraints")) ?? Array.Empty<object>();
+            result.Add(new LocalRangeConstraintSetData(
+                setIndex,
+                GetString(constraint, "name") ?? constraint.GetType().Name,
+                ToUInt32(GetValue(constraint, "constraintId"), 0u),
+                ToUInt32(GetValue(constraint, "constraintType"), 0u),
+                ToUInt32(GetValue(constraint, "referenceMeshBufferIdx"), 0u),
+                ReadConstraintFloat(constraint, "stiffness") ?? 0.0f,
+                ToInt(GetValue(constraint, "shapeType"), 0),
+                ToBool(GetValue(constraint, "applyNormalComponent")),
+                records.Select((record, recordIndex) => new LocalRangeConstraintData(
+                    recordIndex,
+                    ToInt(GetValue(record, "particleIndex"), 0),
+                    ToInt(GetValue(record, "referenceVertex"), 0),
+                    ReadConstraintFloat(record, "maximumDistance")
+                        ?? ReadConstraintFloat(record, "shapeRadius")
+                        ?? ReadConstraintFloat(record, "maxDistance")
+                        ?? 0.0f,
+                    ReadConstraintFloat(record, "maxNormalDistance") ?? float.MaxValue,
+                    ReadConstraintFloat(record, "minNormalDistance") ?? -float.MaxValue)).ToArray()));
+        }
+
+        return result;
+    }
+
+    // Bone planes constrain a particle against a plane in a transform-set
+    // bone's local space. Keep them outside the link/range UI model because
+    // their equation and transform index are a distinct record layout.
+    public IReadOnlyList<BonePlaneConstraintSetData> GetBonePlaneConstraintSets(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<BonePlaneConstraintSetData>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var simulation = bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault();
+            return simulation?.ConstraintSets
+                .Where(set => string.Equals(set.ClassName, "hclBonePlanesConstraintSet", StringComparison.Ordinal))
+                .Select(set => new BonePlaneConstraintSetData(
+                    set.Index,
+                    set.Name,
+                    set.ConstraintId,
+                    set.ConstraintType,
+                    (uint)(GetNativeConstraintValue(set.Values, "transformSetIndex") ?? 0.0f),
+                    set.Links.Select(plane => new BonePlaneConstraintData(
+                        plane.Index,
+                        plane.PlaneEquationBone ?? Vector4.Zero,
+                        (int)(GetNativeConstraintValue(plane, "particleIndex") ?? 0.0f),
+                        (int)(GetNativeConstraintValue(plane, "transformIndex") ?? 0.0f),
+                        GetNativeConstraintValue(plane, "stiffness") ?? 0.0f)).ToArray()))
+                .ToArray()
+                ?? Array.Empty<BonePlaneConstraintSetData>();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (cloth == null)
+            return Array.Empty<BonePlaneConstraintSetData>();
+
+        var simData = GetFirst(GetValue(cloth, "simClothDatas"));
+        var constraints = GetList(GetValue(simData, "staticConstraintSets"))
+            ?? GetList(GetValue(cloth, "constraintSets"))
+            ?? Array.Empty<object>();
+        var result = new List<BonePlaneConstraintSetData>();
+        for (var setIndex = 0; setIndex < constraints.Count; setIndex++)
+        {
+            var constraint = constraints[setIndex];
+            if (!string.Equals(constraint.GetType().Name, "hclBonePlanesConstraintSet", StringComparison.Ordinal))
+                continue;
+
+            var planes = GetList(GetValue(constraint, "bonePlanes")) ?? Array.Empty<object>();
+            result.Add(new BonePlaneConstraintSetData(
+                setIndex,
+                GetString(constraint, "name") ?? constraint.GetType().Name,
+                ToUInt32(GetValue(constraint, "constraintId"), 0u),
+                ToUInt32(GetValue(constraint, "constraintType"), 0u),
+                ToUInt32(GetValue(constraint, "transformSetIndex"), 0u),
+                planes.Select((plane, planeIndex) => new BonePlaneConstraintData(
+                    planeIndex,
+                    GetValue(plane, "planeEquationBone") is Vector4 equation ? equation : Vector4.Zero,
+                    ToInt(GetValue(plane, "particleIndex"), 0),
+                    ToInt(GetValue(plane, "transformIndex"), 0),
+                    ReadConstraintFloat(plane, "stiffness") ?? 0.0f)).ToArray()));
+        }
+
+        return result;
+    }
+
+    // Export-only view of the mesh-to-bone output stage. The editor preview
+    // can infer a friendly particle binding, but standalone serialization
+    // needs these original offsets and matrices verbatim.
+    public IReadOnlyList<SimpleMeshBoneDeformData> GetSimpleMeshBoneDeformData(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<SimpleMeshBoneDeformData>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            return bphcl.Cloths.ElementAtOrDefault(clothIndex)?.SimpleMeshBoneDeformers
+                .Select(deformer => new SimpleMeshBoneDeformData(
+                    deformer.OperatorIndex,
+                    checked((int)deformer.InputBufferIndex),
+                    checked((int)deformer.OutputTransformSetIndex),
+                    deformer.BoneAxis,
+                    deformer.TriangleBonePairs.Select(pair => new SimpleMeshTriangleBonePairData(
+                        pair.BoneOffset,
+                        pair.TriangleOffset)).ToArray(),
+                    deformer.LocalBoneTransforms.ToArray()))
+                .ToArray()
+                ?? Array.Empty<SimpleMeshBoneDeformData>();
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (cloth == null)
+            return Array.Empty<SimpleMeshBoneDeformData>();
+
+        var result = new List<SimpleMeshBoneDeformData>();
+        foreach (var (op, operatorIndex) in (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
+                     .Select((op, index) => (op, index)))
+        {
+            if (!string.Equals(op.GetType().Name, "hclSimpleMeshBoneDeformOperator", StringComparison.Ordinal))
+                continue;
+
+            var pairs = (GetList(GetValue(op, "triangleBonePairs")) ?? Array.Empty<object>())
+                .Select(pair => new SimpleMeshTriangleBonePairData(
+                    checked((ushort)ToInt(GetValue(pair, "boneOffset"), 0)),
+                    checked((ushort)ToInt(GetValue(pair, "triangleOffset"), 0))))
+                .ToArray();
+            var localTransforms = (GetList(GetValue(op, "localBoneTransforms")) ?? Array.Empty<object>())
+                .OfType<Matrix4x4>()
+                .ToArray();
+            result.Add(new SimpleMeshBoneDeformData(
+                operatorIndex,
+                ToInt(GetValue(op, "inputBufferIdx"), 0),
+                ToInt(GetValue(op, "outputTransformSetIdx"), 0),
+                ToInt(GetValue(op, "boneAxis"), 0),
+                pairs,
+                localTransforms));
+        }
+
+        return result;
+    }
+
+    // Export-only representation of the animation-to-virtual-cloth stage.
+    // This preserves the actual blend blocks and local positions used by the
+    // HKCL, rather than inferring skinning from the later bone-output stage.
+    public IReadOnlyList<SkinOperatorData> GetSkinOperatorData(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return Array.Empty<SkinOperatorData>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var cloth = bphcl.Cloths.ElementAtOrDefault(clothIndex);
+            if (cloth is null)
+                return Array.Empty<SkinOperatorData>();
+
+            return cloth.ObjectSpaceSkins.Select(skin => new SkinOperatorData(
+                    skin.OperatorIndex,
+                    "hclObjectSpaceSkinPOperator",
+                    skin.OutputBufferIndex,
+                    skin.TransformSetIndex,
+                    skin.BoneFromSkinMeshTransforms,
+                    skin.TransformSubset,
+                    CreateObjectSpaceBlendArrays(skin.Deformer),
+                    skin.Deformer.ControlBytes,
+                    skin.Deformer.StartVertexIndex,
+                    skin.Deformer.EndVertexIndex,
+                    0,
+                    skin.Deformer.PartialWrite,
+                    skin.LocalPs.Select(block => new SkinPositionBlockData(
+                        Array.Empty<Vector4>(),
+                        block.Positions)).ToArray(),
+                    skin.LocalUnpackedPs.Select(block => new SkinPositionBlockData(block.Positions)).ToArray()))
+                .Concat(cloth.BoneSpaceSkins.Select(skin => new SkinOperatorData(
+                    skin.OperatorIndex,
+                    "hclBoneSpaceSkinPOperator",
+                    skin.OutputBufferIndex,
+                    skin.TransformSetIndex,
+                    Array.Empty<Matrix4x4>(),
+                    skin.TransformSubset,
+                    CreateBoneSpaceBlendArrays(skin.Deformer),
+                    skin.Deformer.ControlBytes,
+                    skin.Deformer.StartVertexIndex,
+                    skin.Deformer.EndVertexIndex,
+                    skin.Deformer.BatchSizeSpu,
+                    skin.Deformer.PartialWrite,
+                    skin.LocalPs.Select(block => new SkinPositionBlockData(block.Positions)).ToArray(),
+                    skin.LocalUnpackedPs.Select(block => new SkinPositionBlockData(block.Positions)).ToArray())))
+                .ToArray();
+        }
+
+        var root = RequireRoot();
+        var clothData = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (clothData is null)
+            return Array.Empty<SkinOperatorData>();
+
+        var result = new List<SkinOperatorData>();
+        foreach (var (op, operatorIndex) in (GetList(GetValue(clothData, "operators")) ?? Array.Empty<object>())
+                     .Select((op, index) => (op, index)))
+        {
+            var className = op.GetType().Name;
+            if (className is not ("hclObjectSpaceSkinPOperator" or "hclBoneSpaceSkinPOperator"))
+                continue;
+
+            var objectSpace = string.Equals(className, "hclObjectSpaceSkinPOperator", StringComparison.Ordinal);
+            var deformer = GetValue(op, objectSpace ? "objectSpaceDeformer" : "boneSpaceDeformer")
+                ?? throw new InvalidDataException($"{className} has no deformer payload.");
+            result.Add(new SkinOperatorData(
+                operatorIndex,
+                className,
+                ToInt(GetValue(op, "outputBufferIndex"), 0),
+                ToInt(GetValue(op, "transformSetIndex"), 0),
+                objectSpace
+                    ? (GetList(GetValue(op, "boneFromSkinMeshTransforms")) ?? Array.Empty<object>()).OfType<Matrix4x4>().ToArray()
+                    : Array.Empty<Matrix4x4>(),
+                (GetList(GetValue(op, "transformSubset")) ?? Array.Empty<object>())
+                    .Select(value => checked((ushort)ToInt(value, 0))).ToArray(),
+                objectSpace ? ReadObjectSpaceBlendArrays(deformer) : ReadBoneSpaceBlendArrays(deformer),
+                (GetList(GetValue(deformer, "controlBytes")) ?? Array.Empty<object>())
+                    .Select(value => checked((byte)ToInt(value, 0))).ToArray(),
+                checked((ushort)ToInt(GetValue(deformer, "startVertexIndex"), 0)),
+                checked((ushort)ToInt(GetValue(deformer, "endVertexIndex"), 0)),
+                checked((ushort)ToInt(GetValue(deformer, "batchSizeSpu"), 0)),
+                Convert.ToBoolean(GetValue(deformer, "partialWrite") ?? false, CultureInfo.InvariantCulture),
+                ReadSkinPositionBlocks(GetList(GetValue(op, "localPs")) ?? Array.Empty<object>()),
+                ReadSkinPositionBlocks(GetList(GetValue(op, "localUnpackedPs")) ?? Array.Empty<object>())));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<SkinBlendArrayData> ReadObjectSpaceBlendArrays(object deformer) =>
+        new[]
+        {
+            ReadSkinBlendArray(deformer, "eightBlendEntries", 8, 16, 128),
+            ReadSkinBlendArray(deformer, "sevenBlendEntries", 7, 16, 112),
+            ReadSkinBlendArray(deformer, "sixBlendEntries", 6, 16, 96),
+            ReadSkinBlendArray(deformer, "fiveBlendEntries", 5, 16, 80),
+            ReadSkinBlendArray(deformer, "fourBlendEntries", 4, 16, 64),
+            ReadSkinBlendArray(deformer, "threeBlendEntries", 3, 16, 48),
+            ReadSkinBlendArray(deformer, "twoBlendEntries", 2, 16, 32),
+            ReadSkinBlendArray(deformer, "oneBlendEntries", 1, 16, 16)
+        };
+
+    private static IReadOnlyList<SkinBlendArrayData> ReadBoneSpaceBlendArrays(object deformer) =>
+        new[]
+        {
+            ReadSkinBlendArray(deformer, "fourBlendEntries", 4, 4, 16, hasExplicitWeights: false),
+            ReadSkinBlendArray(deformer, "threeBlendEntries", 3, 5, 15, hasExplicitWeights: false),
+            ReadSkinBlendArray(deformer, "twoBlendEntries", 2, 8, 16, hasExplicitWeights: false),
+            ReadSkinBlendArray(deformer, "oneBlendEntries", 1, 16, 16, hasExplicitWeights: false)
+        };
+
+    private static SkinBlendArrayData ReadSkinBlendArray(
+        object deformer,
+        string memberName,
+        int blendCount,
+        int vertexCount,
+        int boneCount,
+        bool hasExplicitWeights = true)
+    {
+        var blocks = (GetList(GetValue(deformer, memberName)) ?? Array.Empty<object>())
+            .Select(block => new SkinBlendBlockData(
+                ReadSkinUInt16Fields(block, "vertexIndices", vertexCount),
+                ReadSkinUInt16Fields(block, "boneIndices", boneCount),
+                hasExplicitWeights && blendCount > 1
+                    ? ReadSkinByteFields(block, "boneWeights", boneCount)
+                    : Array.Empty<byte>()))
+            .ToArray();
+        return new SkinBlendArrayData(memberName, blendCount, vertexCount, boneCount, blocks);
+    }
+
+    private static IReadOnlyList<SkinPositionBlockData> ReadSkinPositionBlocks(IReadOnlyList<object> blocks)
+    {
+        var result = new List<SkinPositionBlockData>(blocks.Count);
+        foreach (var block in blocks)
+        {
+            var positions = new Vector4[16];
+            for (var index = 0; index < positions.Length; index++)
+            {
+                if (GetValue(block, $"localPosition_{index}") is not Vector4 position)
+                {
+                    throw new InvalidDataException(
+                        $"The skinning position block '{block.GetType().Name}' has no Vector4 localPosition_{index} field.");
+                }
+                positions[index] = position;
+            }
+            result.Add(new SkinPositionBlockData(positions));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<ushort> ReadSkinUInt16Fields(object block, string prefix, int count)
+    {
+        var result = new ushort[count];
+        for (var index = 0; index < count; index++)
+            result[index] = checked((ushort)ToInt(GetValue(block, $"{prefix}_{index}"), 0));
+        return result;
+    }
+
+    private static IReadOnlyList<byte> ReadSkinByteFields(object block, string prefix, int count)
+    {
+        var result = new byte[count];
+        for (var index = 0; index < count; index++)
+            result[index] = checked((byte)ToInt(GetValue(block, $"{prefix}_{index}"), 0));
+        return result;
+    }
+
+    private static IReadOnlyList<SkinBlendArrayData> CreateObjectSpaceBlendArrays(NativeBphclObjectSpaceDeformer deformer) =>
+        new[]
+        {
+            CreatePackedSkinBlendArray("eightBlendEntries", 8, 16, 128, deformer.EightBlendEntries),
+            CreatePackedSkinBlendArray("sevenBlendEntries", 7, 16, 112, deformer.SevenBlendEntries),
+            CreatePackedSkinBlendArray("sixBlendEntries", 6, 16, 96, deformer.SixBlendEntries),
+            CreatePackedSkinBlendArray("fiveBlendEntries", 5, 16, 80, deformer.FiveBlendEntries),
+            CreatePackedSkinBlendArray("fourBlendEntries", 4, 16, 64, deformer.FourBlendEntries),
+            CreatePackedSkinBlendArray("threeBlendEntries", 3, 16, 48, deformer.ThreeBlendEntries),
+            CreatePackedSkinBlendArray("twoBlendEntries", 2, 16, 32, deformer.TwoBlendEntries),
+            CreatePackedSkinBlendArray("oneBlendEntries", 1, 16, 16, deformer.OneBlendEntries)
+        };
+
+    private static IReadOnlyList<SkinBlendArrayData> CreateBoneSpaceBlendArrays(NativeBphclBoneSpaceDeformer deformer) =>
+        new[]
+        {
+            CreatePackedSkinBlendArray("fourBlendEntries", 4, 4, 16, deformer.FourBlendEntries, hasExplicitWeights: false),
+            CreatePackedSkinBlendArray("threeBlendEntries", 3, 5, 15, deformer.ThreeBlendEntries, hasExplicitWeights: false),
+            CreatePackedSkinBlendArray("twoBlendEntries", 2, 8, 16, deformer.TwoBlendEntries, hasExplicitWeights: false),
+            CreatePackedSkinBlendArray("oneBlendEntries", 1, 16, 16, deformer.OneBlendEntries, hasExplicitWeights: false)
+        };
+
+    private static SkinBlendArrayData CreatePackedSkinBlendArray(
+        string memberName,
+        int blendCount,
+        int vertexCount,
+        int boneCount,
+        IReadOnlyList<NativeBphclPackedArray> arrays,
+        bool hasExplicitWeights = true)
+    {
+        var blocks = new List<SkinBlendBlockData>();
+        foreach (var array in arrays)
+        {
+            var required = checked((vertexCount + boneCount) * sizeof(ushort) +
+                (hasExplicitWeights && blendCount > 1 ? boneCount : 0));
+            if (array.ElementSize < required)
+            {
+                throw new InvalidDataException(
+                    $"Packed skin array '{array.ElementType}' is {array.ElementSize} bytes, but {memberName} requires {required} bytes.");
+            }
+            for (var blockIndex = 0; blockIndex < array.Count; blockIndex++)
+            {
+                var baseOffset = checked(blockIndex * array.ElementSize);
+                var vertices = new ushort[vertexCount];
+                var bones = new ushort[boneCount];
+                var weights = hasExplicitWeights && blendCount > 1 ? new byte[boneCount] : Array.Empty<byte>();
+                for (var index = 0; index < vertexCount; index++)
+                    vertices[index] = ReadPackedUInt16(array.Bytes, baseOffset + index * sizeof(ushort));
+                var boneOffset = baseOffset + vertexCount * sizeof(ushort);
+                for (var index = 0; index < boneCount; index++)
+                    bones[index] = ReadPackedUInt16(array.Bytes, boneOffset + index * sizeof(ushort));
+                if (hasExplicitWeights && blendCount > 1)
+                {
+                    var weightOffset = boneOffset + boneCount * sizeof(ushort);
+                    for (var index = 0; index < boneCount; index++)
+                        weights[index] = array.Bytes[weightOffset + index];
+                }
+                blocks.Add(new SkinBlendBlockData(vertices, bones, weights));
+            }
+        }
+        return new SkinBlendArrayData(memberName, blendCount, vertexCount, boneCount, blocks);
+    }
+
+    private static ushort ReadPackedUInt16(IReadOnlyList<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset > bytes.Count - sizeof(ushort))
+            throw new InvalidDataException("Packed skinning block ends before a UInt16 field.");
+        return BinaryPrimitives.ReadUInt16LittleEndian(new[] { bytes[offset], bytes[offset + 1] });
+    }
+
+    // Export-only snapshot of the source execution graph. The standalone
+    // BPHCL writer uses it to retain the same buffers, operator ordering, and
+    // state routing as the original HKCL rather than inferring a generic
+    // three-buffer pipeline.
+    public ClothRuntimeData GetClothRuntimeData(int clothIndex)
+    {
+        if (IsHelperBoneSidecar)
+            return new ClothRuntimeData(
+                Array.Empty<ClothBufferDefinitionData>(),
+                Array.Empty<ClothTransformSetDefinitionData>(),
+                Array.Empty<ClothOperatorData>(),
+                Array.Empty<ClothStateRuntimeData>());
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var cloth = bphcl.Cloths.ElementAtOrDefault(clothIndex);
+            if (cloth is null)
+                return new ClothRuntimeData(
+                    Array.Empty<ClothBufferDefinitionData>(),
+                    Array.Empty<ClothTransformSetDefinitionData>(),
+                    Array.Empty<ClothOperatorData>(),
+                    Array.Empty<ClothStateRuntimeData>());
+
+            return new ClothRuntimeData(
+                cloth.BufferDefinitions.Select(buffer => new ClothBufferDefinitionData(
+                    buffer.Index,
+                    buffer.ClassName,
+                    buffer.MeshName,
+                    buffer.BufferName,
+                    buffer.Type,
+                    buffer.SubType,
+                    checked((int)buffer.VertexCount),
+                    checked((int)buffer.TriangleCount),
+                    Array.Empty<ushort>())).ToArray(),
+                cloth.TransformSetDefinitions.Select(transformSet => new ClothTransformSetDefinitionData(
+                    transformSet.Index,
+                    transformSet.Name,
+                    transformSet.Type,
+                    checked((int)transformSet.TransformCount))).ToArray(),
+                cloth.Operators.Select(@operator => new ClothOperatorData(
+                    @operator.Index,
+                    @operator.ClassName,
+                    @operator.InputBufferIndex,
+                    @operator.OutputBufferIndex,
+                    @operator.TransformSetIndex,
+                    @operator.VertexCount,
+                    @operator.StartVertexIn,
+                    @operator.StartVertexOut,
+                    @operator.VertexInputFromVertexOutput,
+                    false,
+                    false,
+                    @operator.VertexParticlePairs.Select(pair => new ClothVertexParticlePairData(
+                        pair.VertexIndex,
+                        pair.ParticleIndex)).ToArray(),
+                    @operator.SimulationClothIndex,
+                    @operator.ReferenceBufferIndex,
+                    @operator.SimulateConfigs.Select(config => new ClothSimulateConfigData(
+                        config.ConstraintExecution,
+                        config.InstanceCollidablesUsed,
+                        config.SubSteps,
+                        config.NumberOfSolveIterations,
+                        config.UseAllInstanceCollidables,
+                        config.AdaptConstraintStiffness)).ToArray())).ToArray(),
+                cloth.States.Select(state => new ClothStateRuntimeData(
+                    state.Index,
+                    state.Name,
+                    state.OperatorItemIndices,
+                    state.BufferAccesses.Select(access => checked((int)access.BufferIndex)).ToArray(),
+                    state.TransformSetAccesses.Select(access => checked((int)access.TransformSetIndex)).ToArray(),
+                    state.SimClothItemIndices,
+                    state.BufferAccesses.Select(access => new ClothStateBufferAccessData(
+                        checked((int)access.BufferIndex),
+                        access.ComponentFlags0,
+                        access.ComponentFlags1,
+                        access.ComponentFlags2,
+                        access.ComponentFlags3,
+                        access.TrianglesRead,
+                        checked((int)access.ShadowBufferIndex))).ToArray(),
+                    state.TransformSetAccesses.Select(access => new ClothStateTransformSetAccessData(
+                        checked((int)access.TransformSetIndex),
+                        access.ComponentFlags0,
+                        access.ComponentFlags1,
+                        access.TransformTrackers.Select(tracker => new ClothStateTransformTrackerData(
+                            new ClothStateBitFieldData(tracker.Read.Words, tracker.Read.NumBits),
+                            new ClothStateBitFieldData(tracker.ReadBeforeWrite.Words, tracker.ReadBeforeWrite.NumBits),
+                            new ClothStateBitFieldData(tracker.Written.Words, tracker.Written.NumBits))).ToArray())).ToArray())).ToArray());
+        }
+
+        var root = RequireRoot();
+        var clothData = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        if (clothData is null)
+            return new ClothRuntimeData(
+                Array.Empty<ClothBufferDefinitionData>(),
+                Array.Empty<ClothTransformSetDefinitionData>(),
+                Array.Empty<ClothOperatorData>(),
+                Array.Empty<ClothStateRuntimeData>());
+
+        var buffers = (GetList(GetValue(clothData, "bufferDefinitions")) ?? Array.Empty<object>())
+            .Select((buffer, index) => new ClothBufferDefinitionData(
+                index,
+                buffer.GetType().Name,
+                GetString(buffer, "meshName") ?? string.Empty,
+                GetString(buffer, "name") ?? $"Buffer {index}",
+                ToInt(GetValue(buffer, "type"), 0),
+                ToInt(GetValue(buffer, "subType"), 0),
+                ToInt(GetValue(buffer, "numVertices"), 0),
+                ToInt(GetValue(buffer, "numTriangles"), 0),
+                (GetList(GetValue(buffer, "triangleIndices")) ?? Array.Empty<object>())
+                    .Select(value => checked((ushort)ToInt(value, 0)))
+                    .ToArray()))
+            .ToArray();
+
+        var operators = (GetList(GetValue(clothData, "operators")) ?? Array.Empty<object>())
+            .Select((@operator, index) =>
+            {
+                var className = @operator.GetType().Name;
+                var simulateConfigs = className == "hclSimulateOperator"
+                    ? new[]
+                    {
+                        new ClothSimulateConfigData(
+                            ReadRuntimeIntList(@operator, "constraintExecution"),
+                            ReadRuntimeIntList(@operator, "instanceCollidablesUsed"),
+                            checked((byte)ToInt(GetValue(@operator, "subSteps"), 1)),
+                            checked((byte)ToInt(GetValue(@operator, "numberOfSolveIterations"), 1)),
+                            ToRuntimeBool(GetValue(@operator, "useAllInstanceCollidables")),
+                            ToRuntimeBool(GetValue(@operator, "adaptConstraintStiffness")))
+                    }
+                    : Array.Empty<ClothSimulateConfigData>();
+                var pairs = (GetList(GetValue(@operator, "vertexParticlePairs")) ?? Array.Empty<object>())
+                    .Select(pair => new ClothVertexParticlePairData(
+                        checked((ushort)ToInt(GetValue(pair, "vertexIndex"), 0)),
+                        checked((ushort)ToInt(GetValue(pair, "particleIndex"), 0))))
+                    .ToArray();
+                return new ClothOperatorData(
+                    index,
+                    className,
+                    ReadRuntimeOptionalInt(@operator, "inputBufferIdx"),
+                    ReadRuntimeOptionalInt(@operator, "outputBufferIdx", "outputBufferIndex"),
+                    ReadRuntimeOptionalInt(@operator, "outputTransformSetIdx", "transformSetIndex"),
+                    ReadRuntimeOptionalInt(@operator, "numberOfVertices"),
+                    ReadRuntimeOptionalInt(@operator, "startVertexIn"),
+                    ReadRuntimeOptionalInt(@operator, "startVertexOut"),
+                    (GetList(GetValue(@operator, "vertexInputFromVertexOutput")) ?? Array.Empty<object>())
+                        .Select(value => checked((short)ToInt(value, 0))).ToArray(),
+                    ToRuntimeBool(GetValue(@operator, "gatherNormals")),
+                    ToRuntimeBool(GetValue(@operator, "partialGather")),
+                    pairs,
+                    ReadRuntimeOptionalInt(@operator, "simClothIndex"),
+                    ReadRuntimeOptionalInt(@operator, "refBufferIdx"),
+                    simulateConfigs);
+            })
+            .ToArray();
+
+        var transformSets = (GetList(GetValue(clothData, "transformSetDefinitions")) ?? Array.Empty<object>())
+            .Select((transformSet, index) => new ClothTransformSetDefinitionData(
+                index,
+                GetString(transformSet, "name") ?? $"Transform set {index}",
+                ToInt(GetValue(transformSet, "type"), 0),
+                ToInt(GetValue(transformSet, "numTransforms"), 0)))
+            .ToArray();
+
+        var states = (GetList(GetValue(clothData, "clothStateDatas")) ?? Array.Empty<object>())
+            .Select((state, index) =>
+            {
+                var bufferAccesses = ReadRuntimeStateBufferAccesses(state);
+                var transformSetAccesses = ReadRuntimeStateTransformSetAccesses(state);
+                return new ClothStateRuntimeData(
+                    index,
+                    GetString(state, "name") ?? $"State {index}",
+                    ReadRuntimeIntList(state, "operators"),
+                    bufferAccesses.Select(access => access.BufferIndex).ToArray(),
+                    transformSetAccesses.Select(access => access.TransformSetIndex).ToArray(),
+                    ReadRuntimeIntList(state, "usedSimCloths"),
+                    bufferAccesses,
+                    transformSetAccesses);
+            })
+            .ToArray();
+
+        return new ClothRuntimeData(buffers, transformSets, operators, states);
+    }
+
+    private static IReadOnlyList<int> ReadRuntimeIntList(object source, string memberName) =>
+        (GetList(GetValue(source, memberName)) ?? Array.Empty<object>())
+            .Select(value => ToInt(value, -1))
+            .Where(value => value >= 0)
+            .ToArray();
+
+    private static IReadOnlyList<ClothStateBufferAccessData> ReadRuntimeStateBufferAccesses(object state)
+    {
+        return (GetList(GetValue(state, "usedBuffers")) ?? Array.Empty<object>())
+            .Select(access =>
+            {
+                var usage = GetValue(access, "bufferUsage");
+                var bufferIndex = ToInt(GetValue(access, "bufferIndex"), -1);
+                return new ClothStateBufferAccessData(
+                    bufferIndex,
+                    ToRuntimeByte(GetValue(usage, "perComponentFlags_0")),
+                    ToRuntimeByte(GetValue(usage, "perComponentFlags_1")),
+                    ToRuntimeByte(GetValue(usage, "perComponentFlags_2")),
+                    ToRuntimeByte(GetValue(usage, "perComponentFlags_3")),
+                    ToRuntimeBool(GetValue(usage, "trianglesRead")),
+                    ToInt(GetValue(access, "shadowBufferIndex"), bufferIndex));
+            })
+            .Where(access => access.BufferIndex >= 0)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ClothStateTransformSetAccessData> ReadRuntimeStateTransformSetAccesses(object state)
+    {
+        return (GetList(GetValue(state, "usedTransformSets")) ?? Array.Empty<object>())
+            .Select(access =>
+            {
+                var usage = GetValue(access, "transformSetUsage");
+                var trackers = (GetList(GetValue(usage, "perComponentTransformTrackers")) ?? Array.Empty<object>())
+                    .Select(tracker => new ClothStateTransformTrackerData(
+                        ReadRuntimeStateBitField(GetValue(tracker, "read")),
+                        ReadRuntimeStateBitField(GetValue(tracker, "readBeforeWrite")),
+                        ReadRuntimeStateBitField(GetValue(tracker, "written"))))
+                    .ToArray();
+                return new ClothStateTransformSetAccessData(
+                    ToInt(GetValue(access, "transformSetIndex"), -1),
+                    ToRuntimeByte(GetValue(usage, "perComponentFlags_0")),
+                    ToRuntimeByte(GetValue(usage, "perComponentFlags_1")),
+                    trackers);
+            })
+            .Where(access => access.TransformSetIndex >= 0)
+            .ToArray();
+    }
+
+    private static ClothStateBitFieldData ReadRuntimeStateBitField(object? bitField)
+    {
+        var storage = GetValue(bitField, "storage");
+        var words = (GetList(GetValue(storage, "words")) ?? Array.Empty<object>())
+            .Select(value => ToRuntimeUInt32(value))
+            .ToArray();
+        return new ClothStateBitFieldData(words, ToRuntimeUInt32(GetValue(storage, "numBits")));
+    }
+
+    private static byte ToRuntimeByte(object? value)
+    {
+        var number = ToInt(value, 0);
+        return checked((byte)Math.Clamp(number, byte.MinValue, byte.MaxValue));
+    }
+
+    private static uint ToRuntimeUInt32(object? value)
+    {
+        return value switch
+        {
+            uint unsignedValue => unsignedValue,
+            int signedValue => unchecked((uint)signedValue),
+            _ => unchecked((uint)ToInt(value, 0))
+        };
+    }
+    private static int? ReadRuntimeOptionalInt(object source, params string[] memberNames)
+    {
+        foreach (var memberName in memberNames)
+        {
+            var value = GetValue(source, memberName);
+            if (value is not null)
+                return ToInt(value, 0);
+        }
+        return null;
+    }
+
+    private static bool ToRuntimeBool(object? value)
+    {
+        if (value is null)
+            return false;
+        return value is bool boolean
+            ? boolean
+            : ToInt(value, 0) != 0;
+    }
+
+    // Keeps the reverse-conversion preflight honest: a standalone writer may
+    // only claim runtime support for operator classes it can serialize.
+    public IReadOnlyList<string> GetOperatorClassNames(int clothIndex)
+    {
+        if (_bphhb != null)
+            return Array.Empty<string>();
+        if (_bphcl?.NativeDocument is { } bphcl)
+            return bphcl.Cloths.ElementAtOrDefault(clothIndex)?.Operators
+                .Select(@operator => @operator.ClassName)
+                .ToArray()
+                ?? Array.Empty<string>();
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        return cloth == null
+            ? Array.Empty<string>()
+            : (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
+                .Select(@operator => @operator.GetType().Name)
+                .ToArray();
+    }
+
     public void UpdateParticleRelationshipRows(int clothIndex, IEnumerable<ParticleRelationshipRow> rows)
     {
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -674,6 +1885,7 @@ public sealed partial class HkclService
                 AddNativeConstraintEditValue(values, "stretchMaxLength", row.StretchMaxLength);
                 AddNativeConstraintEditValue(values, "maximumDistance", row.MaximumDistance);
                 AddNativeConstraintEditValue(values, "maxDistance", row.MaximumDistance);
+                AddNativeConstraintEditValue(values, "shapeRadius", row.MaximumDistance);
                 AddNativeConstraintEditValue(values, "stiffness", row.Stiffness);
                 AddNativeConstraintEditValue(values, "bendStiffness", row.BendStiffness);
                 AddNativeConstraintEditValue(values, "stretchStiffness", row.StretchStiffness);
@@ -695,7 +1907,7 @@ public sealed partial class HkclService
             return;
         }
 
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
             throw new InvalidOperationException("Helper-bone files do not contain cloth constraints.");
 
         var root = RequireRoot();
@@ -735,13 +1947,14 @@ public sealed partial class HkclService
                 var local = localConstraints[row.LocalConstraintIndex];
                 ApplyConstraintFloat(local, "maximumDistance", row.MaximumDistance);
                 ApplyConstraintFloat(local, "maxDistance", row.MaximumDistance);
+                ApplyConstraintFloat(local, "shapeRadius", row.MaximumDistance);
             }
         }
     }
 
     public void DeleteParticleRelationship(int clothIndex, ParticleRelationshipRow row)
     {
-        if (_bphcl != null || _bphhb != null)
+        if (_bphcl != null || IsHelperBoneSidecar)
             throw new InvalidOperationException("Constraint editing is currently available for HKCL files only.");
         if (!row.IsEditable)
             throw new InvalidOperationException("That relationship is structural information and cannot be removed here.");
@@ -777,6 +1990,12 @@ public sealed partial class HkclService
         if (_bphhb != null)
             return GetBphhbBoneRows(_bphhb);
 
+        if (_bphyssb != null)
+            return GetBphyssbBoneRows(_bphyssb);
+
+        if (IsHkrg)
+            return clothIndex == 0 ? GetHkrgBoneRows() : Array.Empty<BoneEditRow>();
+
         if (_bphcl?.NativeDocument is { } bphcl)
         {
             var nativeSkeleton = bphcl.Skeletons.ElementAtOrDefault(clothIndex);
@@ -791,7 +2010,12 @@ public sealed partial class HkclService
                 RotationX = bone.Rotation.X,
                 RotationY = bone.Rotation.Y,
                 RotationZ = bone.Rotation.Z,
-                RotationW = bone.Rotation.W
+                RotationW = bone.Rotation.W,
+                TranslationW = bone.Translation.W,
+                ScaleX = bone.Scale.X,
+                ScaleY = bone.Scale.Y,
+                ScaleZ = bone.Scale.Z,
+                ScaleW = bone.Scale.W
             }).ToArray() ?? Array.Empty<BoneEditRow>();
         }
 
@@ -816,13 +2040,15 @@ public sealed partial class HkclService
                 X = pose.M11,
                 Y = pose.M12,
                 Z = pose.M13,
+                TranslationW = pose.M14,
                 RotationX = pose.M21,
                 RotationY = pose.M22,
                 RotationZ = pose.M23,
                 RotationW = pose.M24,
                 ScaleX = pose.M31,
                 ScaleY = pose.M32,
-                ScaleZ = pose.M33
+                ScaleZ = pose.M33,
+                ScaleW = pose.M34
             });
         }
 
@@ -889,6 +2115,51 @@ public sealed partial class HkclService
         return rows;
     }
 
+    private static IReadOnlyList<BoneEditRow> GetBphyssbBoneRows(BphyssbDocumentSummary support)
+    {
+        var graph = support.Graph;
+        if (graph == null)
+        {
+            return support.SupportBoneNames.Select((name, index) => new BoneEditRow
+            {
+                Index = index,
+                Name = name,
+                ParentIndex = -1
+            }).ToArray();
+        }
+
+        var rows = graph.Bones.Select((name, index) => new BoneEditRow
+        {
+            Index = index,
+            Name = name,
+            ParentIndex = -1
+        }).ToArray();
+
+        foreach (var main in graph.MainBones)
+            ApplyBphyssbPoseRow(rows, main);
+
+        foreach (var supportBone in graph.SupportBones)
+            ApplyBphyssbPoseRow(rows, supportBone);
+
+        return rows;
+    }
+
+    private static void ApplyBphyssbPoseRow(BoneEditRow[] rows, BphyssbPoseBone pose)
+    {
+        if (pose.BoneId < 0 || pose.BoneId >= rows.Length)
+            return;
+
+        var row = rows[pose.BoneId];
+        row.ParentIndex = pose.SpaceId;
+        row.X = pose.Translation.X;
+        row.Y = pose.Translation.Y;
+        row.Z = pose.Translation.Z;
+        row.RotationX = pose.Rotation.X;
+        row.RotationY = pose.Rotation.Y;
+        row.RotationZ = pose.Rotation.Z;
+        row.RotationW = pose.Rotation.W;
+    }
+
     public void UpdateBoneRows(int clothIndex, IEnumerable<BoneEditRow> rows)
     {
         if (_bphhb is { } helper)
@@ -905,6 +2176,30 @@ public sealed partial class HkclService
             }
 
             _bphhb = helper;
+            return;
+        }
+
+        if (_bphyssb is { } support)
+        {
+            foreach (var row in rows)
+            {
+                support = BphyssbBridge.UpdateBone(
+                    support,
+                    row.Index,
+                    row.Name,
+                    row.ParentIndex,
+                    new Vector3(row.X, row.Y, row.Z),
+                    new Vector4(row.RotationX, row.RotationY, row.RotationZ, row.RotationW));
+            }
+
+            _bphyssb = support;
+            return;
+        }
+
+        if (IsHkrg)
+        {
+            if (clothIndex == 0)
+                UpdateHkrgBoneRows(rows);
             return;
         }
 
@@ -973,10 +2268,105 @@ public sealed partial class HkclService
         }
     }
 
+    // Returns the complete outer HKCL collider table. Fresh BPHCL needs this
+    // separately from each simulation's per-instance list: native files can
+    // retain unused colliders in the root container.
+    public IReadOnlyList<ColliderEditRow> GetAllColliderRows()
+    {
+        if (_bphhb != null || IsHkrg)
+            return Array.Empty<ColliderEditRow>();
+
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            return bphcl.Colliders.Select(collider => new ColliderEditRow
+            {
+                Index = collider.Index,
+                Name = collider.Name,
+                ShapeType = GetColliderShapeLabel(collider.Shape.TypeName),
+                BoneIndex = -1,
+                BoneName = string.Empty,
+                StartX = TransformNativeColliderPoint(collider, collider.Shape.Start).X,
+                StartY = TransformNativeColliderPoint(collider, collider.Shape.Start).Y,
+                StartZ = TransformNativeColliderPoint(collider, collider.Shape.Start).Z,
+                EndX = TransformNativeColliderPoint(collider, collider.Shape.End).X,
+                EndY = TransformNativeColliderPoint(collider, collider.Shape.End).Y,
+                EndZ = TransformNativeColliderPoint(collider, collider.Shape.End).Z,
+                Radius = collider.Shape.Radius,
+                PlaneNormalX = collider.Shape.PlaneEquation.X,
+                PlaneNormalY = collider.Shape.PlaneEquation.Y,
+                PlaneNormalZ = collider.Shape.PlaneEquation.Z,
+                Transform = GetNativeColliderTransform(collider)
+            }).ToArray();
+        }
+
+        var root = RequireRoot();
+        var collidables = GetCollidables(root);
+        return collidables
+            .Select((collidable, index) =>
+            {
+                var shape = GetValue(collidable, "shape");
+                if (shape == null)
+                    return null;
+
+                var shapeType = shape.GetType().Name;
+                var planeEquation = shapeType == "hclPlaneShape" && GetValue(shape, "planeEquation") is Vector4 plane
+                    ? plane
+                    : Vector4.Zero;
+                var start = shapeType switch
+                {
+                    "hclSphereShape" => GetValue(GetValue(shape, "sphere"), "pos") is Vector4 sphere ? sphere : Vector4.Zero,
+                    "hclTaperedCapsuleShape" => GetValue(shape, "small") is Vector4 small ? small : Vector4.Zero,
+                    "hclPlaneShape" => new Vector4(GetPlanePoint(planeEquation), 0.0f),
+                    _ => GetValue(shape, "start") is Vector4 startVector ? startVector : Vector4.Zero
+                };
+                var end = shapeType switch
+                {
+                    "hclSphereShape" => start,
+                    "hclTaperedCapsuleShape" => GetValue(shape, "big") is Vector4 big ? big : start,
+                    _ => GetValue(shape, "end") is Vector4 endVector ? endVector : start
+                };
+                var transform = GetValue(collidable, "transform") is Matrix4x4 matrix
+                    ? matrix
+                    : Matrix4x4.Identity;
+                var normal = shapeType == "hclPlaneShape"
+                    ? NormalizePlaneNormal(TransformHkclColliderDirection(transform, new Vector3(planeEquation.X, planeEquation.Y, planeEquation.Z)))
+                    : Vector3.UnitY;
+                return new ColliderEditRow
+                {
+                    Index = index,
+                    ClothIndex = -1,
+                    Name = GetString(collidable, "name") ?? $"Collider {index}",
+                    ShapeType = GetColliderShapeLabel(shapeType),
+                    BoneIndex = ToInt(GetValue(collidable, "transformIndex"), -1),
+                    BoneName = string.Empty,
+                    StartX = TransformHkclColliderPoint(transform, start).X,
+                    StartY = TransformHkclColliderPoint(transform, start).Y,
+                    StartZ = TransformHkclColliderPoint(transform, start).Z,
+                    EndX = TransformHkclColliderPoint(transform, end).X,
+                    EndY = TransformHkclColliderPoint(transform, end).Y,
+                    EndZ = TransformHkclColliderPoint(transform, end).Z,
+                    Radius = shapeType switch
+                    {
+                        "hclSphereShape" => start.W,
+                        "hclTaperedCapsuleShape" => Convert.ToSingle(GetValue(shape, "smallRadius") ?? 0.0f, CultureInfo.InvariantCulture),
+                        _ => Convert.ToSingle(GetValue(shape, "radius") ?? 0.0f, CultureInfo.InvariantCulture)
+                    },
+                    PlaneNormalX = normal.X,
+                    PlaneNormalY = normal.Y,
+                    PlaneNormalZ = normal.Z,
+                    Transform = transform
+                };
+            })
+            .OfType<ColliderEditRow>()
+            .ToArray();
+    }
     public IReadOnlyList<ColliderEditRow> GetColliderRows(int clothIndex)
     {
         if (_bphhb != null)
             return Array.Empty<ColliderEditRow>();
+
+        if (IsHkrg)
+            return clothIndex == 0 ? GetHkrgRigidBodyRows() : Array.Empty<ColliderEditRow>();
 
         if (_bphcl?.NativeDocument is { } bphcl)
         {
@@ -1102,35 +2492,75 @@ public sealed partial class HkclService
 
     public void DuplicateHelperBone(int boneIndex)
     {
-        if (_bphhb == null)
-            throw new InvalidOperationException("A BPHHB helper-bone file is not open.");
-        _bphhb = BphhbBridge.DuplicateBone(_bphhb, boneIndex);
+        if (_bphhb != null)
+        {
+            _bphhb = BphhbBridge.DuplicateBone(_bphhb, boneIndex);
+            return;
+        }
+
+        if (_bphyssb != null)
+        {
+            _bphyssb = BphyssbBridge.DuplicateBone(_bphyssb, boneIndex);
+            return;
+        }
+
+        throw new InvalidOperationException("A helper/support-bone file is not open.");
     }
 
     public void AddHelperBone(int preferredSourceIndex)
     {
-        if (_bphhb == null)
-            throw new InvalidOperationException("A BPHHB helper-bone file is not open.");
-        _bphhb = BphhbBridge.AddBone(_bphhb, preferredSourceIndex);
+        if (_bphhb != null)
+        {
+            _bphhb = BphhbBridge.AddBone(_bphhb, preferredSourceIndex);
+            return;
+        }
+
+        if (_bphyssb != null)
+        {
+            _bphyssb = BphyssbBridge.AddBone(_bphyssb, preferredSourceIndex);
+            return;
+        }
+
+        throw new InvalidOperationException("A helper/support-bone file is not open.");
     }
 
     public void MirrorHelperBoneAcrossX(int boneIndex)
     {
-        if (_bphhb == null)
-            throw new InvalidOperationException("A BPHHB helper-bone file is not open.");
-        _bphhb = BphhbBridge.MirrorBoneAcrossX(_bphhb, boneIndex);
+        if (_bphhb != null)
+        {
+            _bphhb = BphhbBridge.MirrorBoneAcrossX(_bphhb, boneIndex);
+            return;
+        }
+
+        if (_bphyssb != null)
+        {
+            _bphyssb = BphyssbBridge.MirrorBoneAcrossX(_bphyssb, boneIndex);
+            return;
+        }
+
+        throw new InvalidOperationException("A helper/support-bone file is not open.");
     }
 
     public void MoveHelperBone(int sourceBoneIndex, int destinationBoneIndex)
     {
-        if (_bphhb == null)
-            throw new InvalidOperationException("A BPHHB helper-bone file is not open.");
-        _bphhb = BphhbBridge.MoveBone(_bphhb, sourceBoneIndex, destinationBoneIndex);
+        if (_bphhb != null)
+        {
+            _bphhb = BphhbBridge.MoveBone(_bphhb, sourceBoneIndex, destinationBoneIndex);
+            return;
+        }
+
+        if (_bphyssb != null)
+        {
+            _bphyssb = BphyssbBridge.MoveBone(_bphyssb, sourceBoneIndex, destinationBoneIndex);
+            return;
+        }
+
+        throw new InvalidOperationException("A helper/support-bone file is not open.");
     }
 
     public IReadOnlyList<string> GetColliderBindingDiagnostics(int clothIndex)
     {
-        if (_root == null || _bphcl != null || _bphhb != null)
+        if (_root == null || _bphcl != null || IsHelperBoneSidecar)
             return Array.Empty<string>();
 
         var root = RequireRoot();
@@ -1196,6 +2626,12 @@ public sealed partial class HkclService
 
     public void UpdateColliderRows(IEnumerable<ColliderEditRow> rows)
     {
+        if (IsHkrg)
+        {
+            UpdateHkrgRigidBodyRows(rows);
+            return;
+        }
+
         if (_bphcl?.NativeDocument is { } bphcl)
         {
             var submittedRows = rows.ToList();
@@ -1331,9 +2767,9 @@ public sealed partial class HkclService
     public ParticlePreviewData GetParticlePreview(int clothIndex)
     {
         var preview = new ParticlePreviewData();
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
         {
-            var helperBones = GetBphhbBoneRows(_bphhb);
+            var helperBones = GetBoneRows(0);
             foreach (var bone in helperBones)
             {
                 preview.Bones.Add(new BonePreviewPoint
@@ -1378,7 +2814,11 @@ public sealed partial class HkclService
                     InverseMass = particle.InverseMass,
                     CollisionMask = simulation.StaticCollisionMasks.Count > particle.Index
                         ? simulation.StaticCollisionMasks[particle.Index]
-                        : GetBphclCollisionMask(simulation, particle, particle.Index)
+                        : GetBphclCollisionMask(
+                            simulation,
+                            particle,
+                            particle.Index,
+                            preserveSourceLandscapeCollisionBit: true)
                 });
             }
 
@@ -1424,6 +2864,13 @@ public sealed partial class HkclService
         }
 
         var root = RequireRoot();
+        if (IsHkrg)
+        {
+            if (clothIndex == 0)
+                AddHkrgPreview(preview);
+            return preview;
+        }
+
         var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
         if (cloth == null)
             return preview;
@@ -1490,7 +2937,7 @@ public sealed partial class HkclService
             return;
         }
 
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
             throw new InvalidOperationException("Helper-bone files do not contain cloth particles.");
 
         var root = RequireRoot();
@@ -1512,7 +2959,7 @@ public sealed partial class HkclService
             return;
         }
 
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
             throw new InvalidOperationException("Helper-bone files do not contain virtual cloth triangles.");
 
         var root = RequireRoot();
@@ -1559,7 +3006,12 @@ public sealed partial class HkclService
 
     private static float? GetNativeConstraintValue(NativeBphclConstraintLink link, string name)
     {
-        var value = link.Values.FirstOrDefault(pair => string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase));
+        return GetNativeConstraintValue(link.Values, name);
+    }
+
+    private static float? GetNativeConstraintValue(IReadOnlyDictionary<string, double> values, string name)
+    {
+        var value = values.FirstOrDefault(pair => string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase));
         return !string.IsNullOrEmpty(value.Key) && double.IsFinite(value.Value) ? (float)value.Value : null;
     }
 
@@ -1585,9 +3037,7 @@ public sealed partial class HkclService
         var simData = GetFirst(GetValue(cloth, "simClothDatas"));
         var constraintSetSource = GetValue(simData, "staticConstraintSets")
             ?? GetValue(cloth, "constraintSets");
-        var constraintSets = GetList(constraintSetSource);
-        if (constraintSets == null)
-            return;
+        var constraintSets = GetList(constraintSetSource) ?? Array.Empty<object>();
 
         foreach (var constraintSet in constraintSets)
         {
@@ -1616,6 +3066,231 @@ public sealed partial class HkclService
                 ApplyConstraintFloat(link, "restLength", newLength);
                 ScaleConstraintFloat(link, "bendMinLength", ratio);
                 ScaleConstraintFloat(link, "stretchMaxLength", ratio);
+            }
+        }
+
+        // The simulation pose is only half of a cloth's rest state. Files that
+        // use MoveParticles / Transition also regenerate source vertices from
+        // skinning every frame. Rebase the matching source vertices so a
+        // deliberate particle edit is not pulled back to its old position.
+        RebaseParticleAnimationReferences(clothIndex, cloth, previous, current);
+    }
+
+    private void RebaseParticleAnimationReferences(
+        int clothIndex,
+        object cloth,
+        IReadOnlyDictionary<int, Vector3> previous,
+        IReadOnlyDictionary<int, Vector3> current)
+    {
+        var particleDeltas = current
+            .Where(pair => previous.TryGetValue(pair.Key, out var before) &&
+                           Vector3.DistanceSquared(before, pair.Value) > 0.0000000001f)
+            .ToDictionary(pair => pair.Key, pair => pair.Value - previous[pair.Key]);
+        if (particleDeltas.Count == 0)
+            return;
+
+        // Several source records may point at the same reference vertex. They
+        // normally carry the same particle delta; average defensively so that a
+        // shared vertex is only rebased once.
+        var vertexDeltas = new Dictionary<(int BufferIndex, int VertexIndex), List<Vector3>>();
+        void AddVertexDelta(int bufferIndex, int vertexIndex, int particleIndex)
+        {
+            if (vertexIndex < 0 || !particleDeltas.TryGetValue(particleIndex, out var delta))
+                return;
+
+            var key = (bufferIndex, vertexIndex);
+            if (!vertexDeltas.TryGetValue(key, out var values))
+            {
+                values = new List<Vector3>();
+                vertexDeltas.Add(key, values);
+            }
+            values.Add(delta);
+        }
+
+        var operators = GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>();
+        foreach (var @operator in operators.Where(@operator =>
+                     string.Equals(@operator.GetType().Name, "hclMoveParticlesOperator", StringComparison.Ordinal)))
+        {
+            var bufferIndex = ToInt(GetValue(@operator, "refBufferIdx"), 0);
+            foreach (var pair in GetList(GetValue(@operator, "vertexParticlePairs")) ?? Array.Empty<object>())
+            {
+                AddVertexDelta(
+                    bufferIndex,
+                    ToInt(GetValue(pair, "vertexIndex"), -1),
+                    ToInt(GetValue(pair, "particleIndex"), -1));
+            }
+        }
+
+        var simData = GetFirst(GetValue(cloth, "simClothDatas"));
+        var constraintSets = GetList(GetValue(simData, "staticConstraintSets"))
+            ?? GetList(GetValue(cloth, "constraintSets"))
+            ?? Array.Empty<object>();
+        foreach (var set in constraintSets.Where(set =>
+                     string.Equals(set.GetType().Name, "hclTransitionConstraintSet", StringComparison.Ordinal)))
+        {
+            var bufferIndex = ToInt(GetValue(set, "referenceMeshBufferIdx"), 0);
+            foreach (var record in GetList(GetValue(set, "perParticleData")) ?? Array.Empty<object>())
+            {
+                AddVertexDelta(
+                    bufferIndex,
+                    ToInt(GetValue(record, "referenceVertex"), -1),
+                    ToInt(GetValue(record, "particleIndex"), -1));
+            }
+        }
+
+        if (vertexDeltas.Count == 0)
+            return;
+
+        foreach (var skin in operators.Where(@operator =>
+                     string.Equals(@operator.GetType().Name, "hclObjectSpaceSkinPOperator", StringComparison.Ordinal)))
+        {
+            var outputBufferIndex = ToInt(GetValue(skin, "outputBufferIndex"), -1);
+            var perVertex = vertexDeltas
+                .Where(pair => pair.Key.BufferIndex == outputBufferIndex)
+                .ToDictionary(
+                    pair => pair.Key.VertexIndex,
+                    pair => pair.Value.Aggregate(Vector3.Zero, (sum, value) => sum + value) / pair.Value.Count);
+            if (perVertex.Count > 0)
+                RebaseObjectSpaceSkinVertices(skin, perVertex);
+        }
+
+        // Bone-space skin operators store their reference vertices in each
+        // influencing bone's local coordinates. This is used by compact cloths
+        // such as the Nose Earring. Updating only the simulation particles
+        // leaves the packed local positions behind, so the animation pipeline
+        // can restore the previous pose on the next frame.
+        var boneFrames = GetParticlePreview(clothIndex).Bones
+            .GroupBy(bone => bone.Index)
+            .ToDictionary(group => group.Key, group => group.First());
+        foreach (var skin in operators.Where(@operator =>
+                     string.Equals(@operator.GetType().Name, "hclBoneSpaceSkinPOperator", StringComparison.Ordinal)))
+        {
+            var outputBufferIndex = ToInt(GetValue(skin, "outputBufferIndex"), -1);
+            var perVertex = vertexDeltas
+                .Where(pair => pair.Key.BufferIndex == outputBufferIndex)
+                .ToDictionary(
+                    pair => pair.Key.VertexIndex,
+                    pair => pair.Value.Aggregate(Vector3.Zero, (sum, value) => sum + value) / pair.Value.Count);
+            if (perVertex.Count > 0)
+                RebaseBoneSpaceSkinVertices(skin, perVertex, boneFrames);
+        }
+    }
+
+    private static void RebaseObjectSpaceSkinVertices(object skinOperator, IReadOnlyDictionary<int, Vector3> vertexDeltas)
+    {
+        var deformer = GetValue(skinOperator, "objectSpaceDeformer");
+        var positionBlocks = GetList(GetValue(skinOperator, "localUnpackedPs"));
+        if (deformer == null || positionBlocks == null || positionBlocks.Count == 0)
+            return;
+
+        // Unpacked position blocks follow the packed blend blocks in Havok's
+        // blend-count order. vertexIndices_N identifies which output vertex is
+        // stored in localPosition_N.
+        var blendMembers = new[]
+        {
+            "eightBlendEntries", "sevenBlendEntries", "sixBlendEntries", "fiveBlendEntries",
+            "fourBlendEntries", "threeBlendEntries", "twoBlendEntries", "oneBlendEntries"
+        };
+        var positionBlockIndex = 0;
+        foreach (var member in blendMembers)
+        {
+            var blendBlocks = GetList(GetValue(deformer, member)) ?? Array.Empty<object>();
+            foreach (var blendBlock in blendBlocks)
+            {
+                if (positionBlockIndex >= positionBlocks.Count)
+                    return;
+
+                var positionBlock = positionBlocks[positionBlockIndex++];
+                var rebasedVertices = new HashSet<int>();
+                for (var slot = 0; slot < 16; slot++)
+                {
+                    var vertexIndex = ToInt(GetValue(blendBlock, $"vertexIndices_{slot}"), -1);
+                    if (vertexIndex < 0 || !rebasedVertices.Add(vertexIndex) ||
+                        !vertexDeltas.TryGetValue(vertexIndex, out var delta) ||
+                        GetValue(positionBlock, $"localPosition_{slot}") is not Vector4 position)
+                    {
+                        continue;
+                    }
+
+                    SetValue(
+                        positionBlock,
+                        $"localPosition_{slot}",
+                        new Vector4(position.X + delta.X, position.Y + delta.Y, position.Z + delta.Z, position.W));
+                }
+            }
+        }
+    }
+
+    private static void RebaseBoneSpaceSkinVertices(
+        object skinOperator,
+        IReadOnlyDictionary<int, Vector3> vertexDeltas,
+        IReadOnlyDictionary<int, BonePreviewPoint> boneFrames)
+    {
+        var deformer = GetValue(skinOperator, "boneSpaceDeformer");
+        // Vanilla files commonly use packed localPs. Some exports use the
+        // unpacked equivalent, so accept either without changing the format.
+        var positionBlocks = GetList(GetValue(skinOperator, "localPs"))
+            ?? GetList(GetValue(skinOperator, "localUnpackedPs"));
+        var transformSubset = GetList(GetValue(skinOperator, "transformSubset"));
+        if (deformer == null || positionBlocks == null || positionBlocks.Count == 0 || transformSubset == null)
+            return;
+
+        var blendMembers = new (string Member, int Count)[]
+        {
+            ("eightBlendEntries", 8), ("sevenBlendEntries", 7), ("sixBlendEntries", 6),
+            ("fiveBlendEntries", 5), ("fourBlendEntries", 4), ("threeBlendEntries", 3),
+            ("twoBlendEntries", 2), ("oneBlendEntries", 1)
+        };
+        var positionBlockIndex = 0;
+        foreach (var (member, blendCount) in blendMembers)
+        {
+            var blendBlocks = GetList(GetValue(deformer, member)) ?? Array.Empty<object>();
+            foreach (var blendBlock in blendBlocks)
+            {
+                if (positionBlockIndex >= positionBlocks.Count)
+                    return;
+
+                var positionBlock = positionBlocks[positionBlockIndex++];
+                var rebasedVertices = new HashSet<int>();
+                for (var slot = 0; slot < 16; slot++)
+                {
+                    var vertexIndex = ToInt(GetValue(blendBlock, $"vertexIndices_{slot}"), -1);
+                    if (vertexIndex < 0 || !rebasedVertices.Add(vertexIndex) ||
+                        !vertexDeltas.TryGetValue(vertexIndex, out var worldDelta))
+                    {
+                        continue;
+                    }
+
+                    for (var influence = 0; influence < blendCount; influence++)
+                    {
+                        var packedIndex = slot * blendCount + influence;
+                        var subsetIndex = ToInt(GetValue(blendBlock, $"boneIndices_{packedIndex}"), -1);
+                        var skeletonIndex = subsetIndex >= 0 && subsetIndex < transformSubset.Count
+                            ? ToInt(transformSubset[subsetIndex], -1)
+                            : -1;
+                        if (skeletonIndex < 0 || !boneFrames.TryGetValue(skeletonIndex, out var bone) ||
+                            GetValue(positionBlock, $"localPosition_{packedIndex}") is not Vector4 position)
+                        {
+                            continue;
+                        }
+
+                        // The packed point is in the coordinate frame of this
+                        // influence. Project the world-space particle move onto
+                        // that frame before writing it back.
+                        var localDelta = new Vector3(
+                            Vector3.Dot(worldDelta, bone.AxisX),
+                            Vector3.Dot(worldDelta, bone.AxisY),
+                            Vector3.Dot(worldDelta, bone.AxisZ));
+                        SetValue(
+                            positionBlock,
+                            $"localPosition_{packedIndex}",
+                            new Vector4(
+                                position.X + localDelta.X,
+                                position.Y + localDelta.Y,
+                                position.Z + localDelta.Z,
+                                position.W));
+                    }
+                }
             }
         }
     }
@@ -2141,8 +3816,8 @@ public sealed partial class HkclService
 
     public void RemoveCloth(int index)
     {
-        if (_bphhb != null)
-            throw new InvalidOperationException("BPHHB contains helper-bone rules, not removable cloth entries.");
+        if (IsHelperBoneSidecar)
+            throw new InvalidOperationException("Helper/support-bone files do not contain removable cloth entries.");
 
         if (_bphcl != null)
         {
@@ -2186,8 +3861,8 @@ public sealed partial class HkclService
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("A cloth name cannot be empty.", nameof(name));
 
-        if (_bphhb != null)
-            throw new InvalidOperationException("BPHHB helper-bone names are read-only until the native AAMP writer is implemented.");
+        if (IsHelperBoneSidecar)
+            throw new InvalidOperationException("Helper/support-bone files do not contain cloth names.");
 
         if (_bphcl != null)
         {
@@ -2218,8 +3893,8 @@ public sealed partial class HkclService
     /// </summary>
     public int DuplicateCloth(int index)
     {
-        if (_bphhb != null)
-            throw new InvalidOperationException("BPHHB contains helper-bone rules, not duplicable cloth entries.");
+        if (IsHelperBoneSidecar)
+            throw new InvalidOperationException("Helper/support-bone files do not contain duplicable cloth entries.");
 
         var duplicateName = GetUniqueDuplicateClothName(index);
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -2409,8 +4084,8 @@ public sealed partial class HkclService
 
     public string MergeClothFrom(HkclService reference, int clothIndex, int templateClothIndex = 0)
     {
-        if (_bphhb != null || reference._bphhb != null)
-            throw new InvalidOperationException("BPHHB helper-bone merging is not implemented yet. It needs its own AAMP merge path, separate from cloth merging.");
+        if (IsHelperBoneSidecar || reference.IsHelperBoneSidecar)
+            throw new InvalidOperationException("Helper/support-bone merging is not implemented yet. It needs its own AAMP merge path, separate from cloth merging.");
 
         if (_bphcl != null || reference._bphcl != null)
         {
@@ -2555,22 +4230,42 @@ public sealed partial class HkclService
             RebuildBphclParticleTopology(convertedCloth, sourceSimulation);
         ApplyBphclSimulationSettings(convertedCloth, sourceSimulation);
 
-        // Keep the paired compatibility scale used by the stable conversion
-        // path. Direct BPHCL inverse masses are too large for BotW's solver
-        // and can make the mesh explode before it becomes static.
-        var bphclSolverScale = Math.Max(1, sourceSimulation.Particles.Count);
-        ApplyBphclParticles(convertedCloth, sourceSimulation, bphclSolverScale);
+        // Use the same catalog/structural suggestion as the full BPHCL
+        // converter. The former particle-count fallback was only a last
+        // resort and can be badly wrong for two cloths with similar sizes.
+        var bphclSolverScale = reference.ResolveBphclSolverScale(
+            sourceClothIndex,
+            sourceSimulation,
+            overrides: null);
+        ApplyBphclParticles(
+            convertedCloth,
+            sourceSimulation,
+            bphclSolverScale,
+            preserveSourceLandscapeCollisionBit: false);
         var topologyNotes = ApplyBphclBufferAndOperatorLayout(
             convertedCloth,
             sourceCloth,
             boneMap,
             preserveTemplateTransformSetShape: !reconstructSkeleton);
-        var convertedColliders = CreateBphclColliders(convertedCloth, colliderTemplates, sourceColliders, sourceSkeleton, convertedSkeleton, boneMap);
+        var convertedColliders = CreateBphclColliders(
+            convertedCloth,
+            colliderTemplates,
+            sourceColliders,
+            sourceSkeleton,
+            convertedSkeleton,
+            boneMap,
+            sourceSimulation.CollidableItemIndices);
+        var activeConvertedColliders = OrderConvertedCollidersBySourceItems(
+            sourceColliders,
+            convertedColliders,
+            sourceSimulation.CollidableItemIndices);
         var colliderMapNote = ApplyBphclCollidableTransformMap(
             convertedCloth,
             sourceSimulation.CollidableTransformMap,
-            sourceColliders.Count,
-            boneMap);
+            sourceSimulation.CollidableItemIndices.Count,
+            boneMap,
+            convertedSkeleton,
+            activeConvertedColliders);
         // BPHCL and HKCL do not expose identical constraint-set layouts.
         // Keep the verified HKCL sets (including local-range and transition
         // data) and patch only matching source records into them. Creating
@@ -2579,8 +4274,15 @@ public sealed partial class HkclService
         var constraintNotes = ApplyBphclConstraintLinks(
             convertedCloth,
             sourceSimulation,
-            preserveTemplateLayout: true);
-        var executionNotes = ApplyBphclConstraintExecution(convertedCloth, sourceSimulation, sourceCloth.Operators);
+            _bphcl?.SourcePath,
+            sourceCloth.Name,
+            preserveTemplateLayout: true,
+            solverScale: bphclSolverScale);
+        var executionNotes = ApplyBphclConstraintExecution(
+            convertedCloth,
+            sourceSimulation,
+            sourceCloth.Name,
+            sourceCloth.Operators);
         var deformerNotes = ApplyBphclSimpleMeshBoneDeform(convertedCloth, sourceCloth.SimpleMeshBoneDeformers, boneMap);
 
         // BPHCL -> HKCL is a template replacement. Preserve the selected
@@ -2603,7 +4305,7 @@ public sealed partial class HkclService
         // Reattach after the objects are rooted in the container. BotW reads
         // colliders from hclSimClothData, rather than the legacy cloth-level
         // list, so this is deliberately performed at simulation level.
-        ReplaceClothCollidableReferences(convertedCloth, convertedColliders);
+        ReplaceClothCollidableReferences(convertedCloth, activeConvertedColliders);
 
         var notes = new List<string>
         {
@@ -2868,6 +4570,15 @@ public sealed partial class HkclService
         SetValue(target, "subSteps", sourceConfig.SubSteps);
         SetValue(target, "numberOfSolveIterations", sourceConfig.NumberOfSolveIterations);
         SetValue(target, "adaptConstraintStiffness", sourceConfig.AdaptConstraintStiffness);
+
+        // The per-particle masks only say which local collider slots are
+        // allowed. The simulate operator still decides whether those instance
+        // collidables participate in the solve. Preserving this source flag
+        // avoids generating HKCL files where colliders are present and masked
+        // correctly, but the solver never selects them.
+        SetValue(target, "useAllInstanceCollidables", sourceConfig.UseAllInstanceCollidables);
+        if (GetValue(target, "instanceCollidablesUsed") is IList instanceCollidablesUsed)
+            ReplaceList(instanceCollidablesUsed, sourceConfig.InstanceCollidablesUsed);
     }
 
     private static void ApplyBphclObjectSpaceSkin(
@@ -2939,8 +4650,17 @@ public sealed partial class HkclService
             ?? throw new InvalidOperationException("The HKCL bone-space skin operator has no deformer.");
         ApplyBphclBoneSpaceDeformer(deformer, source.Deformer);
         SetValue(target, "boneSpaceDeformer", deformer);
-        ReplacePositionBlocks(target, "localPs", "hclBoneSpaceDeformerLocalBlockP", source.LocalPs);
-        ReplacePositionBlocks(target, "localUnpackedPs", "hclBoneSpaceDeformerLocalBlockUnpackedP", source.LocalUnpackedPs);
+
+        // TotK's BoneSpace local position blocks are represented by the
+        // packed-looking localPs member. BotW's matching operator consumes
+        // those same Vector4 positions from localUnpackedPs instead. Leaving
+        // them in localPs makes the cloth look plausible at rest while its
+        // animation-to-simulation motion is wrong.
+        var unpackedPositions = source.LocalUnpackedPs.Count > 0
+            ? source.LocalUnpackedPs
+            : source.LocalPs;
+        ReplacePositionBlocks(target, "localPs", "hclBoneSpaceDeformerLocalBlockP", Array.Empty<NativeBphclPositionBlock>());
+        ReplacePositionBlocks(target, "localUnpackedPs", "hclBoneSpaceDeformerLocalBlockUnpackedP", unpackedPositions);
     }
 
     private static void ApplyBphclBoneSpaceDeformer(object target, NativeBphclBoneSpaceDeformer source)
@@ -3293,7 +5013,8 @@ public sealed partial class HkclService
     private static void ApplyBphclParticles(
         object cloth,
         NativeBphclSimCloth source,
-        float solverScale)
+        float solverScale,
+        bool preserveSourceLandscapeCollisionBit)
     {
         var rows = source.Particles.Select((particle, index) =>
         {
@@ -3317,7 +5038,7 @@ public sealed partial class HkclService
 
                 Radius = particle.Radius,
                 Friction = particle.Friction,
-                CollisionMask = GetBphclCollisionMask(source, particle, index)
+                CollisionMask = GetBphclCollisionMask(source, particle, index, preserveSourceLandscapeCollisionBit)
             };
         });
 
@@ -3327,10 +5048,20 @@ public sealed partial class HkclService
     private static uint GetBphclCollisionMask(
         NativeBphclSimCloth source,
         NativeBphclParticle particle,
-        int particleIndex)
+        int particleIndex,
+        bool preserveSourceLandscapeCollisionBit)
     {
+        const uint landscapeCollisionBit = 0x80000000u;
         if (particleIndex >= 0 && particleIndex < source.StaticCollisionMasks.Count)
-            return source.StaticCollisionMasks[particleIndex];
+        {
+            // TotK marks world/landscape collision in bit 31. BotW HKCL
+            // particle masks use the low per-instance collider bits here; the
+            // export path clears bit 31 while native BPHCL inspection may keep it.
+            var sourceMask = source.StaticCollisionMasks[particleIndex];
+            return preserveSourceLandscapeCollisionBit
+                ? sourceMask
+                : sourceMask & ~landscapeCollisionBit;
+        }
 
         // An absent source array is not a reason to borrow the template's
         // masks. Fixed particles normally have no collision bits; dynamic
@@ -3339,12 +5070,15 @@ public sealed partial class HkclService
             return 0u;
 
         var colliderCount = source.CollidableItemIndices.Count;
-        return colliderCount switch
+        var fallbackMask = colliderCount switch
         {
             <= 0 => 0u,
             >= 32 => uint.MaxValue,
             _ => (1u << colliderCount) - 1u
         };
+        return preserveSourceLandscapeCollisionBit && source.Runtime.LandscapeCollisionEnabled
+            ? fallbackMask | landscapeCollisionBit
+            : fallbackMask;
     }
 
     private static void ApplyBphclSimulationSettings(object cloth, NativeBphclSimCloth source)
@@ -3366,11 +5100,21 @@ public sealed partial class HkclService
         if (GetValue(simulation, "simOpIds") is IList simulationOperatorIds)
             ReplaceList(simulationOperatorIds, source.SimulationOperatorIds);
         SetValue(simulation, "transferMotionEnabled", source.Runtime.TransferMotionEnabled);
-        SetValue(simulation, "landscapeCollisionEnabled", source.Runtime.LandscapeCollisionEnabled);
+        // BotW does not retain TotK's landscape collision bit in the particle
+        // masks, but the source count still sizes a collision-runtime work
+        // array. Zeroing it made ordinary per-instance capsules inert even
+        // though their own mask bits and transforms were valid. Keep the
+        // source count while allowing the BotW class version to ignore the
+        // unsupported landscape-enabled flag.
+        // TotK marks these runtime cloths as landscape-enabled, but BotW vanilla HKCL keeps this flag off while retaining the per-particle landscape work-array count. Leaving it on makes some converted cloths run through the wrong collision path.\r\n        SetValue(simulationInfo, "landscapeCollisionEnabled", false);
         SetValue(simulation, "numLandscapeCollidableParticles", source.Runtime.NumLandscapeCollidableParticles);
         SetValue(simulation, "pinchDetectionEnabled", source.Runtime.PinchDetectionEnabled);
         SetValue(simulation, "minPinchedParticleIndex", source.Runtime.MinPinchedParticleIndex);
         SetValue(simulation, "maxPinchedParticleIndex", source.Runtime.MaxPinchedParticleIndex);
+        // The working BotW baseline retains the source value (normally zero).
+        // Treating this as a preallocated contact-pair count was an unproven
+        // conversion experiment and made the generated runtime diverge from
+        // the known-good HKCL collision layout.
         SetValue(simulation, "maxCollisionPairs", source.Runtime.MaxCollisionPairs);
 
         var transfer = GetValue(simulation, "transferMotionData");
@@ -3409,6 +5153,21 @@ public sealed partial class HkclService
             "perParticlePinchDetectionEnabledFlags",
             "per-particle pinch flags");
         ReplaceList(pinchFlags, source.Runtime.PerParticlePinchDetectionEnabledFlags);
+
+        var pinchingData = EnsureMutableObjectList(
+            simulation,
+            "collidablePinchingDatas",
+            "collider pinching data");
+        pinchingData.Clear();
+        foreach (var sourcePinchingData in source.Runtime.CollidablePinchingData)
+        {
+            pinchingData.Add(new hclSimClothDataCollidablePinchingData
+            {
+                m_pinchDetectionEnabled = sourcePinchingData.Enabled,
+                m_pinchDetectionPriority = sourcePinchingData.Priority,
+                m_pinchDetectionRadius = sourcePinchingData.Radius
+            });
+        }
     }
 
     private static IReadOnlyList<object> CreateBphclColliders(
@@ -3442,6 +5201,9 @@ public sealed partial class HkclService
             SetValue(target, "name", StripBphclPrefix(source.Name));
             SetValue(target, "shape", targetShape);
             ApplyBphclColliderShape(targetShape, source.Shape);
+            SetValue(target, "pinchDetectionRadius", source.PinchDetectionRadius);
+            SetValue(target, "pinchDetectionPriority", source.PinchDetectionPriority);
+            SetValue(target, "pinchDetectionEnabled", source.PinchDetectionEnabled);
 
             var sourceBoneIndex = ResolveColliderBoneIndex(StripBphclPrefix(source.Name), skeleton.Bones);
             if (sourceBoneIndex >= 0 && sourceToTargetBone.TryGetValue(sourceBoneIndex, out var targetBoneIndex))
@@ -3486,6 +5248,32 @@ public sealed partial class HkclService
         return result;
     }
 
+    private static IReadOnlyList<object> OrderConvertedCollidersBySourceItems(
+        IReadOnlyList<NativeBphclCollider> sourceColliders,
+        IReadOnlyList<object> convertedColliders,
+        IReadOnlyList<int> sourceItemIndices)
+    {
+        if (sourceColliders.Count != convertedColliders.Count)
+        {
+            throw new InvalidOperationException(
+                "PhysicsTool could not preserve BPHCL collider slot order because the converted collider count changed.");
+        }
+
+        var convertedBySourceItem = sourceColliders
+            .Select((collider, index) => new { collider.ItemIndex, Collider = convertedColliders[index] })
+            .ToDictionary(entry => entry.ItemIndex, entry => entry.Collider);
+
+        return sourceItemIndices.Select(itemIndex =>
+        {
+            if (!convertedBySourceItem.TryGetValue(itemIndex, out var collider))
+            {
+                throw new InvalidOperationException(
+                    $"The BPHCL simulation references collider ITEM {itemIndex}, but it was not converted.");
+            }
+            return collider;
+        }).ToArray();
+    }
+
     /// <summary>
     /// Returns collider choices in the exact per-cloth order used by a
     /// particle's static collision mask. Bit 31 is reserved by Havok for
@@ -3493,7 +5281,7 @@ public sealed partial class HkclService
     /// </summary>
     public IReadOnlyList<ParticleColliderOption> GetParticleColliderOptions(int clothIndex)
     {
-        if (_bphhb != null)
+        if (IsHelperBoneSidecar)
             return Array.Empty<ParticleColliderOption>();
 
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -3539,11 +5327,80 @@ public sealed partial class HkclService
             .ToArray();
     }
 
+    /// <summary>
+    /// Returns the collision-related simulation state without applying any
+    /// conversion. This is intentionally diagnostic-only: it lets us compare
+    /// a TotK source, a converted file, and a vanilla BotW file field by
+    /// field when collision behaviour differs in-game.
+    /// </summary>
+    public IReadOnlyList<string> GetCollisionDiagnostics(int clothIndex)
+    {
+        if (_bphcl?.NativeDocument is { } bphcl)
+        {
+            var sourceCloth = bphcl.Cloths.ElementAtOrDefault(clothIndex);
+            var sourceSimulation = sourceCloth?.SimCloths.FirstOrDefault();
+            if (sourceCloth == null || sourceSimulation == null)
+                return Array.Empty<string>();
+
+            var sourceColliderNames = sourceSimulation.CollidableItemIndices
+                .Select(itemIndex => bphcl.Colliders.FirstOrDefault(collider => collider.ItemIndex == itemIndex))
+                .Select((collider, slot) => collider == null
+                    ? $"slot={slot}:missing"
+                    : $"slot={slot}:{collider.Name}|pinch={collider.PinchDetectionEnabled},{collider.PinchDetectionPriority},{collider.PinchDetectionRadius:G8}")
+                .ToArray();
+
+            return new[]
+            {
+                "format=BPHCL",
+                $"cloth={sourceCloth.Name}",
+                $"colliders=[{string.Join(';', sourceColliderNames)}]",
+                $"masks=[{string.Join(',', sourceSimulation.StaticCollisionMasks.Select(mask => $"0x{mask:X8}"))}]",
+                $"particlePinch=[{string.Join(',', sourceSimulation.Runtime.PerParticlePinchDetectionEnabledFlags.Select(value => value ? '1' : '0'))}]",
+                $"colliderPinch=[{string.Join(';', sourceSimulation.Runtime.CollidablePinchingData.Select(value => $"{value.Enabled},{value.Priority},{value.Radius:G8}"))}]",
+                $"pinch={sourceSimulation.Runtime.PinchDetectionEnabled}|range={sourceSimulation.Runtime.MinPinchedParticleIndex}-{sourceSimulation.Runtime.MaxPinchedParticleIndex}|pairs={sourceSimulation.Runtime.MaxCollisionPairs}",
+                $"landscape={sourceSimulation.Runtime.LandscapeCollisionEnabled}|particles={sourceSimulation.Runtime.NumLandscapeCollidableParticles}"
+            };
+        }
+
+        var root = RequireRoot();
+        var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex);
+        var simulation = cloth == null ? null : GetFirst(GetValue(cloth, "simClothDatas"));
+        if (simulation == null)
+            return Array.Empty<string>();
+
+        var references = GetList(GetValue(simulation, "perInstanceCollidables")) ?? Array.Empty<object>();
+        var colliders = GetCollidables(root);
+        var colliderNames = references.Select((collider, slot) =>
+        {
+            var outerIndex = IndexOfReference(colliders, collider);
+            return $"slot={slot}:#{outerIndex}:{GetString(collider, "name") ?? "unnamed"}|pinch=" +
+                   $"{GetValue(collider, "pinchDetectionEnabled")},{GetValue(collider, "pinchDetectionPriority")},{GetValue(collider, "pinchDetectionRadius")}";
+        }).ToArray();
+        var masks = GetList(GetValue(simulation, "staticCollisionMasks")) ?? Array.Empty<object>();
+        var particlePinch = GetList(GetValue(simulation, "perParticlePinchDetectionEnabledFlags")) ?? Array.Empty<object>();
+        var colliderPinch = GetList(GetValue(simulation, "collidablePinchingDatas")) ?? Array.Empty<object>();
+        var simulationInfo = GetValue(simulation, "simulationInfo") ?? simulation;
+
+        return new[]
+        {
+            "format=HKCL",
+            $"cloth={GetString(cloth, "name")}",
+            $"colliders=[{string.Join(';', colliderNames)}]",
+            $"masks=[{string.Join(',', masks.Select(value => $"0x{ToUInt32(value, 0u):X8}"))}]",
+            $"particlePinch=[{string.Join(',', particlePinch.Select(value => Convert.ToBoolean(value, CultureInfo.InvariantCulture) ? '1' : '0'))}]",
+            $"colliderPinch=[{string.Join(';', colliderPinch.Select(value => $"{GetValue(value, "pinchDetectionEnabled")},{GetValue(value, "pinchDetectionPriority")},{GetValue(value, "pinchDetectionRadius")}"))}]",
+            $"pinch={GetValue(simulationInfo, "pinchDetectionEnabled")}|range={GetValue(simulation, "minPinchedParticleIndex")}-{GetValue(simulation, "maxPinchedParticleIndex")}|pairs={GetValue(simulation, "maxCollisionPairs")}",
+            $"landscape={GetValue(simulationInfo, "landscapeCollisionEnabled")}|particles={GetValue(simulation, "numLandscapeCollidableParticles")}"
+        };
+    }
+
     private static string ApplyBphclCollidableTransformMap(
         object cloth,
         NativeBphclCollidableTransformMap source,
         int sourceColliderCount,
-        IReadOnlyDictionary<int, int> sourceToTargetBone)
+        IReadOnlyDictionary<int, int> sourceToTargetBone,
+        object? targetSkeleton = null,
+        IReadOnlyList<object>? targetColliders = null)
     {
         var simulation = (GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>()).FirstOrDefault()
             ?? throw new InvalidOperationException("The HKCL template has no simulation cloth for the collider transform map.");
@@ -3570,6 +5427,10 @@ public sealed partial class HkclService
         if (!SetValue(targetMap, "transformSetIndex", source.TransformSetIndex))
             throw new InvalidOperationException("PhysicsTool could not set the HKCL collider transform-set index.");
         ReplaceList(EnsureMutableObjectList(targetMap, "transformIndices", "collider transform indices"), targetIndices);
+
+        // BPHCL already stores these offsets in the cloth's collider-transform-map space.
+        // Rebuilding them from the converted world transforms drifts from known-good BotW
+        // conversions and breaks otherwise valid collider behavior.
         ReplaceList(EnsureMutableObjectList(targetMap, "offsets", "collider transform offsets"), source.Offsets);
 
         return $"Copied the {sourceColliderCount}-entry BPHCL collider transform map and remapped it to the HKCL skeleton.";
@@ -3878,9 +5739,15 @@ public sealed partial class HkclService
                 break;
             case "hclSphereShape":
             {
-                var sphere = GetValue(target, "sphere")
-                    ?? throw new InvalidOperationException("The HKCL sphere shape has no hkSphere value.");
-                SetValue(sphere, "pos", source.Start);
+                // Freshly-created shape objects do not populate their embedded
+                // hkSphere automatically. Create it before assigning the
+                // center/radius stored together in its Vector4 position.
+                var sphere = EnsureObjectValue(target, "sphere", "HKCL sphere");
+                SetValue(sphere, "pos", new Vector4(
+                    source.Start.X,
+                    source.Start.Y,
+                    source.Start.Z,
+                    source.Radius));
                 break;
             }
             case "hclPlaneShape":
@@ -3894,23 +5761,41 @@ public sealed partial class HkclService
     private static IReadOnlyList<string> ApplyBphclConstraintLinks(
         object cloth,
         NativeBphclSimCloth source,
-        bool preserveTemplateLayout)
+        string? sourcePath,
+        string sourceClothName,
+        bool preserveTemplateLayout,
+        float solverScale)
     {
-        var targetSets = GetMutableConstraintSets(cloth);
+        var staticTargetSets = GetMutableConstraintSets(cloth);
+        var antiPinchTargetSets = GetMutableAntiPinchConstraintSets(cloth);
         var notes = new List<string>();
 
         if (!preserveTemplateLayout)
         {
-            targetSets.Clear();
-            if (GetFirst(GetValue(cloth, "simClothDatas")) is { } simulation &&
-                GetValue(simulation, "antiPinchConstraintSets") is IList antiPinchSets)
-            {
-                antiPinchSets.Clear();
-            }
+            staticTargetSets.Clear();
+            antiPinchTargetSets.Clear();
         }
 
         foreach (var sourceSet in source.ConstraintSets)
         {
+            var targetSets = sourceSet.IsAntiPinch ? antiPinchTargetSets : staticTargetSets;
+            var sourceBucket = sourceSet.IsAntiPinch ? "anti-pinch" : "static";
+            if (BphclConversionProfileCatalog.ShouldOmitConstraintSet(sourceClothName, sourceSet.ClassName))
+            {
+                foreach (var targetSetToRemove in targetSets.Cast<object?>()
+                             .Where(set => set != null && string.Equals(
+                                 set.GetType().Name,
+                                 sourceSet.ClassName,
+                                 StringComparison.Ordinal))
+                             .ToArray())
+                {
+                    targetSets.Remove(targetSetToRemove!);
+                }
+
+                notes.Add($"Omitted {sourceBucket} {sourceSet.ClassName} using the verified {StripBphclPrefix(sourceClothName)} constraint profile.");
+                continue;
+            }
+
             var createdTargetSet = false;
             var targetSet = targetSets.Cast<object?>().FirstOrDefault(set =>
                 set != null && string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal));
@@ -3933,7 +5818,7 @@ public sealed partial class HkclService
 
                 targetSet = CreateHavokConstraintSet(cloth, targetSets, sourceSet.ClassName);
                 createdTargetSet = true;
-                notes.Add($"Added {sourceSet.ClassName} from the BPHCL source.");
+                notes.Add($"Added {sourceBucket} {sourceSet.ClassName} from the BPHCL source.");
             }
             SetValue(targetSet, "name", string.IsNullOrWhiteSpace(sourceSet.Name) ? sourceSet.ClassName : sourceSet.Name);
             // The concrete C# class identifies the broad constraint family,
@@ -3945,7 +5830,7 @@ public sealed partial class HkclService
             var usesLocalConstraints = string.Equals(sourceSet.ClassName, "hclLocalRangeConstraintSet", StringComparison.Ordinal);
             var usesTransitionParticles = string.Equals(sourceSet.ClassName, "hclTransitionConstraintSet", StringComparison.Ordinal);
             var sourceRecords = usesLocalConstraints
-                ? sourceSet.LocalConstraints
+                ? GetBphclLocalRangeRecordsForHkcl(sourceSet, notes)
                 : usesTransitionParticles
                     ? sourceSet.TransitionParticles
                     : sourceSet.Links;
@@ -4000,10 +5885,22 @@ public sealed partial class HkclService
                     SetValue(targetLink, "particleB", particleB);
 
                 foreach (var value in sourceLink.Values)
+                {
+                    var scaledValue = ScaleBphclSoftConstraintValue(
+                        sourceSet.ClassName,
+                        value.Key,
+                        value.Value,
+                        solverScale);
                     SetValue(
                         targetLink,
                         value.Key,
-                        value.Value);
+                        BphclConversionProfileCatalog.ApplyConstraintFieldProfile(
+                            sourcePath,
+                            sourceClothName,
+                            sourceSet.ClassName,
+                            value.Key,
+                            scaledValue));
+                }
 
                 // TotK's LocalConstraint calls this shapeRadius; BotW's
                 // equivalent record calls it maximumDistance. Leaving the
@@ -4012,7 +5909,15 @@ public sealed partial class HkclService
                 if (usesLocalConstraints &&
                     sourceLink.Values.TryGetValue("shapeRadius", out var shapeRadius))
                 {
-                    SetValue(targetLink, "maximumDistance", shapeRadius);
+                    SetValue(
+                        targetLink,
+                        "maximumDistance",
+                        BphclConversionProfileCatalog.ApplyConstraintFieldProfile(
+                            sourcePath,
+                            sourceClothName,
+                            sourceSet.ClassName,
+                            "maximumDistance",
+                            shapeRadius));
                 }
             }
 
@@ -4026,9 +5931,66 @@ public sealed partial class HkclService
         return notes;
     }
 
+    private static IReadOnlyList<NativeBphclConstraintLink> GetBphclLocalRangeRecordsForHkcl(
+        NativeBphclConstraintSet sourceSet,
+        ICollection<string> notes)
+    {
+        if (sourceSet.LocalStiffnessConstraints.Count == 0)
+            return sourceSet.LocalConstraints;
+        if (sourceSet.LocalConstraints.Count == 0)
+            return sourceSet.LocalStiffnessConstraints;
+
+        // TotK can retain both arrays. BotW only has a single local-constraint
+        // array and one set-wide stiffness value, so keep every range record
+        // rather than silently dropping one source array. In the rare case of
+        // different per-record stiffness values, the parent-set value remains
+        // the closest representable BotW approximation.
+        var stiffnessValues = sourceSet.LocalStiffnessConstraints
+            .Select(link => link.Values.TryGetValue("stiffness", out var stiffness) ? stiffness : double.NaN)
+            .Where(double.IsFinite)
+            .Distinct()
+            .ToArray();
+        if (stiffnessValues.Length > 1)
+        {
+            notes.Add(
+                $"{sourceSet.Name} has multiple per-record local-range stiffness values; BotW supports only the set-wide stiffness value.");
+        }
+
+        notes.Add(
+            $"Merged {sourceSet.LocalConstraints.Count} local-range and {sourceSet.LocalStiffnessConstraints.Count} local-stiffness record(s) into BotW's single local-range list.");
+        return sourceSet.LocalConstraints.Concat(sourceSet.LocalStiffnessConstraints).ToArray();
+    }
+
+    // Matched BPHCL/HKCL pairs such as Armor_008's Earring_028 show that
+    // standard-link stiffness, bend-link stiffness, and bend-stiffness
+    // coefficients are multiplied by the same cloth scale as dynamic mass.
+    // Stretch-link stiffness remains a normalized limit (normally 1.0).
+    private static double ScaleBphclSoftConstraintValue(
+        string constraintClass,
+        string fieldName,
+        double value,
+        float solverScale)
+    {
+        if (!float.IsFinite(solverScale) || solverScale <= 0)
+            return value;
+
+        var isSoftCoefficient = constraintClass switch
+        {
+            "hclStandardLinkConstraintSet" => string.Equals(fieldName, "stiffness", StringComparison.Ordinal),
+            "hclBendLinkConstraintSet" =>
+                string.Equals(fieldName, "bendStiffness", StringComparison.Ordinal) ||
+                string.Equals(fieldName, "stretchStiffness", StringComparison.Ordinal),
+            "hclBendStiffnessConstraintSet" => string.Equals(fieldName, "bendStiffness", StringComparison.Ordinal),
+            _ => false
+        };
+
+        return isSoftCoefficient ? value * solverScale : value;
+    }
+
     private static IReadOnlyList<string> ApplyBphclConstraintExecution(
         object cloth,
         NativeBphclSimCloth sourceSimulation,
+        string sourceClothName,
         IReadOnlyList<NativeBphclOperatorLayout> sourceOperators)
     {
         var sourceOperator = sourceOperators.FirstOrDefault(op =>
@@ -4047,8 +6009,22 @@ public sealed partial class HkclService
             .Select((set, index) => (set, index))
             .ToDictionary(entry => entry.set.GetType().Name, entry => entry.index, StringComparer.Ordinal);
         var sourceToTarget = new Dictionary<int, int>();
-        foreach (var sourceSet in sourceSimulation.ConstraintSets)
+        foreach (var sourceSet in sourceSimulation.ConstraintSets.Where(set => !set.IsAntiPinch))
         {
+            if (BphclConversionProfileCatalog.ShouldOmitConstraintSet(sourceClothName, sourceSet.ClassName))
+            {
+                // In the BotW counterparts that omit a dedicated bend-stiffness
+                // set, the solver executes the normal bend set a second time in
+                // its place. Preserve that phase rather than silently dropping it.
+                if (string.Equals(sourceSet.ClassName, "hclBendStiffnessConstraintSet", StringComparison.Ordinal) &&
+                    targetByClass.TryGetValue("hclBendLinkConstraintSet", out var bendTargetIndex))
+                {
+                    sourceToTarget[sourceSet.Index] = bendTargetIndex;
+                }
+
+                continue;
+            }
+
             if (targetByClass.TryGetValue(sourceSet.ClassName, out var targetIndex))
             {
                 sourceToTarget[sourceSet.Index] = targetIndex;
@@ -4057,27 +6033,64 @@ public sealed partial class HkclService
 
         }
 
-        var translated = new List<int>(sourceExecution.Count);
+        // TotK's execution array can contain a -1 phase separator followed by
+        // transition constraints. Translate the phase order for BotW, but keep
+        // a final terminator when the source supplied one. The collision-working
+        // Armor_1300 reference has the same translated sets followed by -1;
+        // dropping that sentinel lets the cloth animate while bypassing its
+        // per-instance collision stage.
+        var primaryPhase = new List<int>(sourceExecution.Count);
+        var deferredPhase = new List<int>();
+        var afterPhaseSeparator = false;
         foreach (var sourceValue in sourceExecution)
         {
             if (sourceValue < 0)
             {
-                translated.Add(sourceValue);
+                afterPhaseSeparator = true;
                 continue;
             }
 
             if (!sourceToTarget.TryGetValue(sourceValue, out var targetValue))
             {
+                var sourceSet = sourceSimulation.ConstraintSets
+                    .FirstOrDefault(set => set.Index == sourceValue);
+                if (sourceSet != null && BphclConversionProfileCatalog.ShouldOmitConstraintSet(
+                        sourceClothName,
+                        sourceSet.ClassName))
+                {
+                    continue;
+                }
+
                 throw new InvalidOperationException(
                     $"The BPHCL solver executes constraint set {sourceValue}, but the HKCL template has no compatible set for it.");
             }
-            translated.Add(targetValue);
+            (afterPhaseSeparator ? deferredPhase : primaryPhase).Add(targetValue);
+        }
+
+        var translated = new List<int>(primaryPhase.Count + deferredPhase.Count);
+        var localRangeIndexes = targetSets
+            .Select((set, index) => (set, index))
+            .Where(entry => string.Equals(entry.set.GetType().Name, "hclLocalRangeConstraintSet", StringComparison.Ordinal))
+            .Select(entry => entry.index)
+            .ToHashSet();
+        var localPrefixLength = 0;
+        while (localPrefixLength < primaryPhase.Count && localRangeIndexes.Contains(primaryPhase[localPrefixLength]))
+            localPrefixLength++;
+
+        translated.AddRange(primaryPhase.Take(localPrefixLength));
+        translated.AddRange(deferredPhase);
+        translated.AddRange(primaryPhase.Skip(localPrefixLength));
+
+        if (sourceExecution.Any(value => value < 0) &&
+            BphclConversionProfileCatalog.ShouldKeepConstraintExecutionTerminator(sourceClothName))
+        {
+            translated.Add(-1);
         }
 
         ReplaceList(EnsureMutableObjectList(targetOperator, "constraintExecution", "constraint execution"), translated);
         return new[]
         {
-            $"Translated the BPHCL solver constraint execution order to HKCL: [{string.Join(", ", translated)}]."
+            $"Normalized the BPHCL solver phases for HKCL constraint execution: [{string.Join(", ", translated)}]."
         };
     }
 
@@ -4148,6 +6161,15 @@ public sealed partial class HkclService
             return sets;
 
         throw new InvalidOperationException("The converted HKCL cloth has no writable constraint-set collection.");
+    }
+
+    private static IList GetMutableAntiPinchConstraintSets(object cloth)
+    {
+        var simulation = GetFirst(GetValue(cloth, "simClothDatas"));
+        if (simulation == null)
+            throw new InvalidOperationException("The converted HKCL cloth has no simulation data for anti-pinch constraints.");
+
+        return EnsureMutableObjectList(simulation, "antiPinchConstraintSets", "anti-pinch constraint sets");
     }
 
     private static object CreateHavokConstraintSet(object cloth, IList targetSets, string className)
@@ -5805,6 +7827,36 @@ public sealed partial class HkclService
         return false;
     }
 
+    private static object EnsureObjectValue(object owner, string name, string displayName)
+    {
+        var existing = GetValue(owner, name);
+        if (existing != null)
+            return existing;
+
+        var type = owner.GetType();
+        var member = new[] { name, "m_" + name }
+            .Select(candidate =>
+                (MemberInfo?)type.GetField(candidate, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase) ??
+                type.GetProperty(candidate, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase))
+            .FirstOrDefault(candidate => candidate != null);
+        var memberType = member switch
+        {
+            FieldInfo field => field.FieldType,
+            PropertyInfo property when property.CanWrite => property.PropertyType,
+            _ => null
+        };
+        if (memberType == null)
+            throw new InvalidOperationException($"The {displayName} member could not be located.");
+
+        var valueType = Nullable.GetUnderlyingType(memberType) ?? memberType;
+        var value = Activator.CreateInstance(valueType)
+            ?? throw new InvalidOperationException($"PhysicsTool could not create the embedded {displayName} value.");
+        if (!SetValue(owner, name, value))
+            throw new InvalidOperationException($"PhysicsTool could not assign the embedded {displayName} value.");
+
+        return value;
+    }
+
     private static object? ConvertForType(object? value, Type targetType)
     {
         if (value == null)
@@ -6232,6 +8284,10 @@ public sealed partial class HkclService
         }
     }
 }
+
+
+
+
 
 
 

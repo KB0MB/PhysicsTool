@@ -6,6 +6,11 @@ namespace HKCLTool;
 // It intentionally never writes into the HKCL document or editor rows.
 public sealed class HkclPreviewSimulator
 {
+    // The preview is intentionally conservative. Havok's production solver has
+    // additional stabilization stages we do not emulate, so protect the editor
+    // from malformed edits or large frame hitches without changing file data.
+    private const float MaximumPreviewSpeed = 24.0f;
+    private const float MaximumPreviewExcursion = 5.0f;
     private readonly Dictionary<int, SimParticle> _particles;
     private readonly IReadOnlyList<ParticlePreviewLink> _links;
     private readonly IReadOnlyList<ParticlePreviewLocalRange> _localRanges;
@@ -461,6 +466,9 @@ public sealed class HkclPreviewSimulator
                 foreach (var particle in _particles.Values)
                     ResolveCollisions(particle);
             }
+
+            foreach (var particle in _particles.Values)
+                StabilizeParticle(particle);
         }
     }
 
@@ -505,7 +513,9 @@ public sealed class HkclPreviewSimulator
                 continue;
             }
 
-            var velocity = (particle.Position - particle.PreviousPosition) * damping;
+            var velocity = ClampMagnitude(
+                (particle.Position - particle.PreviousPosition) * damping,
+                MaximumPreviewSpeed * deltaSeconds);
             particle.PreviousPosition = particle.Position;
             particle.Position += velocity + (_gravity * Math.Max(0.0f, GravityScale) + wind) * (deltaSeconds * deltaSeconds);
         }
@@ -543,11 +553,19 @@ public sealed class HkclPreviewSimulator
         if (weightTotal <= 0.0f)
             return;
 
-        var correction = offset / length * ((length - target.Value) * Math.Clamp(strength, 0.0f, 1.0f));
+        // A bad rest length must not reposition a chain several meters in one
+        // projection. Havok solves these with more internal guards; resolve
+        // large errors over successive preview iterations instead.
+        var maximumProjection = Math.Clamp(
+            Math.Max(target.Value, a.Radius + b.Radius) * 0.35f,
+            0.0025f,
+            0.15f);
+        var lengthError = Math.Clamp(length - target.Value, -maximumProjection, maximumProjection);
+        var correction = offset / length * (lengthError * Math.Clamp(strength, 0.0f, 1.0f));
         if (weightA > 0.0f)
-            a.Position += correction * (weightA / weightTotal);
+            ApplyConstraintCorrection(a, correction * (weightA / weightTotal));
         if (weightB > 0.0f)
-            b.Position -= correction * (weightB / weightTotal);
+            ApplyConstraintCorrection(b, -correction * (weightB / weightTotal));
     }
 
     private void SolveLocalRanges()
@@ -563,9 +581,41 @@ public sealed class HkclPreviewSimulator
             if (distance <= maximumDistance || distance <= 0.000001f)
                 continue;
 
-            particle.Position = particle.RestPosition + offset * (maximumDistance / distance);
+            ApplyConstraintCorrection(
+                particle,
+                particle.RestPosition + offset * (maximumDistance / distance) - particle.Position);
         }
     }
+
+    private static void ApplyConstraintCorrection(SimParticle particle, Vector3 correction)
+    {
+        particle.Position += correction;
+        // Retaining most of the pre-projection velocity makes a preview feel
+        // lively, while moving PreviousPosition partway prevents a correction
+        // from becoming a one-frame launch on the following Verlet step.
+        particle.PreviousPosition += correction * 0.8f;
+    }
+
+    private static void StabilizeParticle(SimParticle particle)
+    {
+        if (!IsFinite(particle.Position) || !IsFinite(particle.PreviousPosition) ||
+            Vector3.DistanceSquared(particle.Position, particle.RestPosition) > MaximumPreviewExcursion * MaximumPreviewExcursion)
+        {
+            particle.Reset();
+        }
+    }
+
+    private static Vector3 ClampMagnitude(Vector3 value, float maximumLength)
+    {
+        var lengthSquared = value.LengthSquared();
+        var maximumSquared = maximumLength * maximumLength;
+        return lengthSquared > maximumSquared && lengthSquared > 0.0000001f
+            ? value * (maximumLength / MathF.Sqrt(lengthSquared))
+            : value;
+    }
+
+    private static bool IsFinite(Vector3 value) =>
+        float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 
     private void ResolveCollisions(SimParticle particle)
     {

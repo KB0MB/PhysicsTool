@@ -19,5 +19,9 @@
     <PackageReference Include="OpenTK.WinForms" Version="4.0.0-pre.8" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclTypeCatalog.bin" />
+  </ItemGroup>
+
 </Project>
 

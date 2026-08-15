@@ -7,7 +7,7 @@ internal sealed class BphysicsExportDialog : Form
     private readonly CheckBox _useSupportBone = new();
     private readonly TextBox _supportBonePath = new();
 
-    private BphysicsExportDialog(string suggestedHkclPath)
+    private BphysicsExportDialog(string suggestedHkclPath, string suggestedSupportBonePath)
     {
         Text = "BPHYSICS export";
         StartPosition = FormStartPosition.CenterParent;
@@ -50,13 +50,19 @@ internal sealed class BphysicsExportDialog : Form
 
         _useSupportBone.Text = "Use support bone sidecar";
         _useSupportBone.AutoSize = true;
-        _useSupportBone.CheckedChanged += (_, _) => _supportBonePath.Enabled = _useSupportBone.Checked;
+        _useSupportBone.CheckedChanged += (_, _) =>
+        {
+            _supportBonePath.Enabled = _useSupportBone.Checked;
+            if (_useSupportBone.Checked && string.IsNullOrWhiteSpace(_supportBonePath.Text))
+                _supportBonePath.Text = suggestedSupportBonePath;
+        };
         layout.SetColumnSpan(_useSupportBone, 2);
         layout.Controls.Add(_useSupportBone, 0, 2);
 
         layout.Controls.Add(new Label { Text = "BPHYSSB game path", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 3);
         _supportBonePath.Dock = DockStyle.Top;
         _supportBonePath.Enabled = false;
+        _supportBonePath.Text = suggestedSupportBonePath;
         layout.Controls.Add(_supportBonePath, 1, 3);
 
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Right, FlowDirection = FlowDirection.LeftToRight };
@@ -88,9 +94,14 @@ internal sealed class BphysicsExportDialog : Form
         CancelButton = cancel;
     }
 
-    public static bool TryConfigure(IWin32Window owner, string suggestedHkclPath, out string hkclPath, out string? supportBonePath)
+    public static bool TryConfigure(
+        IWin32Window owner,
+        string suggestedHkclPath,
+        string suggestedSupportBonePath,
+        out string hkclPath,
+        out string? supportBonePath)
     {
-        using var dialog = new BphysicsExportDialog(suggestedHkclPath);
+        using var dialog = new BphysicsExportDialog(suggestedHkclPath, suggestedSupportBonePath);
         if (dialog.ShowDialog(owner) != DialogResult.OK)
         {
             hkclPath = string.Empty;
