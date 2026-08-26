@@ -102,6 +102,135 @@ internal static class BphclConversionProfileCatalog
         new("Armor_182_Head", "Hair_Back_Havok", 7.50394678f)
     ];
 
+    // AAMP metadata is a separate native contract from Havok particle data.
+    // These exact values are from paired retail HKCL/BPHCL files and only
+    // apply when the source actor and cloth name both match.
+    private static readonly ReverseAampProfile[] ReverseAampProfiles =
+    [
+        new("Armor_006_Head", "O_006_Havok", "Head", "leather"),
+        new("Armor_006_Upper", "Body_Metal_006_Havok", "Spine_2", "satin"),
+        new("Armor_008_Head", "Hair_1_008_Havok", "Hair_Root", "velvet"),
+        new("Armor_008_Head", "Hair_2_008_Havok", "Hair_Root", "burlap"),
+        new("Armor_009_Head", "Hair_1_009_Havok", "Hair_Root", "velvet"),
+        new("Armor_009_Head", "Hair_2_009_Havok", "Hair_Root", "ArmorDefault_Head_Sideburns"),
+        new("Armor_009_Upper", "Apron_009_Havok", "Waist", "velvet"),
+        new("Armor_009_Upper", "Tunick_009_Havok", "Waist", "velvet"),
+        new("Armor_012_Head_A", "Add_Hair_A_Hacok", "Head", "hair"),
+        new("Armor_012_Head_A", "Hair_1_A_012_Havok", "Head", "velvet"),
+        new("Armor_012_Head_A", "Hair_2_A_012_Havok", "Hair_Root", "burlap"),
+        new("Armor_012_Head_A", "Hair_B_A_012_Havok", "Hair_B_1", "hair"),
+        new("Armor_012_Head_A", "Hair_E_A_012_Havok", "Hair_E_1", "hair"),
+        new("Armor_012_Head_A", "Hair_F_A_012_Havok", "Hair_F_1", "hair"),
+        new("Armor_012_Head_A", "Hair_H_A_012_Havok", "Hair_H_1", "hair"),
+        new("Armor_012_Head_A", "Muffler_A_A_012_Havok", "Spine_2", "burlap"),
+        new("Armor_012_Head_A", "Muffler_B_A_012_Havok", "Spine_2", "burlap"),
+        new("Armor_014_Head", "Hair_2_Havok", "Hair_Root", "burlap"),
+        new("Armor_014_Head", "Hair_Acs_Havok", "Head", "leather"),
+        new("Armor_014_Head", "Knot_Havok", "Head", "satin"),
+        new("Armor_014_Upper", "Rope_Havok", "Waist", "silk"),
+        new("Armor_017_Head", "Headrope_Havok", "Head", "burlap"),
+        new("Armor_020_Head", "Hair_2_Havok", "Hair_Root", "burlap"),
+        new("Armor_020_Head", "Hair_3_Havok", "Hair_Root_Armor", "hair"),
+        new("Armor_020_Head", "Hairtop_020_Havok", "Head", "velvet"),
+        new("Armor_020_Upper", "Belt_A_Havok", "Waist", "burlap"),
+        new("Armor_020_Upper", "Tunic_001_Havok", "Skirt_1_FL_Armor", "old_leather"),
+        new("Armor_030_Head", "Hair_030_A_Havok", "Head", "hair"),
+        new("Armor_030_Head", "Hair_030_B_Havok", "Head", "hair"),
+        new("Armor_046_Head", "Caudal_Fin_046_Havok", "Head", "satin"),
+        new("Armor_048_Head", "Dread_Havok", "Head", "velvet"),
+        new("Armor_048_Head", "Hair_2_Havok", "Head", "burlap"),
+        new("Armor_048_Head", "Pony_Havok", "Head", "velvet"),
+        new("Armor_048_Upper", "AccSpine_Havok", "Spine_2", "satin"),
+        new("Armor_048_Upper", "Skirt_Havok", "Skirt_1_BC_Armor", "satin"),
+        new("Armor_179_Head", "Hair_1_179_Havok", "Head", "hair"),
+        new("Armor_179_Head", "Hair_2_179_Havok", "Hair_Root", "ArmorDefault_Head_Sideburns"),
+        new("Armor_179_Head", "Hat_179_Havok", "Head", "old_leather"),
+        new("Armor_179_Upper", "Sode_179_Havok", "Arm_1_L", "satin"),
+        new("Armor_182_Head", "Hair_2_Havok", "Head", "ArmorDefault_Head_Sideburns"),
+        new("Armor_182_Head", "Hair_Back_Havok", "Head", "hair")
+    ];
+
+    // Native solver programs measured from paired retail HKCL/BPHCL files.
+    // Only entries that differ from the general fresh-conversion layout are
+    // listed here. Unknown cloths keep the converter's established fallback.
+    private static readonly ReverseConstraintExecutionProfile[] ReverseConstraintExecutionProfiles =
+    [
+        new("Armor_006_Head", "Hire_006_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_006_Head", "O_006_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_008_Head", "Add_Hair_008_Hacok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_008_Head", "Hair_B_008_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_008_Head", "Hair_D_008_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_008_Head", "Hair_E_008_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_008_Head", "Hair_F_008_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_008_Head", "Hair_H_008_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_1_009_Havok", [2, 0, 4, 1, -1, 3]),
+        new("Armor_009_Head", "Hair_2_009_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_009_Head", "Hair_3_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_B_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_D_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_E_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_F_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_G_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_H_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_I_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_009_Head", "Hair_J_009_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_012_Head_A", "Add_Hair_A_Hacok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_012_Head_A", "Hair_B_A_012_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_012_Head_A", "Hair_E_A_012_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_012_Head_A", "Hair_F_A_012_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_012_Head_A", "Hair_H_A_012_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_014_Head", "Hair_Acs_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_014_Head", "Hair_H_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_014_Upper", "Carabiner_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_014_Upper", "Poach_B_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_014_Upper", "Poach_C_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_017_Head", "Hair_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_020_Head", "Hair_3_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_030_Head", "Hair_030_A_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_030_Head", "Hair_030_B_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_046_Head", "Beard_046_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_179_Head", "Hair_1_179_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_179_Head", "Hair_2_179_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_179_Head", "Hair_3_179_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_179_Head", "Hair_B_179_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_179_Head", "Hair_D_179_Havok", [2, 3, 0, 1, -1]),
+        new("Armor_182_Head", "Hair_2_Havok", [2, 3, 0, 4, 4, 1, -1]),
+        new("Armor_182_Head", "Hair_Back_Havok", [2, 3, 0, 4, 4, 1, -1])
+    ];
+
+    public static bool TryGetReverseConstraintExecution(string? sourcePath, string clothName, out int[] execution)
+    {
+        var sourceFile = NormalizeActorFileName(Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty));
+        var normalizedName = Normalize(clothName);
+        var profile = ReverseConstraintExecutionProfiles.FirstOrDefault(entry =>
+            string.Equals(entry.SourceFile, sourceFile, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(entry.ClothName, normalizedName, StringComparison.OrdinalIgnoreCase));
+        execution = profile?.Execution.ToArray() ?? Array.Empty<int>();
+        return profile is not null;
+    }
+    public static bool TryGetReverseAampProfile(
+        string? sourcePath,
+        string clothName,
+        out string baseBone,
+        out string preset)
+    {
+        var sourceFile = NormalizeActorFileName(Path.GetFileNameWithoutExtension(sourcePath ?? string.Empty));
+        var normalizedName = Normalize(clothName);
+        var profile = ReverseAampProfiles.FirstOrDefault(entry =>
+            string.Equals(NormalizeActorFileName(entry.SourceFile), sourceFile, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(entry.ClothName, normalizedName, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+        {
+            baseBone = string.Empty;
+            preset = string.Empty;
+            return false;
+        }
+
+        baseBone = profile.BaseBone;
+        preset = profile.Preset;
+        return true;
+    }
+
     public static bool TryGet(string? sourcePath, string clothName, out float scale, out string basis)
     {
         var normalizedName = Normalize(clothName);
@@ -231,6 +360,7 @@ internal static class BphclConversionProfileCatalog
                  (string.Equals(sourceFile, "Armor_182_Head", StringComparison.OrdinalIgnoreCase) &&
                   string.Equals(normalizedName, "Hair_2_Havok", StringComparison.OrdinalIgnoreCase)));
     }
+
     public static bool ShouldScaleConstraintCoefficients(string? sourcePath, string clothName)
     {
         return TryGetConstraintScale(sourcePath, clothName, out var scale) &&
@@ -385,6 +515,15 @@ internal static class BphclConversionProfileCatalog
 
         return value;
     }
+
+    public static bool ShouldDeriveMissingBendStiffness(string? sourcePath, string clothName)
+    {
+        var normalized = Normalize(clothName);
+        return string.Equals(normalized, "Belt_A_Havok", StringComparison.OrdinalIgnoreCase) ||
+            RequiresHair2BendMinimumScale(sourcePath, normalized) ||
+            normalized.Contains("Muffler", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool RequiresHair2BendMinimumScale(string? sourcePath, string clothName)
     {
         if (!clothName.StartsWith("Hair_2", StringComparison.OrdinalIgnoreCase))
@@ -427,5 +566,9 @@ internal static class BphclConversionProfileCatalog
         float Scale,
         float? ConstraintScale = null,
         string? Basis = null);
+
+    private sealed record ReverseAampProfile(string SourceFile, string ClothName, string BaseBone, string Preset);
+
+    private sealed record ReverseConstraintExecutionProfile(string SourceFile, string ClothName, int[] Execution);
 }
 

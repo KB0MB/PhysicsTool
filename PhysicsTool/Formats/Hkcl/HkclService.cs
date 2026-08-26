@@ -579,6 +579,7 @@ public sealed partial class HkclService
                 GravityY = bphclSimulation.SimulationInfo.Gravity.Y,
                 GravityZ = bphclSimulation.SimulationInfo.Gravity.Z,
                 DampingPerSecond = bphclSimulation.SimulationInfo.GlobalDampingPerSecond,
+                CollisionTolerance = bphclSimulation.Runtime.LandscapeCollisionData.CollisionTolerance,
                 TransferTranslationMotion = bphclSimulation.Runtime.TransferMotionData.TransferTranslationMotion,
                 MinTranslationSpeed = bphclSimulation.Runtime.TransferMotionData.MinTranslationSpeed,
                 MaxTranslationSpeed = bphclSimulation.Runtime.TransferMotionData.MaxTranslationSpeed,
@@ -642,7 +643,6 @@ public sealed partial class HkclService
         var simulation = GetFirst(GetValue(cloth, "simClothDatas"))
             ?? throw new InvalidOperationException("The selected cloth has no simulation data.");
         var transfer = GetValue(simulation, "transferMotionData");
-        var landscape = GetValue(simulation, "landscapeCollisionData");
         var particleRows = GetParticleRowsForCloth(cloth);
         var pinchFlags = (GetList(GetValue(simulation, "perParticlePinchDetectionEnabledFlags")) ?? Array.Empty<object>())
             .Select(ToRuntimeBool)
@@ -658,6 +658,21 @@ public sealed partial class HkclService
             ? 0.0f
             : particleRows.Max(particle => particle.Radius);
         var totalMass = particleRows.Sum(particle => particle.Mass);
+        // These fields are BPHCL runtime initialization data. BotW's matching
+        // HKCL class exposes different placeholder defaults (for example a
+        // 0.05 landscape radius and a 1-16 pinch range), so copying them
+        // produces a non-native TotK solver block. The native BPHCL corpus
+        // consistently uses this baseline; per-particle landscape masks are
+        // generated separately by the standalone graph builder.
+        const bool landscapeCollisionEnabled = false;
+        var landscapeRuntime = new NativeBphclLandscapeCollisionData(
+            LandscapeRadius: 0.0f,
+            EnableStuckParticleDetection: false,
+            StuckParticlesStretchFactorSq: 9.0f,
+            PinchDetectionEnabled: false,
+            PinchDetectionPriority: 0,
+            PinchDetectionRadius: 0.01f,
+            CollisionTolerance: 0.2f);
         return new NativeBphclSimulationRuntime(
             ToRuntimeBool(GetValue(simulation, "doNormals")),
             Convert.ToSingle(GetValue(simulation, "maxParticleRadius") ?? maximumParticleRadius, CultureInfo.InvariantCulture),
@@ -676,22 +691,15 @@ public sealed partial class HkclService
                 Convert.ToSingle(GetValue(transfer, "minRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture),
                 Convert.ToSingle(GetValue(transfer, "maxRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture)),
             ToRuntimeBool(GetValue(simulation, "transferMotionEnabled")),
-            ToRuntimeBool(GetValue(simulation, "landscapeCollisionEnabled")),
-            new NativeBphclLandscapeCollisionData(
-                Convert.ToSingle(GetValue(landscape, "landscapeRadius") ?? 0.0f, CultureInfo.InvariantCulture),
-                ToRuntimeBool(GetValue(landscape, "enableStuckParticleDetection")),
-                Convert.ToSingle(GetValue(landscape, "stuckParticlesStretchFactorSq") ?? 0.0f, CultureInfo.InvariantCulture),
-                ToRuntimeBool(GetValue(landscape, "pinchDetectionEnabled")),
-                ToRuntimeByte(GetValue(landscape, "pinchDetectionPriority")),
-                Convert.ToSingle(GetValue(landscape, "pinchDetectionRadius") ?? 0.0f, CultureInfo.InvariantCulture),
-                Convert.ToSingle(GetValue(landscape, "collisionTolerance") ?? 0.0f, CultureInfo.InvariantCulture)),
-            ToUInt32(GetValue(simulation, "numLandscapeCollidableParticles"), 0u),
-            ToRuntimeBool(GetValue(simulation, "pinchDetectionEnabled")),
+            landscapeCollisionEnabled,
+            landscapeRuntime,
+            0u,
+            false,
             pinchFlags,
             pinchingData,
-            checked((ushort)Math.Clamp(ToInt(GetValue(simulation, "minPinchedParticleIndex"), 0), 0, ushort.MaxValue)),
-            checked((ushort)Math.Clamp(ToInt(GetValue(simulation, "maxPinchedParticleIndex"), 0), 0, ushort.MaxValue)),
-            ToUInt32(GetValue(simulation, "maxCollisionPairs"), 0u));
+            0,
+            0,
+            0u);
     }
 
     // Exports the exact per-simulation collider attachment map. Collider
@@ -884,6 +892,7 @@ public sealed partial class HkclService
                         Stiffness = GetNativeConstraintValue(link, "stiffness"),
                         BendStiffness = GetNativeConstraintValue(link, "bendStiffness"),
                         StretchStiffness = GetNativeConstraintValue(link, "stretchStiffness"),
+                        CompressionLength = GetNativeConstraintValue(link, "compressionLength"),
                         Details = string.Join("; ", link.Values.Select(value =>
                             $"{value.Key}={value.Value.ToString("G7", CultureInfo.InvariantCulture)}"))
                     });
@@ -1169,15 +1178,28 @@ public sealed partial class HkclService
                     (int)(GetNativeConstraintValue(set.Values, "shapeType") ?? 0.0f),
                     (GetNativeConstraintValue(set.Values, "applyNormalComponent") ?? 0.0f) != 0.0f,
                     set.LocalConstraints.Select(record => new LocalRangeConstraintData(
-                        record.Index,
-                        (int)(GetNativeConstraintValue(record, "particleIndex") ?? 0.0f),
-                        (int)(GetNativeConstraintValue(record, "referenceVertex") ?? 0.0f),
-                        GetNativeConstraintValue(record, "shapeRadius")
-                            ?? GetNativeConstraintValue(record, "maximumDistance")
-                            ?? GetNativeConstraintValue(record, "maxDistance")
-                            ?? 0.0f,
-                        GetNativeConstraintValue(record, "maxNormalDistance") ?? float.MaxValue,
-                        GetNativeConstraintValue(record, "minNormalDistance") ?? -float.MaxValue)).ToArray()))
+                            record.Index,
+                            (int)(GetNativeConstraintValue(record, "particleIndex") ?? 0.0f),
+                            (int)(GetNativeConstraintValue(record, "referenceVertex") ?? 0.0f),
+                            GetNativeConstraintValue(record, "shapeRadius")
+                                ?? GetNativeConstraintValue(record, "maximumDistance")
+                                ?? GetNativeConstraintValue(record, "maxDistance")
+                                ?? 0.0f,
+                            GetNativeConstraintValue(record, "maxNormalDistance") ?? float.MaxValue,
+                            GetNativeConstraintValue(record, "minNormalDistance") ?? -float.MaxValue))
+                        .Concat(set.LocalStiffnessConstraints.Select(record => new LocalRangeConstraintData(
+                            record.Index,
+                            (int)(GetNativeConstraintValue(record, "particleIndex") ?? 0.0f),
+                            (int)(GetNativeConstraintValue(record, "referenceVertex") ?? 0.0f),
+                            GetNativeConstraintValue(record, "shapeRadius")
+                                ?? GetNativeConstraintValue(record, "maximumDistance")
+                                ?? GetNativeConstraintValue(record, "maxDistance")
+                                ?? 0.0f,
+                            GetNativeConstraintValue(record, "maxNormalDistance") ?? float.MaxValue,
+                            GetNativeConstraintValue(record, "minNormalDistance") ?? -float.MaxValue,
+                            "hclLocalRangeConstraintSet::LocalStiffnessConstraint",
+                            GetNativeConstraintValue(record, "stiffness"))))
+                        .ToArray()))
                 .ToArray()
                 ?? Array.Empty<LocalRangeConstraintSetData>();
         }
@@ -1640,7 +1662,16 @@ public sealed partial class HkclService
                         config.SubSteps,
                         config.NumberOfSolveIterations,
                         config.UseAllInstanceCollidables,
-                        config.AdaptConstraintStiffness)).ToArray())).ToArray(),
+                        config.AdaptConstraintStiffness)).ToArray(),
+                    @operator.TransformSetAccesses.Select(access => new ClothStateTransformSetAccessData(
+                        checked((int)access.TransformSetIndex),
+                        access.ComponentFlags0,
+                        access.ComponentFlags1,
+                        access.TransformTrackers.Select(tracker => new ClothStateTransformTrackerData(
+                            new ClothStateBitFieldData(tracker.Read.Words, tracker.Read.NumBits),
+                            new ClothStateBitFieldData(tracker.ReadBeforeWrite.Words, tracker.ReadBeforeWrite.NumBits),
+                            new ClothStateBitFieldData(tracker.Written.Words, tracker.Written.NumBits))).ToArray())).ToArray(),
+                    @operator.Name)).ToArray(),
                 cloth.States.Select(state => new ClothStateRuntimeData(
                     state.Index,
                     state.Name,
@@ -1727,7 +1758,9 @@ public sealed partial class HkclService
                     pairs,
                     ReadRuntimeOptionalInt(@operator, "simClothIndex"),
                     ReadRuntimeOptionalInt(@operator, "refBufferIdx"),
-                    simulateConfigs);
+                    simulateConfigs,
+                    null,
+                    GetString(@operator, "name"));
             })
             .ToArray();
 
@@ -5827,6 +5860,13 @@ public sealed partial class HkclService
             // of them at their constructor defaults.
             SetValue(targetSet, "constraintId", sourceSet.ConstraintId);
             SetValue(targetSet, "constraintType", sourceSet.ConstraintType);
+            if (string.Equals(sourceSet.ClassName, "hclVolumeConstraint", StringComparison.Ordinal))
+            {
+                ApplyBphclVolumeConstraintData(targetSet, sourceSet, preserveTemplateLayout, createdTargetSet, notes);
+                foreach (var value in sourceSet.Values)
+                    SetValue(targetSet, value.Key, value.Value);
+                continue;
+            }
             var usesLocalConstraints = string.Equals(sourceSet.ClassName, "hclLocalRangeConstraintSet", StringComparison.Ordinal);
             var usesTransitionParticles = string.Equals(sourceSet.ClassName, "hclTransitionConstraintSet", StringComparison.Ordinal);
             var sourceRecords = usesLocalConstraints
@@ -5931,6 +5971,82 @@ public sealed partial class HkclService
         return notes;
     }
 
+    private static void ApplyBphclVolumeConstraintData(
+        object targetSet,
+        NativeBphclConstraintSet sourceSet,
+        bool preserveTemplateLayout,
+        bool createdTargetSet,
+        ICollection<string> notes)
+    {
+        var targetFrames = EnsureMutableObjectList(targetSet, "frameDatas", "hclVolumeConstraint.frameDatas");
+        var targetApplies = EnsureMutableObjectList(targetSet, "applyDatas", "hclVolumeConstraint.applyDatas");
+        if (preserveTemplateLayout && !createdTargetSet &&
+            (targetFrames.Count != sourceSet.VolumeFrameData.Count ||
+             targetApplies.Count != sourceSet.VolumeApplyData.Count))
+        {
+            notes.Add(
+                $"Kept the HKCL template hclVolumeConstraint records because BPHCL exposes " +
+                $"{sourceSet.VolumeFrameData.Count} frame and {sourceSet.VolumeApplyData.Count} apply records, " +
+                $"while HKCL needs {targetFrames.Count} and {targetApplies.Count}.");
+            return;
+        }
+
+        ResizeHavokRecordList(targetSet, targetFrames, sourceSet.VolumeFrameData.Count,
+            "hclVolumeConstraintFrameData", "volume frame");
+        ResizeHavokRecordList(targetSet, targetApplies, sourceSet.VolumeApplyData.Count,
+            "hclVolumeConstraintApplyData", "volume apply");
+
+        for (var index = 0; index < sourceSet.VolumeFrameData.Count; index++)
+        {
+            var source = sourceSet.VolumeFrameData[index];
+            var target = targetFrames[index];
+            SetValue(target, "frameVector", source.FrameVector);
+            SetValue(target, "particleIndex", source.ParticleIndex);
+            SetValue(target, "weight", source.Weight);
+        }
+
+        for (var index = 0; index < sourceSet.VolumeApplyData.Count; index++)
+        {
+            var source = sourceSet.VolumeApplyData[index];
+            var target = targetApplies[index];
+            SetValue(target, "frameVector", source.FrameVector);
+            SetValue(target, "particleIndex", source.ParticleIndex);
+            SetValue(target, "stiffness", source.Stiffness);
+        }
+
+        notes.Add(
+            $"Created {sourceSet.VolumeFrameData.Count} volume frame and " +
+            $"{sourceSet.VolumeApplyData.Count} volume apply record(s) from BPHCL data.");
+    }
+
+    private static void ResizeHavokRecordList(
+        object owner,
+        IList records,
+        int requiredCount,
+        string generatedTypeName,
+        string displayName)
+    {
+        if (records.Count == requiredCount)
+            return;
+
+        var prototype = records.Count > 0 ? records[0] : null;
+        var recordType = prototype?.GetType()
+            ?? GetListElementType(records)
+            ?? FindHavokType(owner.GetType().Assembly, generatedTypeName);
+        if (recordType == null)
+            throw new InvalidOperationException(
+                $"PhysicsTool could not locate the generated HKX2 {displayName} record class.");
+
+        records.Clear();
+        for (var index = 0; index < requiredCount; index++)
+        {
+            var record = prototype == null
+                ? Activator.CreateInstance(recordType)
+                : CloneForCurrentGraph(prototype);
+            records.Add(record ?? throw new InvalidOperationException(
+                $"PhysicsTool could not create a {displayName} record."));
+        }
+    }
     private static IReadOnlyList<NativeBphclConstraintLink> GetBphclLocalRangeRecordsForHkcl(
         NativeBphclConstraintSet sourceSet,
         ICollection<string> notes)
@@ -6776,6 +6892,7 @@ public sealed partial class HkclService
                         Stiffness = ReadConstraintFloat(link, "stiffness"),
                         BendStiffness = ReadConstraintFloat(link, "bendStiffness"),
                         StretchStiffness = ReadConstraintFloat(link, "stretchStiffness"),
+                        CompressionLength = ReadConstraintFloat(link, "compressionLength"),
                         Details = BuildLinkDetails(link)
                     });
                 }

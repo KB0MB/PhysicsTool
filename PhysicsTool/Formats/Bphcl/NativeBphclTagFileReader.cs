@@ -15,6 +15,15 @@ internal static class NativeBphclTagFileReader
         return tagFile;
     }
 
+    // Parses a standalone TYPE section embedded as a resource. It shares the
+    // normal section reader so generated schema updates use native TAG0 layout.
+    public static NativeBphclSection ReadStandaloneSection(byte[] bytes, string expectedSignature)
+    {
+        var section = ReadSection(bytes, 0, bytes.Length, expectedSignature);
+        section.Attach(bytes);
+        return section;
+    }
+
     public static IReadOnlyList<NativeBphclItem> ReadItems(NativeBphclSection tagFile)
     {
         var itemSection = Descendants(tagFile).FirstOrDefault(x => x.Signature == "ITEM");

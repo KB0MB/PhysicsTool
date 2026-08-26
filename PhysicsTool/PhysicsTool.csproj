@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclTypeCatalog.bin" />
+    <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclGameReadyTypeCatalog.bin" />
   </ItemGroup>
 
 </Project>

@@ -5809,16 +5809,10 @@ public sealed class MainForm : Form
 
         RunGuarded(() =>
         {
-            var graph = HkclToBphclStandaloneGraphBuilder.Build(_current);
-            File.WriteAllBytes(dialog.FileName, NativeBphclStandaloneGraphWriter.Write(graph));
+            var graph = HkclToBphclGameReadyGraphBuilder.Build(_current);
+            File.WriteAllBytes(dialog.FileName, NativeBphclStandaloneGraphWriter.WriteGameReady(graph));
             var verification = NativeBphclDocument.Open(dialog.FileName);
-            if (verification.Cloths.Count != graph.Cloths.Count)
-            {
-                throw new InvalidOperationException(
-                    $"The converted BPHCL reopened with {verification.Cloths.Count} cloths; expected {graph.Cloths.Count}.");
-            }
-            if (!verification.IsAampReadable || !verification.AampClothEntryNames.SequenceEqual(graph.Cloths.Select(cloth => cloth.Name)))
-                throw new InvalidOperationException("The converted BPHCL did not preserve its generated AAMP cloth registration.");
+            BphclStandaloneValidation.Validate(verification, graph, prunedUnusedColliders: true);
 
             _statusLabel.Text = $"Exported native BPHCL: {Path.GetFileName(dialog.FileName)}";
             PlaySaveSound();

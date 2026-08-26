@@ -123,11 +123,56 @@ public sealed partial class NativeBphclDocument
                 ReadUInt32Array(ReadArrayItem(item.DataOffset + 32)).Select(value => checked((int)value)).ToArray(),
                 ReadClothStateBufferAccesses(ReadArrayItem(item.DataOffset + 48)),
                 ReadClothStateTransformSetAccesses(ReadArrayItem(item.DataOffset + 64)),
-                ReadUInt32Array(ReadArrayItem(item.DataOffset + 80)).Select(value => checked((int)value)).ToArray()));
+                ReadUInt32Array(ReadArrayItem(item.DataOffset + 80)).Select(value => checked((int)value)).ToArray(),
+                ReadStateDependencyGraph(item)));
         }
         return result;
     }
 
+    private NativeBphclStateDependencyGraph? ReadStateDependencyGraph(NativeBphclItem state)
+    {
+        if (!TryGetReferencedItem(state.DataOffset + 96, out var graphItemIndex))
+            return null;
+
+        var graph = GetItem(graphItemIndex);
+        var branches = ReadArrayItem(graph.DataOffset + 24);
+        var branchValues = new List<NativeBphclStateDependencyBranch>();
+        if (branches is not null)
+        {
+            const uint branchStride = 56;
+            for (uint index = 0; index < branches.Count; index++)
+            {
+                var offset = checked(branches.DataOffset + index * branchStride);
+                branchValues.Add(new NativeBphclStateDependencyBranch(
+                    ReadInt32(offset),
+                    ReadInt32Array(ReadArrayItem(offset + 8))));
+            }
+        }
+
+        return new NativeBphclStateDependencyGraph(
+            branchValues,
+            ReadInt32Array(ReadArrayItem(graph.DataOffset + 40)),
+            ReadNestedIntArrays(ReadArrayItem(graph.DataOffset + 56)),
+            ReadNestedIntArrays(ReadArrayItem(graph.DataOffset + 72)),
+            ReadByte(graph.DataOffset + 88) != 0);
+    }
+
+    private IReadOnlyList<IReadOnlyList<int>> ReadNestedIntArrays(NativeBphclItem? outer)
+    {
+        if (outer is null || outer.Count == 0)
+            return Array.Empty<IReadOnlyList<int>>();
+
+        const uint nestedArrayStride = 16;
+        var result = new List<IReadOnlyList<int>>(checked((int)outer.Count));
+        for (uint index = 0; index < outer.Count; index++)
+        {
+            var offset = checked(outer.DataOffset + index * nestedArrayStride);
+            result.Add(TryGetReferencedItem(offset, out var itemIndex)
+                ? ReadInt32Array(GetItem(itemIndex))
+                : Array.Empty<int>());
+        }
+        return result;
+    }
     private IReadOnlyList<NativeBphclClothStateBufferAccess> ReadClothStateBufferAccesses(NativeBphclItem? array)
     {
         if (array is null || array.Count == 0)
@@ -304,11 +349,9 @@ public sealed partial class NativeBphclDocument
         // are essential when translating a BPHCL cloth into an HKCL layout.
         var triangleIndices = ReadUInt16Array(ReadArrayItem(item.DataOffset + 352));
         var triangleFlips = ReadByteArray(ReadArrayItem(item.DataOffset + 368));
-
-        // BPHCL stores the transform set, bone indices, and local offsets used
-        // to drive each active collider. This must travel with the colliders:
-        // leaving the HKCL template's shorter map behind produces a readable
-        // file but gives Havok the wrong collider-to-bone bindings at runtime.
+        // Native BPHCL commonly disables the optional inline collider transform
+        // map with transformSetIndex = -1. Collision selection then comes from
+        // the ordered perInstanceCollidables array below.
         var collidableTransformMap = ReadCollidableTransformMap(item);
 
         // hclSimClothData::perInstanceCollidables is an hkArray<hclCollidable*>.
@@ -337,7 +380,7 @@ public sealed partial class NativeBphclDocument
         try
         {
             return new NativeBphclCollidableTransformMap(
-                checked((int)ReadUInt32(item.DataOffset + 168)),
+                unchecked((int)ReadUInt32(item.DataOffset + 168)),
                 ReadUInt32Array(ReadArrayItem(item.DataOffset + 176)),
                 ReadMatrix4Array(ReadArrayItem(item.DataOffset + 192)));
         }
@@ -349,7 +392,7 @@ public sealed partial class NativeBphclDocument
             // inspected and edited; conversion will report the missing map
             // explicitly if it is required.
             return new NativeBphclCollidableTransformMap(
-                0,
+                -1,
                 Array.Empty<uint>(),
                 Array.Empty<Matrix4x4>());
         }
@@ -416,6 +459,7 @@ public sealed partial class NativeBphclDocument
         return result;
     }
 
+
     private IReadOnlyList<NativeBphclOperatorLayout> ReadOperatorLayouts(uint arrayFieldOffset)
     {
         var itemIndices = ReadReferenceArray(arrayFieldOffset);
@@ -426,6 +470,7 @@ public sealed partial class NativeBphclDocument
             var itemIndex = itemIndices[index];
             var item = GetItem(itemIndex);
             var className = GetTypeName(item.TypeIndex) ?? $"type {item.TypeIndex}";
+            var name = TryReadStringPointer(item.DataOffset + 24, out var operatorName) ? operatorName : string.Empty;
             int? inputBuffer = null;
             int? outputBuffer = null;
             int? transformSet = null;
@@ -437,6 +482,9 @@ public sealed partial class NativeBphclDocument
             int? simulationClothIndex = null;
             int? referenceBufferIndex = null;
             IReadOnlyList<NativeBphclSimulateConfig> simulateConfigs = Array.Empty<NativeBphclSimulateConfig>();
+            // hclOperator keeps its own transform usage at +0x38. This is
+            // separate from hclClothState usage and carries live tracker masks.
+            var transformSetAccesses = ReadClothStateTransformSetAccesses(ReadArrayItem(item.DataOffset + 56));
 
             switch (className)
             {
@@ -489,6 +537,7 @@ public sealed partial class NativeBphclDocument
                 itemIndex,
                 item.DataOffset,
                 className,
+                name,
                 inputBuffer,
                 outputBuffer,
                 transformSet,
@@ -499,7 +548,8 @@ public sealed partial class NativeBphclDocument
                 vertexParticlePairs,
                 simulationClothIndex,
                 referenceBufferIndex,
-                simulateConfigs));
+                simulateConfigs,
+                transformSetAccesses));
         }
 
         return result;
@@ -902,6 +952,7 @@ public sealed partial class NativeBphclDocument
 
         // Every specialised hcl constraint begins with hclConstraintSet.
         var (localConstraints, localStiffnessConstraints) = ReadLocalRangeConstraints(item.DataOffset, className);
+        var (volumeFrameData, volumeApplyData) = ReadVolumeConstraintData(item, className);
         return new NativeBphclConstraintSet(
             index,
             name,
@@ -915,8 +966,87 @@ public sealed partial class NativeBphclDocument
             localConstraints,
             localStiffnessConstraints,
             ReadTransitionParticleData(item.DataOffset, className),
+            volumeFrameData,
+            volumeApplyData,
             ReadConstraintValues(item.DataOffset, className));
     }
+
+    private (IReadOnlyList<NativeBphclVolumeConstraintFrameData> Frames,
+        IReadOnlyList<NativeBphclVolumeConstraintApplyData> Applies)
+        ReadVolumeConstraintData(NativeBphclItem constraintItem, string className)
+    {
+        if (!string.Equals(className, "hclVolumeConstraint", StringComparison.Ordinal))
+        {
+            return (Array.Empty<NativeBphclVolumeConstraintFrameData>(),
+                Array.Empty<NativeBphclVolumeConstraintApplyData>());
+        }
+
+        var frameType = TypeDefinitions.FirstOrDefault(type =>
+            string.Equals(GetTypeName(type.TypeIndex), "hclVolumeConstraint::FrameData", StringComparison.Ordinal));
+        var applyType = TypeDefinitions.FirstOrDefault(type =>
+            string.Equals(GetTypeName(type.TypeIndex), "hclVolumeConstraint::ApplyData", StringComparison.Ordinal));
+        if (frameType is null || applyType is null)
+            throw new InvalidDataException("BPHCL volume constraint is missing its reflected record types.");
+
+        var frameArrayOffset = GetMemberOffset(constraintItem.TypeIndex, "frameDatas") ?? 40u;
+        var applyArrayOffset = GetMemberOffset(constraintItem.TypeIndex, "applyDatas") ?? 56u;
+        return (
+            ReadVolumeFrameData(ReadArrayItem(constraintItem.DataOffset + frameArrayOffset), frameType),
+            ReadVolumeApplyData(ReadArrayItem(constraintItem.DataOffset + applyArrayOffset), applyType));
+    }
+
+    private IReadOnlyList<NativeBphclVolumeConstraintFrameData> ReadVolumeFrameData(
+        NativeBphclItem? array,
+        NativeBphclTypeDefinition type)
+    {
+        if (array is null || array.Count == 0)
+            return Array.Empty<NativeBphclVolumeConstraintFrameData>();
+
+        var vectorOffset = RequireConstraintMemberOffset(type, "frameVector");
+        var particleOffset = RequireConstraintMemberOffset(type, "particleIndex");
+        var weightOffset = RequireConstraintMemberOffset(type, "weight");
+        var stride = GetStructStride(type.Members);
+        var result = new List<NativeBphclVolumeConstraintFrameData>(checked((int)array.Count));
+        for (uint index = 0; index < array.Count; index++)
+        {
+            var offset = checked(array.DataOffset + index * (uint)stride);
+            result.Add(new NativeBphclVolumeConstraintFrameData(
+                checked((int)index),
+                ReadVector4(offset + vectorOffset),
+                ReadUInt16(offset + particleOffset),
+                ReadSingle(offset + weightOffset)));
+        }
+        return result;
+    }
+
+    private IReadOnlyList<NativeBphclVolumeConstraintApplyData> ReadVolumeApplyData(
+        NativeBphclItem? array,
+        NativeBphclTypeDefinition type)
+    {
+        if (array is null || array.Count == 0)
+            return Array.Empty<NativeBphclVolumeConstraintApplyData>();
+
+        var vectorOffset = RequireConstraintMemberOffset(type, "frameVector");
+        var particleOffset = RequireConstraintMemberOffset(type, "particleIndex");
+        var stiffnessOffset = RequireConstraintMemberOffset(type, "stiffness");
+        var stride = GetStructStride(type.Members);
+        var result = new List<NativeBphclVolumeConstraintApplyData>(checked((int)array.Count));
+        for (uint index = 0; index < array.Count; index++)
+        {
+            var offset = checked(array.DataOffset + index * (uint)stride);
+            result.Add(new NativeBphclVolumeConstraintApplyData(
+                checked((int)index),
+                ReadVector4(offset + vectorOffset),
+                ReadUInt16(offset + particleOffset),
+                ReadSingle(offset + stiffnessOffset)));
+        }
+        return result;
+    }
+
+    private uint RequireConstraintMemberOffset(NativeBphclTypeDefinition type, string memberName) =>
+        type.Members.FirstOrDefault(member => string.Equals(member.Name, memberName, StringComparison.Ordinal))?.Offset
+        ?? throw new InvalidDataException(
+            $"BPHCL type {GetTypeName(type.TypeIndex)} is missing member {memberName}.");
 
     private IReadOnlyList<NativeBphclConstraintLink> ReadConstraintLinks(uint constraintOffset, string className)
     {

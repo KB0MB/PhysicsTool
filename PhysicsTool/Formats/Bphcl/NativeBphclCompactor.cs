@@ -133,6 +133,9 @@ internal static class NativeBphclCompactor
         var dataSection = document.DataSection
             ?? throw new InvalidDataException("BPHCL has no DATA section.");
         var firstLiveStart = liveItemIndices.Min(index => ranges[index].Start);
+        var alignmentByType = document.TypeDefinitions
+            .GroupBy(definition => definition.TypeIndex)
+            .ToDictionary(group => group.Key, group => group.First().Alignment ?? 1u);
 
         var itemIndexMap = new Dictionary<int, int>(liveItemIndices.Length + 1)
         {
@@ -149,18 +152,22 @@ internal static class NativeBphclCompactor
             .AsSpan(dataSection.PayloadOffset, checked((int)firstLiveStart))
             .ToArray()
             .ToList();
-        foreach (var oldItemIndex in liveItemIndices.OrderBy(index => ranges[index].Start))
+        foreach (var itemGroup in liveItemIndices
+                     .GroupBy(index => ranges[index].Start)
+                     .OrderBy(group => group.Key))
         {
+            var oldItemIndex = itemGroup.First();
             var range = ranges[oldItemIndex];
             if (rangeCopies.ContainsKey(range.Start))
                 continue;
 
             if (range.End < range.Start || range.End > dataSection.PayloadSize)
                 throw new InvalidDataException("BPHCL live ITEM range exceeds DATA.");
-            // Havok's vector and transform allocations rely on their original
-            // 16-byte alignment. Preserve each range's alignment residue
-            // instead of packing all retained data to a generic boundary.
-            AlignToResidue(data, 16, checked((int)(range.Start % 16)));
+            var requiredAlignment = itemGroup
+                .Select(index => alignmentByType.GetValueOrDefault(document.GetItem(index).TypeIndex, 1u))
+                .DefaultIfEmpty(1u)
+                .Max();
+            Align(data, checked((int)requiredAlignment));
             var newStart = checked((uint)data.Count);
             var byteCount = checked((int)(range.End - range.Start));
             data.AddRange(document.Bytes.AsSpan(dataSection.PayloadOffset + checked((int)range.Start), byteCount).ToArray());
@@ -289,12 +296,6 @@ internal static class NativeBphclCompactor
     private static void Align(List<byte> data, int alignment)
     {
         while (data.Count % alignment != 0)
-            data.Add(0);
-    }
-
-    private static void AlignToResidue(List<byte> data, int alignment, int residue)
-    {
-        while (data.Count % alignment != residue)
             data.Add(0);
     }
 

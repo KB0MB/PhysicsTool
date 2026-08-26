@@ -39,7 +39,7 @@ internal sealed class NativeBphclTypeTable
         // The caller has already identified an incompatible donor graph.
         // Rebuild only its needed reflection closure rather than blindly
         // copying the entire donor TYPE table into the target.
-        return CreateExperimentalUnion(target, source, required);
+        return CreateExperimentalUnion(Parse(target), Parse(source), required);
     }
 
     public static IReadOnlyList<string> FindMissingRequiredTypes(
@@ -65,13 +65,232 @@ internal sealed class NativeBphclTypeTable
         return missing.Distinct(StringComparer.Ordinal).OrderBy(name => name, StringComparer.Ordinal).ToArray();
     }
 
-    private static NativeBphclTypeTable CreateExperimentalUnion(
-        NativeBphclDocument target,
+    public static IReadOnlyList<string> DescribeNamedTypes(
+        NativeBphclDocument document,
+        string typeName)
+    {
+        var table = Parse(document);
+        var lines = new List<string>();
+        for (uint typeIndex = 1; typeIndex <= table.NamedTypes.Count; typeIndex++)
+        {
+            if (!string.Equals(table.GetTypeName(typeIndex), typeName, StringComparison.Ordinal))
+                continue;
+
+            var named = table.NamedTypes[checked((int)typeIndex - 1)];
+            var body = table.Bodies.FirstOrDefault(entry => entry.TypeIndex == typeIndex);
+            var templates = named.Templates.Count == 0
+                ? "none"
+                : string.Join(",", named.Templates.Select(template =>
+                    $"{table.TypeStrings[checked((int)template.StringIndex)]}={template.TypeIndex}:{table.GetTypeName(template.TypeIndex)}"));
+            lines.Add($"named|{typeIndex}|body={(body is null ? 0 : 1)}|templates={templates}");
+        }
+
+        return lines;
+    }
+
+    public static IReadOnlyList<string> DescribeTypeIndex(
+        NativeBphclDocument document,
+        uint typeIndex)
+    {
+        var table = Parse(document);
+        if (typeIndex == 0 || typeIndex > table.NamedTypes.Count)
+            return [$"typeIndex|{typeIndex}|missing"];
+
+        var named = table.NamedTypes[checked((int)typeIndex - 1)];
+        var body = table.Bodies.FirstOrDefault(entry => entry.TypeIndex == typeIndex);
+        var templates = named.Templates.Count == 0
+            ? "none"
+            : string.Join(",", named.Templates.Select(template =>
+                $"{table.TypeStrings[checked((int)template.StringIndex)]}={template.TypeIndex}:{table.GetTypeName(template.TypeIndex)}"));
+        var hashes = string.Join(",",
+            table.Hashes.Where(entry => entry.TypeIndex == typeIndex)
+                .Select(entry => $"0x{entry.Hash:X8}"));
+        var lines = new List<string>
+        {
+            $"typeIndex|{typeIndex}|name={table.GetTypeName(typeIndex)}|body={(body is null ? 0 : 1)}|templates={templates}|hashes={(hashes.Length == 0 ? "none" : hashes)}"
+        };
+        if (body is not null)
+        {
+            lines.Add($"body|flags=0x{body.Flags:X}|size=0x{body.Size:X}|align={body.Alignment}|parent={body.ParentTypeIndex}:{table.GetTypeName(body.ParentTypeIndex)}");
+            lines.AddRange(body.Members.OrderBy(member => member.Offset).Select(member =>
+                $"member|0x{member.Offset:X2}|{table.FieldStrings[checked((int)member.NameIndex)]}|flags=0x{member.Flags:X}|{member.TypeIndex}:{table.GetTypeName(member.TypeIndex)}"));
+        }
+
+        return lines;
+    }
+
+    public static IReadOnlyList<string> DescribeTypeKeys(
+        NativeBphclDocument document,
+        string typeName)
+    {
+        var table = Parse(document);
+        var keys = BuildTypeKeys(table);
+        return keys
+            .Where(entry => string.Equals(table.GetTypeName(entry.Key), typeName, StringComparison.Ordinal))
+            .OrderBy(entry => entry.Key)
+            .Select(entry => $"typeKey|{entry.Key}|{entry.Value}")
+            .ToArray();
+    }
+
+    public static NativeBphclTypeTable CreateEmbeddedCatalogUnion(
         NativeBphclDocument source,
+        IEnumerable<uint> requiredSourceTypes)
+    {
+        var required = requiredSourceTypes.Append(0u).Distinct().ToArray();
+        return CreateExperimentalUnion(Parse(NativeBphclReflectionCatalog.TypeSection), Parse(source), required);
+    }
+
+    // Fresh HKCL -> BPHCL output must not declare every class available in the
+    // bundled catalog. Native files include only the reflected type closure
+    // used by their ITEM/PTCH records, with ids compacted to that local table.
+    public static NativeBphclTypeTable CreateCompactEmbeddedCatalog(
+        IEnumerable<uint> requiredCatalogTypes,
+        IEnumerable<uint>? concreteCatalogTypes = null)
+    {
+        var roots = requiredCatalogTypes.Append(0u).Distinct().ToArray();
+        var concreteRoots = (concreteCatalogTypes ?? requiredCatalogTypes)
+            .Append(0u)
+            .Distinct()
+            .ToArray();
+        var catalog = AddBodylessBlendAliases(
+            Parse(NativeBphclReflectionCatalog.TypeSection),
+            concreteRoots,
+            "hclObjectSpaceDeformer");
+        catalog = AddBodylessBlendAliases(catalog, concreteRoots, "hclBoneSpaceDeformer");
+        var canonicalTypes = BuildBlendAliases(catalog, concreteRoots);
+        var expanded = ExpandTypeDependencies(catalog, roots, canonicalTypes).ToArray();
+        var requiredSet = expanded.ToHashSet();
+        var compactOrder = expanded.ToDictionary(index => index, index => index);
+
+        // A concrete blend entry can replace an earlier bodyless alias. Keep
+        // the canonical reflected type in that alias's original slot instead
+        // of appending it near the end of the compact table. Some Havok cloth
+        // runtimes use byte-sized blend type ids even though TAG0 stores wider
+        // indices, so moving an active FourBlend type above 255 makes an
+        // otherwise valid deformer inert.
+        foreach (var (alias, canonical) in canonicalTypes)
+        {
+            if (!requiredSet.Contains(canonical))
+                continue;
+
+            var blendName = catalog.GetTypeName(canonical);
+            var earliestNamedSlot = Enumerable.Range(1, catalog.NamedTypes.Count)
+                .Select(index => checked((uint)index))
+                .Where(index => string.Equals(
+                    catalog.GetTypeName(index),
+                    blendName,
+                    StringComparison.Ordinal))
+                .DefaultIfEmpty(canonical)
+                .Min();
+            compactOrder[canonical] = Math.Min(
+                compactOrder[canonical],
+                Math.Min(alias, earliestNamedSlot));
+        }
+
+        var reflectedTypes = catalog.Bodies.Select(body => body.TypeIndex).ToHashSet();
+        foreach (var concrete in expanded.Where(index => reflectedTypes.Contains(index)))
+        {
+            var blendName = catalog.GetTypeName(concrete);
+            if (string.IsNullOrEmpty(blendName) ||
+                !blendName.Contains("Deformer::", StringComparison.Ordinal) ||
+                !blendName.EndsWith("BlendEntryBlock", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var earliestNamedSlot = Enumerable.Range(1, catalog.NamedTypes.Count)
+                .Select(index => checked((uint)index))
+                .Where(index => string.Equals(
+                    catalog.GetTypeName(index),
+                    blendName,
+                    StringComparison.Ordinal))
+                .DefaultIfEmpty(concrete)
+                .Min();
+            // Keep active packed blend blocks inside the runtime's byte-sized type-id range.
+            compactOrder[concrete] = Math.Min(
+                Math.Min(compactOrder[concrete], earliestNamedSlot), 192u);
+        }
+
+        var required = expanded
+            .OrderBy(index => catalog.GetTypeName(index)?.EndsWith("BlendEntryBlock", StringComparison.Ordinal) == true ? 0 : 1)
+            .ThenBy(index => compactOrder[index])
+            .ThenBy(index => index)
+            .ToArray();
+        requiredSet = required.ToHashSet();
+
+        var remap = new Dictionary<uint, uint> { [0] = 0 };
+        for (var index = 0; index < required.Length; index++)
+            remap[required[index]] = checked((uint)index + 1);
+
+        foreach (var (alias, canonical) in canonicalTypes)
+            if (remap.TryGetValue(canonical, out var mapped))
+                remap[alias] = mapped;
+
+        var sourceNamedTypes = required
+            .Select(index => catalog.NamedTypes[checked((int)index - 1)])
+            .ToArray();
+        var sourceBodies = catalog.Bodies
+            .Where(body => requiredSet.Contains(body.TypeIndex))
+            .ToArray();
+        var (typeStrings, typeStringMap) = BuildCompactStringTable(
+            catalog.TypeStrings,
+            sourceNamedTypes.SelectMany(named =>
+                new[] { named.StringIndex }.Concat(named.Templates.Select(template => template.StringIndex))));
+        var (fieldStrings, fieldStringMap) = BuildCompactStringTable(
+            catalog.FieldStrings,
+            sourceBodies.SelectMany(body => body.Members.Select(member => member.NameIndex)));
+        var namedTypes = sourceNamedTypes
+            .Select(named => named.Remap(remap, typeStringMap, catalog.TypeStrings))
+            .ToArray();
+        var bodies = sourceBodies
+            .Select(body => body.Remap(remap, fieldStringMap))
+            .ToArray();
+        var hashes = catalog.Hashes
+            .Where(hash => requiredSet.Contains(hash.TypeIndex))
+            .Select(hash => hash.Remap(remap))
+            .ToList();
+
+        var knownObjectBlendArrayHashes = new Dictionary<string, uint>(StringComparer.Ordinal)
+        {
+            ["hclObjectSpaceDeformer::FourBlendEntryBlock"] = 0xCF50639E,
+            ["hclObjectSpaceDeformer::ThreeBlendEntryBlock"] = 0xA234E80F,
+            ["hclObjectSpaceDeformer::TwoBlendEntryBlock"] = 0x72714023,
+            ["hclObjectSpaceDeformer::OneBlendEntryBlock"] = 0xCDDEE230
+        };
+        foreach (var sourceType in required)
+        {
+            if (!string.Equals(catalog.GetTypeName(sourceType), "hkArray", StringComparison.Ordinal))
+                continue;
+
+            var named = catalog.NamedTypes[checked((int)sourceType - 1)];
+            var elementTemplate = named.Templates.FirstOrDefault(template =>
+                template.StringIndex < catalog.TypeStrings.Count &&
+                string.Equals(catalog.TypeStrings[checked((int)template.StringIndex)], "tT", StringComparison.Ordinal));
+            if (elementTemplate is null ||
+                !knownObjectBlendArrayHashes.TryGetValue(catalog.GetTypeName(elementTemplate.TypeIndex), out var expectedHash))
+                continue;
+
+            var mappedType = remap[sourceType];
+            hashes.RemoveAll(hash => hash.TypeIndex == mappedType);
+            hashes.Add(new TypeHash(mappedType, expectedHash));
+        }
+        hashes.Sort((left, right) => left.TypeIndex.CompareTo(right.TypeIndex));
+
+        var section = BuildSection(
+            catalog.Section,
+            catalog.BuildSubsetChildren(
+                typeStrings,
+                fieldStrings,
+                namedTypes,
+                bodies,
+                hashes));
+        return new NativeBphclTypeTable(remap, remap, section);
+    }
+    private static NativeBphclTypeTable CreateExperimentalUnion(
+        TypeTable targetTable,
+        TypeTable sourceTable,
         IReadOnlyCollection<uint> requiredSourceTypes)
     {
-        var targetTable = Parse(target);
-        var sourceTable = Parse(source);
         var required = ExpandTypeDependencies(sourceTable, requiredSourceTypes);
         var targetKeys = BuildTypeKeys(targetTable);
         var sourceKeys = BuildTypeKeys(sourceTable);
@@ -101,8 +320,8 @@ internal sealed class NativeBphclTypeTable
             // BoneSpaceDeformer blend blocks).
             if (!sourceTable.Bodies.Any(body => body.TypeIndex == sourceIndex))
             {
-                var sourceName = source.GetTypeName(sourceIndex);
-                var candidates = target.TypeNames
+                var sourceName = sourceTable.GetTypeName(sourceIndex);
+                var candidates = targetTable.GetTypeNames()
                     .Select((name, index) => (name, index))
                     .Where(entry => entry.index > 0 && string.Equals(entry.name, sourceName, StringComparison.Ordinal))
                     .Select(entry => (uint)entry.index)
@@ -118,7 +337,7 @@ internal sealed class NativeBphclTypeTable
             addedSourceTypes.Add(sourceIndex);
         }
 
-        var targetToMerged = Enumerable.Range(0, target.TypeNames.Count)
+        var targetToMerged = Enumerable.Range(0, targetTable.NamedTypes.Count + 1)
             .ToDictionary(index => (uint)index, index => (uint)index);
         if (addedSourceTypes.Count == 0)
             return new NativeBphclTypeTable(targetToMerged, sourceToMerged, null);
@@ -126,7 +345,7 @@ internal sealed class NativeBphclTypeTable
         var typeStrings = new StringTable(targetTable.TypeStrings);
         var fieldStrings = new StringTable(targetTable.FieldStrings);
         var mergedNamedTypes = targetTable.NamedTypes
-            .Select(named => named.Remap(targetToMerged, typeStrings.IdentityMap))
+            .Select(named => named.Remap(targetToMerged, typeStrings.IdentityMap, targetTable.TypeStrings))
             .ToList();
         var mergedBodies = targetTable.Bodies
             .Select(body => body.Remap(targetToMerged, fieldStrings.IdentityMap))
@@ -144,7 +363,7 @@ internal sealed class NativeBphclTypeTable
             var body = sourceTable.Bodies.FirstOrDefault(entry => entry.TypeIndex == sourceTypeIndex)
                 ?? throw new InvalidDataException($"Source BPHCL TYPE has no body record for type {sourceTypeIndex}.");
 
-            mergedNamedTypes.Add(named.Remap(sourceToMerged, sourceTypeStringMap));
+            mergedNamedTypes.Add(named.Remap(sourceToMerged, sourceTypeStringMap, sourceTable.TypeStrings));
             mergedBodies.Add(body.Remap(sourceToMerged, sourceFieldStringMap));
             foreach (var hash in sourceTable.Hashes.Where(entry => entry.TypeIndex == sourceTypeIndex))
                 mergedHashes.Add(hash.Remap(sourceToMerged));
@@ -156,12 +375,158 @@ internal sealed class NativeBphclTypeTable
         return new NativeBphclTypeTable(targetToMerged, sourceToMerged, replacement);
     }
 
+    private static (IReadOnlyList<string> Values, IReadOnlyDictionary<uint, uint> Map) BuildCompactStringTable(
+        IReadOnlyList<string> source,
+        IEnumerable<uint> requiredIndices)
+    {
+        var values = new List<string>();
+        var map = new Dictionary<uint, uint>();
+        foreach (var sourceIndex in requiredIndices.Distinct().OrderBy(index => index))
+        {
+            if (sourceIndex >= source.Count)
+                throw new InvalidDataException("BPHCL TYPE record references a missing string index.");
+
+            map[sourceIndex] = checked((uint)values.Count);
+            values.Add(source[checked((int)sourceIndex)]);
+        }
+
+        return (values, map);
+    }
+
+    private static TypeTable AddBodylessBlendAliases(
+        TypeTable source,
+        IReadOnlyCollection<uint> roots,
+        string deformerType)
+    {
+        var namedTypes = source.NamedTypes.ToList();
+        var bodies = source.Bodies.ToList();
+        var deformer = bodies.FirstOrDefault(body =>
+            string.Equals(source.GetTypeName(body.TypeIndex), deformerType, StringComparison.Ordinal));
+        if (deformer is null)
+            return source;
+
+        var deformerMembers = deformer.Members.ToArray();
+
+        foreach (var (memberName, blockType) in new[]
+        {
+            ("fourBlendEntries", $"{deformerType}::FourBlendEntryBlock"),
+            ("threeBlendEntries", $"{deformerType}::ThreeBlendEntryBlock"),
+            ("twoBlendEntries", $"{deformerType}::TwoBlendEntryBlock"),
+            ("oneBlendEntries", $"{deformerType}::OneBlendEntryBlock")
+        })
+        {
+            var reflected = bodies
+                .Select(body => body.TypeIndex)
+                .FirstOrDefault(type => string.Equals(source.GetTypeName(type), blockType, StringComparison.Ordinal));
+            if (reflected == 0 || roots.Contains(reflected))
+                continue;
+
+            var memberIndex = Array.FindIndex(deformerMembers, member =>
+                member.NameIndex < source.FieldStrings.Count &&
+                string.Equals(source.FieldStrings[checked((int)member.NameIndex)], memberName, StringComparison.Ordinal));
+            if (memberIndex < 0)
+                throw new InvalidDataException($"{deformerType} has no reflected member '{memberName}'.");
+
+            var arrayIndex = deformerMembers[memberIndex].TypeIndex;
+            var arrayType = namedTypes[checked((int)arrayIndex - 1)];
+            var bodylessBlockIndex = Enumerable.Range(1, namedTypes.Count)
+                .Select(index => (uint)index)
+                .FirstOrDefault(type => type != reflected &&
+                    string.Equals(source.GetTypeName(type), blockType, StringComparison.Ordinal) &&
+                    bodies.All(body => body.TypeIndex != type));
+            if (bodylessBlockIndex == 0)
+            {
+                bodylessBlockIndex = checked((uint)namedTypes.Count + 1);
+                namedTypes.Add(namedTypes[checked((int)reflected - 1)]);
+            }
+
+            namedTypes[checked((int)arrayIndex - 1)] = arrayType with
+            {
+                Templates = arrayType.Templates
+                    .Select(template => template.TypeIndex == reflected
+                        ? template with { TypeIndex = bodylessBlockIndex }
+                        : template)
+                    .ToArray()
+            };
+
+            var arrayBodyIndex = bodies.FindIndex(body => body.TypeIndex == arrayIndex);
+            if (arrayBodyIndex >= 0 && bodies[arrayBodyIndex].SubtypeIndex == reflected)
+            {
+                bodies[arrayBodyIndex] = bodies[arrayBodyIndex] with
+                {
+                    SubtypeIndex = bodylessBlockIndex
+                };
+            }
+        }
+
+        return source with
+        {
+            NamedTypes = namedTypes,
+            Bodies = bodies
+        };
+    }
+
+    private static IReadOnlyDictionary<uint, uint> BuildBlendAliases(
+        TypeTable source,
+        IReadOnlyCollection<uint> concreteRoots)
+    {
+        var aliases = new Dictionary<uint, uint>();
+        foreach (var blendType in new[]
+        {
+            "hclObjectSpaceDeformer::FourBlendEntryBlock",
+            "hclObjectSpaceDeformer::ThreeBlendEntryBlock",
+            "hclObjectSpaceDeformer::TwoBlendEntryBlock",
+            "hclObjectSpaceDeformer::OneBlendEntryBlock",
+            "hclBoneSpaceDeformer::FourBlendEntryBlock",
+            "hclBoneSpaceDeformer::ThreeBlendEntryBlock",
+            "hclBoneSpaceDeformer::TwoBlendEntryBlock",
+            "hclBoneSpaceDeformer::OneBlendEntryBlock"
+        })
+        {
+            var reflected = source.Bodies
+                .Select(body => body.TypeIndex)
+                .Where(type => string.Equals(source.GetTypeName(type), blendType, StringComparison.Ordinal))
+                .Distinct()
+                .ToArray();
+            if (reflected.Length != 1)
+                continue;
+
+            var concrete = reflected[0];
+            var concreteType = source.NamedTypes[checked((int)concrete - 1)];
+            var bodyless = Enumerable.Range(1, source.NamedTypes.Count)
+                .Select(index => (uint)index)
+                .Where(typeIndex =>
+                    typeIndex != concrete &&
+                    string.Equals(source.GetTypeName(typeIndex), blendType, StringComparison.Ordinal) &&
+                    source.Bodies.All(body => body.TypeIndex != typeIndex))
+                .FirstOrDefault(typeIndex =>
+                {
+                    var aliasType = source.NamedTypes[checked((int)typeIndex - 1)];
+                    return aliasType.Templates.Count == concreteType.Templates.Count &&
+                        aliasType.Templates.Zip(concreteType.Templates).All(pair =>
+                            pair.First.StringIndex == pair.Second.StringIndex &&
+                            pair.First.TypeIndex == pair.Second.TypeIndex);
+                });
+            if (bodyless == 0)
+                continue;
+
+            if (concreteRoots.Contains(concrete) || concreteRoots.Contains(bodyless))
+                aliases[bodyless] = concrete;
+            else
+                aliases[concrete] = bodyless;
+        }
+        return aliases;
+    }
+
     private static IReadOnlyList<uint> ExpandTypeDependencies(
         TypeTable source,
-        IEnumerable<uint> roots)
+        IEnumerable<uint> roots,
+        IReadOnlyDictionary<uint, uint>? canonicalTypes = null)
     {
         var required = new HashSet<uint>();
-        var queue = new Queue<uint>(roots.Where(type => type > 0 && type <= source.NamedTypes.Count));
+        var queue = new Queue<uint>();
+        foreach (var root in roots)
+            Enqueue(root);
         while (queue.TryDequeue(out var typeIndex))
         {
             if (!required.Add(typeIndex))
@@ -169,7 +534,11 @@ internal sealed class NativeBphclTypeTable
 
             var named = source.NamedTypes[checked((int)typeIndex - 1)];
             foreach (var template in named.Templates)
-                Enqueue(template.TypeIndex);
+            {
+                var parameterName = source.TypeStrings[checked((int)template.StringIndex)];
+                if (parameterName.StartsWith("t", StringComparison.Ordinal))
+                    Enqueue(template.TypeIndex);
+            }
 
             var body = source.Bodies.FirstOrDefault(entry => entry.TypeIndex == typeIndex);
             if (body is null)
@@ -186,6 +555,8 @@ internal sealed class NativeBphclTypeTable
 
         void Enqueue(uint typeIndex)
         {
+            if (canonicalTypes is not null && canonicalTypes.TryGetValue(typeIndex, out var canonical))
+                typeIndex = canonical;
             if (typeIndex > 0 && typeIndex <= source.NamedTypes.Count && !required.Contains(typeIndex))
                 queue.Enqueue(typeIndex);
         }
@@ -298,7 +669,9 @@ internal sealed class NativeBphclTypeTable
                 var parameterName = template.StringIndex < table.TypeStrings.Count
                     ? table.TypeStrings[checked((int)template.StringIndex)]
                     : $"invalid-parameter:{template.StringIndex}";
-                return $"{parameterName}={Describe(template.TypeIndex)}";
+                return parameterName.StartsWith("t", StringComparison.Ordinal)
+                    ? $"{parameterName}={Describe(template.TypeIndex)}"
+                    : $"{parameterName}={template.TypeIndex}";
             }));
             active.Remove(index);
 
@@ -347,12 +720,23 @@ internal sealed class NativeBphclTypeTable
     private static TypeTable Parse(NativeBphclDocument document)
     {
         var section = document.TypeSection ?? throw new InvalidDataException("BPHCL has no TYPE section.");
-        var typeStrings = ReadStrings(section.Children.FirstOrDefault(child => child.Signature is "TST1" or "TSTR"), document.Bytes);
-        var fieldStrings = ReadStrings(section.Children.FirstOrDefault(child => child.Signature is "FST1" or "FSTR"), document.Bytes);
-        var named = ReadNamedTypes(section.Children.FirstOrDefault(child => child.Signature is "TNA1" or "TNAM"), document.Bytes);
-        var bodies = ReadBodies(section.Children.FirstOrDefault(child => child.Signature is "TBDY" or "TBOD"), document.Bytes);
-        var hashes = ReadHashes(section.Children.FirstOrDefault(child => child.Signature == "THSH"), document.Bytes);
-        return new TypeTable(section, typeStrings, fieldStrings, named, bodies, hashes, document.Bytes);
+        return Parse(section, document.Bytes);
+    }
+
+    private static TypeTable Parse(byte[] typeSection)
+    {
+        var section = NativeBphclTagFileReader.ReadStandaloneSection(typeSection, "TYPE");
+        return Parse(section, typeSection);
+    }
+
+    private static TypeTable Parse(NativeBphclSection section, byte[] bytes)
+    {
+        var typeStrings = ReadStrings(section.Children.FirstOrDefault(child => child.Signature is "TST1" or "TSTR"), bytes);
+        var fieldStrings = ReadStrings(section.Children.FirstOrDefault(child => child.Signature is "FST1" or "FSTR"), bytes);
+        var named = ReadNamedTypes(section.Children.FirstOrDefault(child => child.Signature is "TNA1" or "TNAM"), bytes);
+        var bodies = ReadBodies(section.Children.FirstOrDefault(child => child.Signature is "TBDY" or "TBOD"), bytes);
+        var hashes = ReadHashes(section.Children.FirstOrDefault(child => child.Signature == "THSH"), bytes);
+        return new TypeTable(section, typeStrings, fieldStrings, named, bodies, hashes, bytes);
     }
 
     private sealed record TypeTable(
@@ -364,6 +748,43 @@ internal sealed class NativeBphclTypeTable
         IReadOnlyList<TypeHash> Hashes,
         byte[] OriginalBytes)
     {
+        public string? GetTypeName(uint typeIndex) =>
+            typeIndex > 0 && typeIndex <= NamedTypes.Count
+                ? TypeStrings[checked((int)NamedTypes[checked((int)typeIndex - 1)].StringIndex)]
+                : null;
+
+        public IReadOnlyList<string> GetTypeNames() =>
+            Enumerable.Range(0, NamedTypes.Count + 1)
+                .Select(index => index == 0 ? string.Empty : GetTypeName((uint)index) ?? string.Empty)
+                .ToArray();
+
+        public IReadOnlyList<byte[]> BuildSubsetChildren(
+            IReadOnlyList<string> typeStrings,
+            IReadOnlyList<string> fieldStrings,
+            IReadOnlyList<NamedType> namedTypes,
+            IReadOnlyList<TypeBody> bodies,
+            IReadOnlyList<TypeHash> hashes)
+        {
+            var result = new List<byte[]>();
+            foreach (var child in Section.Children)
+            {
+                var payload = child.Signature switch
+                {
+                    // TPTR is an all-zero, eight-byte slot table in retail
+                    // files. It includes the null type-zero slot as well as
+                    // one entry per named reflected type.
+                    "TPTR" => new byte[checked((namedTypes.Count + 1) * 8)],
+                    "TST1" or "TSTR" => WriteStrings(typeStrings),
+                    "FST1" or "FSTR" => WriteStrings(fieldStrings),
+                    "TNA1" or "TNAM" => WriteNamedTypes(namedTypes),
+                    "TBDY" or "TBOD" => WriteBodies(bodies),
+                    "THSH" => WriteHashes(hashes),
+                    _ => OriginalBytes.AsSpan(child.PayloadOffset, child.PayloadSize).ToArray()
+                };
+                result.Add(BuildSection(child.Signature, child.ChunkKind, payload));
+            }
+            return result;
+        }
         public IReadOnlyList<byte[]> BuildChildren(
             IReadOnlyList<string> typeStrings,
             IReadOnlyList<string> fieldStrings,
@@ -439,14 +860,26 @@ internal sealed class NativeBphclTypeTable
 
     private sealed record NamedType(uint StringIndex, IReadOnlyList<TypeTemplate> Templates)
     {
-        public NamedType Remap(IReadOnlyDictionary<uint, uint> types, IReadOnlyDictionary<uint, uint> strings) =>
-            new(strings[StringIndex], Templates.Select(template => template.Remap(types, strings)).ToArray());
+        public NamedType Remap(
+            IReadOnlyDictionary<uint, uint> types,
+            IReadOnlyDictionary<uint, uint> strings,
+            IReadOnlyList<string> sourceStrings) =>
+            new(strings[StringIndex], Templates.Select(template => template.Remap(types, strings, sourceStrings)).ToArray());
     }
 
     private sealed record TypeTemplate(uint StringIndex, uint TypeIndex)
     {
-        public TypeTemplate Remap(IReadOnlyDictionary<uint, uint> types, IReadOnlyDictionary<uint, uint> strings) =>
-            new(strings[StringIndex], RemapTypeReference(TypeIndex, types));
+        public TypeTemplate Remap(
+            IReadOnlyDictionary<uint, uint> types,
+            IReadOnlyDictionary<uint, uint> strings,
+            IReadOnlyList<string> sourceStrings)
+        {
+            var parameterName = sourceStrings[checked((int)StringIndex)];
+            var value = parameterName.StartsWith("t", StringComparison.Ordinal)
+                ? RemapTypeReference(TypeIndex, types)
+                : TypeIndex;
+            return new TypeTemplate(strings[StringIndex], value);
+        }
     }
 
     private sealed record TypeMember(uint NameIndex, uint Flags, byte? Reserve, uint Offset, uint TypeIndex)

@@ -10,13 +10,14 @@ It works with complete physics graphs rather than isolated values: cloth simulat
 
 | Format | Game / purpose | Current support |
 | --- | --- | --- |
-| `.hkcl` | BotW Havok cloth | Open, save, merge, remove, duplicate, rename, inspect, direct edit, and experimental conversion to BPHCL. |
-| `.bphcl` | TotK Phive/Havok cloth | Open, save, merge, remove, duplicate, rename, inspect, direct edit, and experimental conversion to HKCL. |
-| `.bphhb` | TotK helper-bone configuration | Open, save, edit helper-bone records, add, duplicate, rename, mirror, reorder, and experimentally convert to BotW `.bphyssb`. This is not a full actor skeleton. |
-| `.hkrg` | BotW Havok ragdoll | Open, save, inspect and edit reference-pose bones and supported rigid-body collider values. |
+| `.hkcl` | BotW Havok cloth | Open, save, merge, remove, duplicate, rename, inspect, directly edit, and convert to BPHCL. |
+| `.bphcl` | TotK Phive/Havok cloth | Open, save, merge, remove, duplicate, rename, inspect, directly edit, and convert to HKCL. |
+| `.bphhb` | TotK helper-bone configuration | Open, save, edit helper-bone records, add, duplicate, rename, mirror, reorder, and convert to BotW `.bphyssb`. This is not a full actor skeleton. |
+| `.bphyssb` | BotW support-bone configuration | Open, inspect, save, and convert to TotK `.bphhb`. |
+| `.hkrg` | BotW Havok ragdoll | Open, save, inspect, and edit model bones, ragdoll bones, rigid bodies, and supported constraints. |
 | `.json` | PhysicsTool diagnostic export | Open and export for inspection. It is not the recommended authoring workflow. |
 
-PhysicsTool can also export a BotW `.bphysics` AAMP sidecar for an HKCL file. A sidecar can reference a `.bphyssb` support-bone path, but `.bphyssb` is not currently an editor document type.
+PhysicsTool can also export a BotW `.bphysics` AAMP sidecar for an HKCL file. That sidecar can reference a `.bphyssb` support-bone path.
 
 ## What You Can Do
 
@@ -47,19 +48,25 @@ PhysicsTool can also export a BotW `.bphysics` AAMP sidecar for an HKCL file. A 
 - Move selected records up or down, and mirror the selected helper bone across X.
 - Inspect the graph-derived values stored in the helper-bone configuration.
 
+### BPHYSSB Support Bones
+
+- Inspect BotW support-bone names, base transforms, curves, and output relationships.
+- Save native BPHYSSB files and convert their support-bone graph to TotK BPHHB.
+- Convert BPHHB back to BPHYSSB while preserving the graph structure represented by both formats.
+
 ### HKRG Ragdolls
 
 - Inspect the full reference-pose skeleton and the smaller ragdoll skeleton separately.
 - Edit supported model bones, ragdoll bones, and rigid-body capsule transforms/radii in the viewport.
 - Bind a selected bone or rigid body to the position of another supported bone without changing its ownership mapping.
-
-HKRG parent topology, body-to-bone mapping, motion properties, and ragdoll constraints remain locked until their writers are verified.
+- Inspect and edit supported ragdoll and hinge constraints.
+- Preview the ragdoll simulation without modifying the saved pose.
 
 ## Conversion
 
 ### BPHCL to HKCL
 
-The **Convert** button on a BPHCL file creates one new Wii U HKCL document containing every BPHCL cloth unit. It does not need an open HKCL donor or template.
+The **Convert** button on a BPHCL file creates one new Wii U HKCL document containing every BPHCL cloth unit. It does not need an open HKCL donor or template. This path has been tested against matched vanilla files and custom in-game conversions, but unusual layouts should still be verified in-game.
 
 The conversion-scale dialog is important:
 
@@ -73,13 +80,13 @@ The matched files currently show the same gravity `(0, -9.81, 0)` and damping `0
 
 ### HKCL to BPHCL
 
-The **Convert** button on an HKCL file creates a new BPHCL through PhysicsTool's native BPHCL writer. It is donor-free, but remains experimental and should be verified by reopening the output and testing it in-game.
+The **Convert** button on an HKCL file creates a complete BPHCL through PhysicsTool's native writer. It is donor-free and writes the Havok graph, blend data, constraints, colliders, AAMP registration, and reflected TYPE metadata required by TotK. Multi-blend cloths are supported. Reopen and test unmatched layouts in-game because the two games can still use cloth-specific tuning.
 
-### BPHHB to BPHYSSB
+### BPHHB and BPHYSSB
 
-The **Convert** button on a TotK `.bphhb` helper-bone file now writes a BotW `.bphyssb` support-bone sidecar without using an HKCL or BPHCL serializer. The exporter translates the native helper-bone graph into BotW's separate main-bone, support-bone, curve, and output tables, then reparses the saved file before reporting success.
+The **Convert** button translates helper/support-bone sidecars in either direction. BPHHB to BPHYSSB writes BotW's separate main-bone, support-bone, curve, and output tables. BPHYSSB to BPHHB rebuilds TotK's driver, driven, pose, curve, and output graph. Both exporters reparse the saved file before reporting success.
 
-This path is structurally verified but still experimental in-game. Start with a small matched file, such as an `Armor_014_Head.bphhb` sample, retain the original, and configure the resulting sidecar through the appropriate BotW BPHYSICS support-bone reference.
+Both directions are structurally verified against matched files, and the reverse BPHYSSB to BPHHB path has been confirmed in-game. Retain the original and configure BotW output through the appropriate BPHYSICS support-bone reference.
 
 ## Recommended Workflow
 
@@ -186,7 +193,7 @@ PhysicsTool/
   Editor/             Viewport, preview simulation, and editor-facing models
   Formats/Bphcl/      Native BPHCL reader, writer, merge, compaction, TYPE, and AAMP code
   Formats/Bphhb/      Native BPHHB helper-bone support
-  Formats/Bphyssb/    BPHHB to BotW BPHYSSB support-bone conversion
+  Formats/Bphyssb/    Native BPHYSSB support and BPHHB/BPHYSSB conversion
   Formats/Bphysics/   BotW BPHYSICS sidecar export and runtime-profile catalog
   Formats/Hkcl/       HKCL/HKRG reader, writer, conversion, and authoring support
   Formats/Hkrg/       HKRG ragdoll editor support
@@ -198,5 +205,3 @@ PhysicsTool/
 - [banan039 / totkbits](https://github.com/banan039/totkbits) for foundational BPHCL reverse-engineering work.
 - [VelouriasMoon / HKCLTool](https://github.com/VelouriasMoon/HKCLTool) for the original HKCLTool project this work grew from.
 - [HKX2](https://github.com/krenyy/HKX2) and [Json.NET](https://www.newtonsoft.com/json) for supporting libraries.
-
-The original GUI notes are preserved in `Docs/Archive` for reference.

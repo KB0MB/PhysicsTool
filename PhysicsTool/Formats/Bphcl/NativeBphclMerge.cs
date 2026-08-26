@@ -250,16 +250,21 @@ internal static class NativeBphclMerge
         // hclClothContainer: collidables at +0x18, cloth data at +0x28.
         // hkaAnimationContainer: skeletons at +0x18. These offsets are
         // validated by the native reader for both current BPHCL samples.
-        AppendReferenceArray(
-            target,
-            data,
-            items,
-            patches,
-            target.GetReferenceArray(clothContainer.ObjectDataOffset + 24),
-            source.Colliders
-                .Where(collider => liveSourceItems.Contains(collider.ItemIndex) &&
-                                   !reusedColliderItems.ContainsKey(collider.ItemIndex))
-                .Select(collider => importedItemMap[collider.ItemIndex]));
+        var importedColliderItems = source.Colliders
+            .Where(collider => liveSourceItems.Contains(collider.ItemIndex) &&
+                               !reusedColliderItems.ContainsKey(collider.ItemIndex))
+            .Select(collider => importedItemMap[collider.ItemIndex])
+            .ToArray();
+        if (importedColliderItems.Length > 0)
+        {
+            AppendReferenceArray(
+                target,
+                data,
+                items,
+                patches,
+                target.GetReferenceArray(clothContainer.ObjectDataOffset + 24),
+                importedColliderItems);
+        }
         var clothArray = target.GetReferenceArray(clothContainer.ObjectDataOffset + 40);
         var skeletonArray = target.GetReferenceArray(animationContainer.ObjectDataOffset + 24);
         if (replaceTargetClothIndex is int targetIndex)
@@ -367,16 +372,26 @@ internal static class NativeBphclMerge
             ?? throw new InvalidDataException("Source BPHCL has no DATA section.");
         var ranges = source.GetItemRanges();
         var copied = new Dictionary<uint, ImportedRange>();
+        var alignmentByType = source.TypeDefinitions
+            .GroupBy(definition => definition.TypeIndex)
+            .ToDictionary(group => group.Key, group => group.First().Alignment ?? 1u);
 
-        foreach (var sourceItemIndex in sourceItemIndices.OrderBy(index => ranges[index].Start))
+        foreach (var itemGroup in sourceItemIndices
+                     .GroupBy(index => ranges[index].Start)
+                     .OrderBy(group => group.Key))
         {
+            var sourceItemIndex = itemGroup.First();
             var range = ranges[sourceItemIndex];
             if (copied.ContainsKey(range.Start))
                 continue;
             if (range.End < range.Start || range.End > sourceData.PayloadSize)
                 throw new InvalidDataException("Selected BPHCL graph exceeds the donor DATA section.");
 
-            Align(destination, 8);
+            var requiredAlignment = itemGroup
+                .Select(index => alignmentByType.GetValueOrDefault(source.GetItem(index).TypeIndex, 1u))
+                .DefaultIfEmpty(1u)
+                .Max();
+            Align(destination, checked((int)requiredAlignment));
             var newStart = checked((uint)destination.Count);
             destination.AddRange(source.Bytes.AsSpan(
                 sourceData.PayloadOffset + checked((int)range.Start),

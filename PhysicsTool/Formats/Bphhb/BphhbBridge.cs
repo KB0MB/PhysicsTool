@@ -57,6 +57,7 @@ public static class BphhbBridge
     private const uint NameHash = 1579384326u;
     private const uint CurveDriverHash = 249727330u;
     private const uint CurveAttributeHash = 75375380u;
+    private const uint CurveKeyCountHash = 139113150u;
     private const uint CurveKey0Hash = 1692570776u;
     private const uint CurveKey1Hash = 333816846u;
     private const uint CurveKey2Hash = 2330785204u;
@@ -203,6 +204,13 @@ public static class BphhbBridge
         var sourceDoubles = sourceData.FindChild(BotwAampWriter.Crc32("output_double_list"));
         var sourceMain = RequireSourceList(sourceData, "main_bone_list");
         var sourceSupport = RequireSourceList(sourceData, "support_bone_list");
+        var sourceBoneNames = sourceBones.Objects
+            .Select((item, index) => item.Find(NameHash)?.AsString()
+                ?? throw new InvalidDataException($"BPHYSSB bone #{index} is missing its name."))
+            .ToList();
+        var sourceMainBoneIds = sourceMain.Objects
+            .Select(item => ReadRequiredAampInt(item, SupportBoneHash, "main_bone_list"))
+            .ToArray();
 
         var root = new BotwAampWriter.AampListNode("param_root");
         var header = new BotwAampWriter.AampObjectNode("helper_bone_header");
@@ -213,6 +221,9 @@ public static class BphhbBridge
             header.Parameters.Add(RawFloat(SupportHeaderStepHash, 0.1f));
         root.Objects.Add(header);
 
+        // A native BPHHB always carries these nine child tables in this order.
+        // Together with param_root and helper_bone_data they produce the
+        // 11-list layout expected by TotK, even when some tables are empty.
         var data = new BotwAampWriter.AampListNode("helper_bone_data");
         root.Children.Add(data);
         var bones = new BotwAampWriter.AampListNode("bone_list");
@@ -221,12 +232,18 @@ public static class BphhbBridge
         var drivers = new BotwAampWriter.AampListNode("driver_bone_list");
         var driven = new BotwAampWriter.AampListNode("driven_bone_list");
         var poses = new BotwAampWriter.AampListNode("pose_driven_list");
+        var positions = new BotwAampWriter.AampListNode("position_driven_list");
+        var rotations = new BotwAampWriter.AampListNode("rotate_driven_list");
+        var aims = new BotwAampWriter.AampListNode("aim_driven_list");
         data.Children.Add(bones);
         data.Children.Add(curves);
         data.Children.Add(outputs);
         data.Children.Add(drivers);
         data.Children.Add(driven);
         data.Children.Add(poses);
+        data.Children.Add(positions);
+        data.Children.Add(rotations);
+        data.Children.Add(aims);
 
         foreach (var sourceBone in sourceBones.Objects)
         {
@@ -235,17 +252,85 @@ public static class BphhbBridge
             bones.Objects.Add(targetBone);
         }
 
+        int GetOrAddBone(string name)
+        {
+            static string LocalName(string value)
+            {
+                var separator = value.LastIndexOf(':');
+                return separator >= 0 ? value[(separator + 1)..] : value;
+            }
+
+            var existing = sourceBoneNames.FindIndex(item => string.Equals(item, name, StringComparison.Ordinal));
+            if (existing >= 0)
+                return existing;
+
+            var localName = LocalName(name);
+            var localMatches = sourceBoneNames
+                .Select((item, index) => (Name: LocalName(item), Index: index))
+                .Where(item => string.Equals(item.Name, localName, StringComparison.Ordinal))
+                .Take(2)
+                .ToArray();
+            if (localMatches.Length == 1)
+                return localMatches[0].Index;
+
+            if (!name.Contains(':'))
+            {
+                var prefix = sourceBoneNames
+                    .Select(item => item.LastIndexOf(':'))
+                    .Where(index => index >= 0)
+                    .Select(index => sourceBoneNames.First(item => item.LastIndexOf(':') == index)[..(index + 1)])
+                    .FirstOrDefault();
+                if (!string.IsNullOrEmpty(prefix))
+                    name = prefix + name;
+            }
+
+            var targetBone = new BotwAampWriter.AampObjectNode($"bone_{bones.Objects.Count}");
+            targetBone.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(
+                NameHash,
+                15,
+                Encoding.UTF8.GetBytes(name + "\0")));
+            sourceBoneNames.Add(name);
+            bones.Objects.Add(targetBone);
+            return bones.Objects.Count - 1;
+        }
+
+        int ResolveBase(AampReadObject record, int boneId)
+        {
+            var space = ReadOptionalAampInt(record, SupportSpaceHash);
+            if (space >= 0 && space < sourceBoneNames.Count && space != boneId)
+                return space;
+
+            var boneName = boneId >= 0 && boneId < sourceBoneNames.Count
+                ? sourceBoneNames[boneId]
+                : string.Empty;
+            var inferred = InferParentBoneName(boneName);
+            if (!string.IsNullOrEmpty(inferred) && !string.Equals(inferred, boneName, StringComparison.Ordinal))
+                return GetOrAddBone(inferred);
+
+            var fallback = sourceMainBoneIds.FirstOrDefault(candidate =>
+                candidate >= 0 && candidate < sourceBoneNames.Count && candidate != boneId, -1);
+            if (fallback >= 0)
+                return fallback;
+
+            fallback = Enumerable.Range(0, sourceBoneNames.Count).FirstOrDefault(candidate => candidate != boneId, -1);
+            if (fallback >= 0)
+                return fallback;
+
+            throw new InvalidDataException(
+                $"BPHYSSB bone '{boneName}' has no usable base bone. A helper graph cannot use itself as its base.");
+        }
+
         for (var index = 0; index < sourceMain.Objects.Count; index++)
         {
             var sourceDriver = sourceMain.Objects[index];
             var targetDriver = new BotwAampWriter.AampObjectNode($"driver_bone_{index}");
             var boneId = ReadRequiredAampInt(sourceDriver, SupportBoneHash, "main_bone_list");
             targetDriver.Parameters.Add(RawInt(BoneIdHash, boneId));
-            targetDriver.Parameters.Add(RawInt(BaseBoneIdHash, ResolveBaseBone(sourceDriver, boneId, sourceBones.Objects.Count)));
             CopyAampParameter(targetDriver, sourceDriver, BaseTranslationHash);
             CopyAampParameter(targetDriver, sourceDriver, BaseRotationHash);
             CopyAampParameter(targetDriver, sourceDriver, SupportAimHash, AimAxisHash);
             CopyAampParameter(targetDriver, sourceDriver, SupportUpHash, UpAxisHash);
+            targetDriver.Parameters.Add(RawInt(BaseBoneIdHash, ResolveBase(sourceDriver, boneId)));
             drivers.Objects.Add(targetDriver);
         }
 
@@ -260,6 +345,7 @@ public static class BphhbBridge
             var targetCurve = new BotwAampWriter.AampObjectNode($"connection_curve_{index}");
             targetCurve.Parameters.Add(RawInt(CurveDriverHash, driverIndex));
             targetCurve.Parameters.Add(RawInt(CurveAttributeHash, UnpackBoneAttribute(packed & 0xFFFF, index)));
+            targetCurve.Parameters.Add(RawInt(CurveKeyCountHash, 3));
             CopyAampParameter(targetCurve, sourceCurve, CurveKey0Hash);
             CopyAampParameter(targetCurve, sourceCurve, CurveKey1Hash);
             CopyAampParameter(targetCurve, sourceCurve, CurveKey2Hash);
@@ -267,54 +353,92 @@ public static class BphhbBridge
         }
 
         var outputMap = new Dictionary<int, int>();
-        if (sourceSingles != null)
+
+        int MapActiveOutput(int handle)
         {
-            for (var index = 0; index < sourceSingles.Objects.Count; index++)
+            if (handle < 0)
+                return -1;
+            if (outputMap.TryGetValue(handle, out var existing))
+                return existing;
+
+            int connection0;
+            int connection1;
+            if (((uint)handle & 0xFFFF0000u) == 0x00010000u)
             {
-                var targetOutput = new BotwAampWriter.AampObjectNode($"output_{outputs.Objects.Count}");
-                targetOutput.Parameters.Add(RawInt(OutputConnection0Hash, DecodeCurveReference(ReadRequiredAampInt(sourceSingles.Objects[index], SupportConnectionHash, "output_single_list"))));
-                targetOutput.Parameters.Add(RawInt(OutputConnection1Hash, -1));
-                outputMap[index] = outputs.Objects.Count;
-                outputs.Objects.Add(targetOutput);
+                var index = handle & 0xFFFF;
+                if (sourceDoubles == null || index >= sourceDoubles.Objects.Count)
+                    throw new InvalidDataException($"BPHYSSB references missing double output #{index}.");
+                var sourceOutput = sourceDoubles.Objects[index];
+                connection0 = DecodeCurveReference(ReadRequiredAampInt(sourceOutput, SupportConnection0Hash, "output_double_list"));
+                connection1 = DecodeCurveReference(ReadRequiredAampInt(sourceOutput, SupportConnection1Hash, "output_double_list"));
             }
-        }
-        if (sourceDoubles != null)
-        {
-            for (var index = 0; index < sourceDoubles.Objects.Count; index++)
+            else
             {
-                var targetOutput = new BotwAampWriter.AampObjectNode($"output_{outputs.Objects.Count}");
-                targetOutput.Parameters.Add(RawInt(OutputConnection0Hash, DecodeCurveReference(ReadRequiredAampInt(sourceDoubles.Objects[index], SupportConnection0Hash, "output_double_list"))));
-                targetOutput.Parameters.Add(RawInt(OutputConnection1Hash, DecodeCurveReference(ReadRequiredAampInt(sourceDoubles.Objects[index], SupportConnection1Hash, "output_double_list"))));
-                outputMap[EncodeDoubleOutputReference(index)] = outputs.Objects.Count;
-                outputs.Objects.Add(targetOutput);
+                if (sourceSingles == null || handle >= sourceSingles.Objects.Count)
+                    throw new InvalidDataException($"BPHYSSB references missing single output #{handle}.");
+                var sourceOutput = sourceSingles.Objects[handle];
+                connection0 = DecodeCurveReference(ReadRequiredAampInt(sourceOutput, SupportConnectionHash, "output_single_list"));
+                connection1 = -1;
             }
+
+            if (connection0 < 0 && connection1 < 0)
+                return -1;
+            if (connection0 >= curves.Objects.Count || connection1 >= curves.Objects.Count)
+                throw new InvalidDataException($"BPHYSSB output 0x{handle:X8} references a curve outside the converted curve list.");
+
+            var targetOutput = new BotwAampWriter.AampObjectNode($"output_{outputs.Objects.Count}");
+            if (connection0 >= 0)
+                targetOutput.Parameters.Add(RawInt(OutputConnection0Hash, connection0));
+            else
+                targetOutput.Parameters.Add(RawInt(OutputConnection0Hash, connection1));
+            if (connection0 >= 0 && connection1 >= 0)
+                targetOutput.Parameters.Add(RawInt(OutputConnection1Hash, connection1));
+
+            var targetIndex = outputs.Objects.Count;
+            outputs.Objects.Add(targetOutput);
+            outputMap.Add(handle, targetIndex);
+            return targetIndex;
         }
 
         for (var index = 0; index < sourceSupport.Objects.Count; index++)
         {
             var sourceBone = sourceSupport.Objects[index];
             var boneId = ReadRequiredAampInt(sourceBone, SupportBoneHash, "support_bone_list");
+            var rollOutput = MapActiveOutput(ReadOptionalAampInt(sourceBone, SupportRollHash));
+            var bendHOutput = MapActiveOutput(ReadOptionalAampInt(sourceBone, SupportBendHHash));
+            var bendVOutput = MapActiveOutput(ReadOptionalAampInt(sourceBone, SupportBendVHash));
+            var translateXOutput = MapActiveOutput(ReadOptionalAampInt(sourceBone, SupportTranslateXHash));
+            var translateYOutput = MapActiveOutput(ReadOptionalAampInt(sourceBone, SupportTranslateYHash));
+            var translateZOutput = MapActiveOutput(ReadOptionalAampInt(sourceBone, SupportTranslateZHash));
+            var hasRotation = rollOutput >= 0 || bendHOutput >= 0 || bendVOutput >= 0;
+            var hasTranslation = translateXOutput >= 0 || translateYOutput >= 0 || translateZOutput >= 0;
+
             var targetDriven = new BotwAampWriter.AampObjectNode($"driven_bone_{index}");
             targetDriven.Parameters.Add(RawInt(BoneIdHash, boneId));
-            targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("translate_driven_id"), -1));
-            targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("rotate_driven_id"), -1));
+            if (hasTranslation)
+            {
+                targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("translate_driven_type"), 0));
+                targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("translate_driven_id"), index));
+            }
+            if (hasRotation)
+            {
+                targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("rotate_driven_type"), 0));
+                targetDriven.Parameters.Add(RawInt(BotwAampWriter.Crc32("rotate_driven_id"), index));
+            }
             driven.Objects.Add(targetDriven);
 
             var targetPose = new BotwAampWriter.AampObjectNode($"pose_driven_{index}");
-            targetPose.Parameters.Add(RawInt(BaseBoneIdHash, ResolveBaseBone(sourceBone, boneId, sourceBones.Objects.Count)));
             CopyAampParameter(targetPose, sourceBone, BaseTranslationHash);
             CopyAampParameter(targetPose, sourceBone, BaseRotationHash);
             CopyAampParameter(targetPose, sourceBone, SupportAimHash, AimAxisHash);
             CopyAampParameter(targetPose, sourceBone, SupportUpHash, UpAxisHash);
-
-            // Matched Armor 180 helper/support files show that named rotation
-            // channels retain their meaning across the formats.
-            targetPose.Parameters.Add(RawInt(RollOutputHash, MapBphyOutput(sourceBone, SupportRollHash, outputMap)));
-            targetPose.Parameters.Add(RawInt(BendHOutputHash, MapBphyOutput(sourceBone, SupportBendHHash, outputMap)));
-            targetPose.Parameters.Add(RawInt(BendVOutputHash, MapBphyOutput(sourceBone, SupportBendVHash, outputMap)));
-            targetPose.Parameters.Add(RawInt(TranslateXOutputHash, MapBphyOutput(sourceBone, SupportTranslateXHash, outputMap)));
-            targetPose.Parameters.Add(RawInt(TranslateYOutputHash, MapBphyOutput(sourceBone, SupportTranslateYHash, outputMap)));
-            targetPose.Parameters.Add(RawInt(TranslateZOutputHash, MapBphyOutput(sourceBone, SupportTranslateZHash, outputMap)));
+            targetPose.Parameters.Add(RawInt(BaseBoneIdHash, ResolveBase(sourceBone, boneId)));
+            AddPoseOutput(targetPose, rollOutput, RollOutputHash, SupportRollHash);
+            AddPoseOutput(targetPose, bendHOutput, BendHOutputHash, SupportBendHHash);
+            AddPoseOutput(targetPose, bendVOutput, BendVOutputHash, SupportBendVHash);
+            AddPoseOutput(targetPose, translateXOutput, TranslateXOutputHash, SupportTranslateXHash);
+            AddPoseOutput(targetPose, translateYOutput, TranslateYOutputHash, SupportTranslateYHash);
+            AddPoseOutput(targetPose, translateZOutput, TranslateZOutputHash, SupportTranslateZHash);
             poses.Objects.Add(targetPose);
         }
 
@@ -324,9 +448,9 @@ public static class BphhbBridge
         AddHeaderCount(header, "driver_bone_num", drivers.Objects.Count);
         AddHeaderCount(header, "driven_bone_num", driven.Objects.Count);
         AddHeaderCount(header, "pose_driven_num", poses.Objects.Count);
-        AddHeaderCount(header, "position_driven_num", 0);
-        AddHeaderCount(header, "rotate_driven_num", 0);
-        AddHeaderCount(header, "aim_driven_num", 0);
+        AddHeaderCount(header, "position_driven_num", positions.Objects.Count);
+        AddHeaderCount(header, "rotate_driven_num", rotations.Objects.Count);
+        AddHeaderCount(header, "aim_driven_num", aims.Objects.Count);
 
         return BotwAampWriter.WriteArchive(
             "phhb",
@@ -336,15 +460,19 @@ public static class BphhbBridge
             source.ParameterIoVersion);
     }
 
+    private static void AddPoseOutput(
+        BotwAampWriter.AampObjectNode pose,
+        int output,
+        uint outputHash,
+        uint defaultHash)
+    {
+        pose.Parameters.Add(output >= 0
+            ? RawInt(outputHash, output)
+            : RawInt(defaultHash, 0));
+    }
     private static AampReadList RequireSourceList(AampReadList parent, string name) =>
         parent.FindChild(BotwAampWriter.Crc32(name))
         ?? throw new InvalidDataException($"BPHYSSB is missing '{name}'.");
-
-    private static int ResolveBaseBone(AampReadObject record, int boneId, int boneCount)
-    {
-        var space = ReadOptionalAampInt(record, SupportSpaceHash);
-        return space >= 0 && space < boneCount ? space : boneId;
-    }
 
     private static int UnpackBoneAttribute(int channel, int curveIndex) => channel switch
     {
@@ -354,6 +482,72 @@ public static class BphhbBridge
         _ => throw new InvalidDataException($"BPHYSSB curve #{curveIndex} uses unsupported channel {channel}.")
     };
 
+    private static string? InferParentBoneName(string boneName)
+    {
+        if (string.IsNullOrWhiteSpace(boneName))
+            return null;
+
+        var separator = boneName.LastIndexOf(':');
+        var prefix = separator >= 0 ? boneName[..(separator + 1)] : string.Empty;
+        var local = separator >= 0 ? boneName[(separator + 1)..] : boneName;
+
+        var assist = local.Replace("_Assist_", "_", StringComparison.Ordinal);
+        if (assist.EndsWith("_Assist", StringComparison.Ordinal))
+            assist = assist[..^"_Assist".Length];
+        if (!string.Equals(assist, local, StringComparison.Ordinal))
+            return prefix + assist;
+
+        static string SideSuffix(string value) =>
+            value.EndsWith("_L", StringComparison.Ordinal) ? "_L" :
+            value.EndsWith("_R", StringComparison.Ordinal) ? "_R" :
+            string.Empty;
+
+        var side = SideSuffix(local);
+        var core = side.Length == 0 ? local : local[..^side.Length];
+        var explicitParent = core switch
+        {
+            "Head" => "Neck",
+            "Neck" => "Spine_2",
+            "Spine_2" => "Spine_1",
+            "Ankle" => "Leg_2",
+            "Wrist" => "Arm_2",
+            "Elbow" => "Arm_2",
+            "Arm_2" => "Arm_1",
+            "Arm_1" => "Clavicle",
+            "Clavicle" => "Spine_2",
+            "Leg_2" => "Leg_1",
+            "Leg_1" => "Waist",
+            _ => null
+        };
+        if (explicitParent != null)
+            return prefix + explicitParent + side;
+
+        var parts = local.Split('_');
+        for (var index = parts.Length - 1; index >= 0; index--)
+        {
+            if (int.TryParse(parts[index], out var number) && number > 1)
+            {
+                parts[index] = (number - 1).ToString();
+                return prefix + string.Join('_', parts);
+            }
+        }
+
+        if (local.StartsWith("Hair_Back_", StringComparison.Ordinal))
+            return prefix + "Hair_Root";
+        if (local.StartsWith("Hair", StringComparison.Ordinal) ||
+            local.StartsWith("Head", StringComparison.Ordinal) ||
+            local.StartsWith("Knot", StringComparison.Ordinal) ||
+            local.StartsWith("Osage", StringComparison.Ordinal) ||
+            local.StartsWith("Pony", StringComparison.Ordinal))
+            return prefix + "Head";
+        if (local.StartsWith("Skirt", StringComparison.Ordinal))
+            return prefix + "Waist";
+        if (local.StartsWith("Necklace", StringComparison.Ordinal))
+            return prefix + "Neck";
+
+        return null;
+    }
+
     private static int DecodeCurveReference(int reference)
     {
         if (reference < 0)
@@ -362,15 +556,6 @@ public static class BphhbBridge
             ? reference & 0xFFFF
             : reference;
     }
-
-    private static int EncodeDoubleOutputReference(int index) => index < 0 ? -1 : 0x00010000 | index;
-
-    private static int MapBphyOutput(AampReadObject record, uint hash, IReadOnlyDictionary<int, int> outputMap)
-    {
-        var output = ReadOptionalAampInt(record, hash);
-        return output >= 0 && outputMap.TryGetValue(output, out var target) ? target : -1;
-    }
-
     private static int ReadRequiredAampInt(AampReadObject record, uint hash, string owner)
     {
         var value = record.Find(hash);

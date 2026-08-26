@@ -353,6 +353,153 @@ public static class BphyssbBridge
 
         return results;
     }
+
+    /// <summary>
+    /// Expands TotK two-key curves whose range ends at zero into BotW's
+    /// ordered negative/zero/positive three-key representation.
+    /// Diagnostic only; normal conversion remains unchanged.
+    /// </summary>
+    public static BphyssbExportSummary ExportSymmetricTwoKeyCurveTest(
+        BphhbDocumentSummary source,
+        string outputPath)
+    {
+        var baseDocument = LoadBytes(Build(source), outputPath);
+        var rebuilt = Rebuild(baseDocument, root =>
+        {
+            var curves = RequireList(RequireDataRoot(root), ConnectionCurveListHash, "connection_curve_list");
+            foreach (var curve in curves.Objects)
+            {
+                var key0 = GetVector4(curve, SourceKey0Hash);
+                var key1 = GetVector4(curve, SourceKey1Hash);
+                if (key0 is null || key1 is null)
+                    continue;
+
+                var first = key0.Value;
+                var second = key1.Value;
+                const float epsilon = 1e-5f;
+
+                if (MathF.Abs(first.X) <= epsilon && MathF.Abs(first.Y) <= epsilon && second.X > epsilon)
+                {
+                    var slope = ResolveCurveSlope(first, second);
+                    SetVector4(curve, SourceKey0Hash, new Vector4(-second.X, -second.Y, 0f, slope));
+                    SetVector4(curve, SourceKey1Hash, new Vector4(0f, 0f, slope, slope));
+                    SetVector4(curve, SourceKey2Hash, new Vector4(second.X, second.Y, slope, 0f));
+                }
+                else if (MathF.Abs(second.X) <= epsilon && MathF.Abs(second.Y) <= epsilon && first.X < -epsilon)
+                {
+                    var slope = ResolveCurveSlope(first, second);
+                    SetVector4(curve, SourceKey0Hash, new Vector4(first.X, first.Y, 0f, slope));
+                    SetVector4(curve, SourceKey1Hash, new Vector4(0f, 0f, slope, slope));
+                    SetVector4(curve, SourceKey2Hash, new Vector4(-first.X, -first.Y, slope, 0f));
+                }
+                else
+                {
+                    throw new InvalidDataException(
+                        $"Two-key curve does not have a zero endpoint: key0={first}, key1={second}.");
+                }
+            }
+        });
+
+        File.WriteAllBytes(outputPath, rebuilt.Bytes);
+        return Validate(outputPath);
+    }
+
+    private static float ResolveCurveSlope(Vector4 first, Vector4 second)
+    {
+        var deltaX = second.X - first.X;
+        if (MathF.Abs(deltaX) <= 1e-6f)
+            throw new InvalidDataException($"Two-key curve has no input range: key0={first}, key1={second}.");
+
+        return (second.Y - first.Y) / deltaX;
+    }
+
+    /// <summary>
+    /// Forces one support bone's vertical-bend output to a visible constant.
+    /// This distinguishes an inactive output from an incorrectly shaped curve.
+    /// Diagnostic only.
+    /// </summary>
+    public static BphyssbExportSummary ExportConstantSupportCurveTest(
+        BphhbDocumentSummary source,
+        string outputPath,
+        string supportBoneName,
+        float bendRadians)
+    {
+        var baseDocument = LoadBytes(Build(source), outputPath);
+        var rebuilt = Rebuild(baseDocument, root =>
+        {
+            var data = RequireDataRoot(root);
+            var bones = RequireList(data, BoneListHash, "bone_list");
+            var supports = RequireList(data, SupportBoneListHash, "support_bone_list");
+            var outputs = RequireList(data, OutputSingleListHash, "output_single_list");
+            var curves = RequireList(data, ConnectionCurveListHash, "connection_curve_list");
+            var target = supports.Objects.FirstOrDefault(record =>
+            {
+                var boneId = GetInt(record, TargetBoneHash);
+                return boneId >= 0 && boneId < bones.Objects.Count &&
+                    string.Equals(GetString(bones.Objects[boneId], NameHash), supportBoneName, StringComparison.OrdinalIgnoreCase);
+            }) ?? throw new InvalidDataException($"Support bone '{supportBoneName}' was not found.");
+
+            var outputIndex = GetInt(target, TargetBendVHash);
+            if (outputIndex < 0 || outputIndex >= outputs.Objects.Count)
+                throw new InvalidDataException($"Support bone '{supportBoneName}' has no valid vertical-bend output.");
+
+            var packedCurve = GetInt(outputs.Objects[outputIndex], TargetConnectionHash);
+            var curveIndex = packedCurve & 0xFFFF;
+            if (curveIndex < 0 || curveIndex >= curves.Objects.Count)
+                throw new InvalidDataException($"Support bone '{supportBoneName}' references an invalid curve.");
+
+            var curve = curves.Objects[curveIndex];
+            SetVector4(curve, SourceKey0Hash, new Vector4(-MathF.PI, bendRadians, 0f, 0f));
+            SetVector4(curve, SourceKey1Hash, new Vector4(0f, bendRadians, 0f, 0f));
+            SetVector4(curve, SourceKey2Hash, new Vector4(MathF.PI, bendRadians, 0f, 0f));
+        });
+
+        File.WriteAllBytes(outputPath, rebuilt.Bytes);
+        return Validate(outputPath);
+    }
+    /// <summary>
+    /// Replaces one support bone's vertical-bend response with the native
+    /// Armor 182 Head-to-Hair_Back_C response. Diagnostic only.
+    /// </summary>
+    public static BphyssbExportSummary ExportArmor182HeadCurveTest(
+        BphhbDocumentSummary source,
+        string outputPath,
+        string supportBoneName)
+    {
+        var baseDocument = LoadBytes(Build(source), outputPath);
+        var rebuilt = Rebuild(baseDocument, root =>
+        {
+            var data = RequireDataRoot(root);
+            var bones = RequireList(data, BoneListHash, "bone_list");
+            var supports = RequireList(data, SupportBoneListHash, "support_bone_list");
+            var outputs = RequireList(data, OutputSingleListHash, "output_single_list");
+            var curves = RequireList(data, ConnectionCurveListHash, "connection_curve_list");
+            var target = supports.Objects.FirstOrDefault(record =>
+            {
+                var boneId = GetInt(record, TargetBoneHash);
+                return boneId >= 0 && boneId < bones.Objects.Count &&
+                    string.Equals(GetString(bones.Objects[boneId], NameHash), supportBoneName, StringComparison.OrdinalIgnoreCase);
+            }) ?? throw new InvalidDataException($"Support bone '{supportBoneName}' was not found.");
+
+            var outputIndex = GetInt(target, TargetBendVHash);
+            if (outputIndex < 0 || outputIndex >= outputs.Objects.Count)
+                throw new InvalidDataException($"Support bone '{supportBoneName}' has no valid vertical-bend output.");
+
+            var packedCurve = GetInt(outputs.Objects[outputIndex], TargetConnectionHash);
+            var curveIndex = packedCurve & 0xFFFF;
+            if (curveIndex < 0 || curveIndex >= curves.Objects.Count)
+                throw new InvalidDataException($"Support bone '{supportBoneName}' references an invalid curve.");
+
+            // Native Armor_182_Head.bphyssb, Hair_Back_C_1 vertical bend.
+            var curve = curves.Objects[curveIndex];
+            SetVector4(curve, SourceKey0Hash, new Vector4(-1.04719806f, 1.04719806f, 0f, -1f));
+            SetVector4(curve, SourceKey1Hash, new Vector4(0f, 0f, -1f, -0.777778029f));
+            SetVector4(curve, SourceKey2Hash, new Vector4(0.785398006f, -0.610864997f, 0f, 0f));
+        });
+
+        File.WriteAllBytes(outputPath, rebuilt.Bytes);
+        return Validate(outputPath);
+    }
     /// <summary>
     /// Emits narrowly-scoped orientation experiments for a named support bone.
     /// These are diagnostic exports and never alter normal BPHHB conversion.
@@ -793,29 +940,38 @@ public static class BphyssbBridge
             curveList.Objects.Add(targetCurve);
         }
 
-        var outputHandles = new Dictionary<int, int>();
-        for (var index = 0; index < sourceOutputs.Objects.Count; index++)
-        {
-            var sourceOutput = sourceOutputs.Objects[index];
-            var connection0 = ReadOptionalInt(sourceOutput, SourceConnection0Hash);
-            var connection1 = ReadOptionalInt(sourceOutput, SourceConnection1Hash);
-            ValidateCurveReference(connection0, curveList.Objects.Count, index);
-            ValidateCurveReference(connection1, curveList.Objects.Count, index);
-
-            if (connection0 < 0 && connection1 < 0)
+        var sourceOutputConnections = sourceOutputs.Objects
+            .Select((sourceOutput, index) =>
             {
-                // Keep an explicit inactive single-output slot. Native BPHYSSB
-                // files preserve these placeholders and pose records address
-                // the original output-list indices.
-                var targetIndex = outputSingleList.Objects.Count;
-                var targetOutput = new BotwAampWriter.AampObjectNode($"output_single_{targetIndex}");
-                targetOutput.Parameters.Add(RawInt(TargetConnectionHash, -1));
-                targetOutput.Parameters.Add(RawFloat(TargetWeightHash, 0f));
-                outputSingleList.Objects.Add(targetOutput);
-                outputHandles[index] = targetIndex;
-                continue;
-            }
+                var connection0 = ReadOptionalInt(sourceOutput, SourceConnection0Hash);
+                var connection1 = ReadOptionalInt(sourceOutput, SourceConnection1Hash);
+                ValidateCurveReference(connection0, curveList.Objects.Count, index);
+                ValidateCurveReference(connection1, curveList.Objects.Count, index);
+                return (Connection0: connection0, Connection1: connection1);
+            })
+            .ToArray();
 
+        var outputHandles = new Dictionary<int, int>();
+
+        int AddInactiveSingleOutput()
+        {
+            var targetIndex = outputSingleList.Objects.Count;
+            var targetOutput = new BotwAampWriter.AampObjectNode($"output_single_{targetIndex}");
+            targetOutput.Parameters.Add(RawInt(TargetConnectionHash, -1));
+            targetOutput.Parameters.Add(RawFloat(TargetWeightHash, 0f));
+            outputSingleList.Objects.Add(targetOutput);
+            return targetIndex;
+        }
+
+        int GetOrCreateOutputHandle(int sourceOutputIndex)
+        {
+            if (outputHandles.TryGetValue(sourceOutputIndex, out var existingHandle))
+                return existingHandle;
+            if ((uint)sourceOutputIndex >= (uint)sourceOutputConnections.Length)
+                throw new InvalidDataException($"BPHHB pose references missing output #{sourceOutputIndex}.");
+
+            var (connection0, connection1) = sourceOutputConnections[sourceOutputIndex];
+            int targetHandle;
             if (connection0 >= 0 && connection1 >= 0)
             {
                 var targetIndex = outputDoubleList.Objects.Count;
@@ -825,19 +981,39 @@ public static class BphyssbBridge
                 targetOutput.Parameters.Add(RawInt(TargetConnection1Hash, EncodeCurveReference(connection1)));
                 targetOutput.Parameters.Add(RawFloat(TargetWeight1Hash, 1f));
                 outputDoubleList.Objects.Add(targetOutput);
-                outputHandles[index] = EncodeDoubleOutputReference(targetIndex);
+                targetHandle = EncodeDoubleOutputReference(targetIndex);
             }
-            else
+            else if (connection0 >= 0 || connection1 >= 0)
             {
                 var targetIndex = outputSingleList.Objects.Count;
                 var targetOutput = new BotwAampWriter.AampObjectNode($"output_single_{targetIndex}");
                 targetOutput.Parameters.Add(RawInt(TargetConnectionHash, EncodeCurveReference(Math.Max(connection0, connection1))));
                 targetOutput.Parameters.Add(RawFloat(TargetWeightHash, 1f));
                 outputSingleList.Objects.Add(targetOutput);
-                outputHandles[index] = targetIndex;
+                targetHandle = targetIndex;
             }
+            else
+            {
+                targetHandle = AddInactiveSingleOutput();
+            }
+
+            outputHandles[sourceOutputIndex] = targetHandle;
+            return targetHandle;
         }
 
+        int MapActiveOutput(AampReadObject pose, uint sourceIdHash)
+        {
+            var sourceOutputIndex = ReadOptionalInt(pose, sourceIdHash);
+            return sourceOutputIndex >= 0 ? GetOrCreateOutputHandle(sourceOutputIndex) : -1;
+        }
+
+        int MapRotationOutput(AampReadObject pose, uint sourceIdHash)
+        {
+            var sourceOutputIndex = ReadOptionalInt(pose, sourceIdHash);
+            return sourceOutputIndex >= 0
+                ? GetOrCreateOutputHandle(sourceOutputIndex)
+                : AddInactiveSingleOutput();
+        }
         foreach (var record in driverRecords)
         {
             var targetMainBone = new BotwAampWriter.AampObjectNode($"main_bone_{mainBoneList.Objects.Count}");
@@ -860,15 +1036,15 @@ public static class BphyssbBridge
             CopyParameter(targetSupportBone, record.Pose, SourceUpAxisHash, TargetUpHash);
             targetSupportBone.Parameters.Add(RawInt(TargetSpaceHash, -1));
 
-            // BPHHB's *_id fields are the output-list links. It may also carry
-            // same-named BotW fields with a default 0, but those are not links:
-            // treating them as one enables inactive bend/roll channels.
-            targetSupportBone.Parameters.Add(RawInt(TargetBendHHash, MapOutputReference(record.Pose, SourceBendHIdHash, outputHandles)));
-            targetSupportBone.Parameters.Add(RawInt(TargetBendVHash, MapOutputReference(record.Pose, SourceBendVIdHash, outputHandles)));
-            targetSupportBone.Parameters.Add(RawInt(TargetRollHash, MapOutputReference(record.Pose, SourceRollIdHash, outputHandles)));
-            targetSupportBone.Parameters.Add(RawInt(TargetTranslateXHash, MapOutputReference(record.Pose, SourceTranslateXIdHash, outputHandles)));
-            targetSupportBone.Parameters.Add(RawInt(TargetTranslateYHash, MapOutputReference(record.Pose, SourceTranslateYIdHash, outputHandles)));
-            targetSupportBone.Parameters.Add(RawInt(TargetTranslateZHash, MapOutputReference(record.Pose, SourceTranslateZIdHash, outputHandles)));
+            // BotW stores the three rotational outputs as positional channels.
+            // Even an unused bend/roll channel owns a null single-output slot;
+            // translation channels are sparse and remain -1 when unconnected.
+            targetSupportBone.Parameters.Add(RawInt(TargetBendHHash, MapRotationOutput(record.Pose, SourceBendHIdHash)));
+            targetSupportBone.Parameters.Add(RawInt(TargetBendVHash, MapRotationOutput(record.Pose, SourceBendVIdHash)));
+            targetSupportBone.Parameters.Add(RawInt(TargetRollHash, MapRotationOutput(record.Pose, SourceRollIdHash)));
+            targetSupportBone.Parameters.Add(RawInt(TargetTranslateXHash, MapActiveOutput(record.Pose, SourceTranslateXIdHash)));
+            targetSupportBone.Parameters.Add(RawInt(TargetTranslateYHash, MapActiveOutput(record.Pose, SourceTranslateYIdHash)));
+            targetSupportBone.Parameters.Add(RawInt(TargetTranslateZHash, MapActiveOutput(record.Pose, SourceTranslateZIdHash)));
             supportBoneList.Objects.Add(targetSupportBone);
         }
 
@@ -915,14 +1091,16 @@ public static class BphyssbBridge
             throw new InvalidDataException($"BPHHB driver index {driverIndex} is outside the BPHYSSB packing range.");
 
         // phhb and physsb use compact channel IDs in different contexts.
-        // Attribute 3 appears rarely in phhb and was observed feeding a
-        // translateX output, so fold it into the BotW X channel.
+        // Attributes 3-5 are translation X/Y/Z drivers. BPHYSSB stores the
+        // corresponding axis in the same three compact channels as rotation.
         var channel = sourceAttribute switch
         {
             0 => 2,
             1 => 0,
             2 => 1,
             3 => 0,
+            4 => 1,
+            5 => 2,
             _ => throw new InvalidDataException($"Unsupported BPHHB curve attribute {sourceAttribute}.")
         };
         return (driverIndex << 16) | channel;
@@ -963,26 +1141,53 @@ public static class BphyssbBridge
 
     private static void CopyCurveKeys(BotwAampWriter.AampObjectNode target, AampReadObject source)
     {
-        CopyParameter(target, source, SourceKey0Hash);
+        var keyCount = ReadOptionalInt(source, SourceKeyCountHash);
 
-        // BotW always evaluates exactly three vector keys. The matching Armor_008
-        // sidecars show TotK's four-key form is packed as key0, a bridge key, then
-        // key3: bridge.xyz comes from TotK key1 and bridge.w from TotK key3.z.
-        // Do not apply this to other counts until another native pair confirms it.
-        if (ReadOptionalInt(source, SourceKeyCountHash) == 4 &&
+        // BotW stores three curve keys. TotK's four-key form folds its inner
+        // tangents into the middle BotW key, as confirmed by native matches.
+        if (keyCount == 4 &&
+            source.Find(SourceKey0Hash) is { } key0 &&
             source.Find(SourceKey1Hash) is { } key1 &&
             source.Find(SourceKey3Hash) is { } key3)
         {
             var first = key1.AsVector4();
             var terminal = key3.AsVector4();
+            target.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(SourceKey0Hash, key0.Type, key0.Bytes));
             target.Parameters.Add(RawVector4(SourceKey1Hash, new Vector4(first.X, first.Y, first.Z, terminal.Z)));
             target.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(SourceKey2Hash, key3.Type, key3.Bytes));
             return;
         }
 
+        // Extend TotK's clamped two-key curves with a flat key on the missing
+        // side instead of synthesizing a duplicate zero-valued endpoint.
+        if (keyCount == 2 &&
+            source.Find(SourceKey0Hash) is { } twoKey0 &&
+            source.Find(SourceKey1Hash) is { } twoKey1)
+        {
+            var first = twoKey0.AsVector4();
+            var second = twoKey1.AsVector4();
+            const float epsilon = 1e-5f;
+            var span = MathF.Max(MathF.Abs(second.X - first.X), 1e-3f);
+            if (MathF.Abs(first.X) <= epsilon && second.X > epsilon)
+            {
+                target.Parameters.Add(RawVector4(SourceKey0Hash, new Vector4(first.X - span, first.Y, 0f, 0f)));
+                target.Parameters.Add(RawVector4(SourceKey1Hash, new Vector4(first.X, first.Y, 0f, first.W)));
+                target.Parameters.Add(RawVector4(SourceKey2Hash, second));
+            }
+            else
+            {
+                target.Parameters.Add(RawVector4(SourceKey0Hash, first));
+                target.Parameters.Add(RawVector4(SourceKey1Hash, new Vector4(second.X, second.Y, second.Z, 0f)));
+                target.Parameters.Add(RawVector4(SourceKey2Hash, new Vector4(second.X + span, second.Y, 0f, 0f)));
+            }
+            return;
+        }
+
+        CopyParameter(target, source, SourceKey0Hash);
         CopyParameter(target, source, SourceKey1Hash);
         CopyOptionalCurveKey(target, source, SourceKey2Hash);
     }
+
     private static void CopyOptionalCurveKey(BotwAampWriter.AampObjectNode target, AampReadObject source, uint sourceHash)
     {
         if (source.Find(sourceHash) is { } parameter)

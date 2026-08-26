@@ -84,7 +84,19 @@ public sealed record NativeBphclClothState(
     IReadOnlyList<int> OperatorItemIndices,
     IReadOnlyList<NativeBphclClothStateBufferAccess> BufferAccesses,
     IReadOnlyList<NativeBphclClothStateTransformSetAccess> TransformSetAccesses,
-    IReadOnlyList<int> SimClothItemIndices);
+    IReadOnlyList<int> SimClothItemIndices,
+    NativeBphclStateDependencyGraph? DependencyGraph = null);
+
+public sealed record NativeBphclStateDependencyGraph(
+    IReadOnlyList<NativeBphclStateDependencyBranch> Branches,
+    IReadOnlyList<int> RootBranchIds,
+    IReadOnlyList<IReadOnlyList<int>> Children,
+    IReadOnlyList<IReadOnlyList<int>> Parents,
+    bool HasCycles);
+
+public sealed record NativeBphclStateDependencyBranch(
+    int BranchId,
+    IReadOnlyList<int> OperatorIndices);
 
 // hclClothState stores these inline, not as references to buffer objects.
 // Preserve the actual access flags and shadow buffer: they control which
@@ -147,6 +159,7 @@ public sealed record NativeBphclOperatorLayout(
     int ItemIndex,
     uint DataOffset,
     string ClassName,
+    string Name,
     int? InputBufferIndex,
     int? OutputBufferIndex,
     int? TransformSetIndex,
@@ -157,7 +170,8 @@ public sealed record NativeBphclOperatorLayout(
     IReadOnlyList<NativeBphclVertexParticlePair> VertexParticlePairs,
     int? SimulationClothIndex,
     int? ReferenceBufferIndex,
-    IReadOnlyList<NativeBphclSimulateConfig> SimulateConfigs);
+    IReadOnlyList<NativeBphclSimulateConfig> SimulateConfigs,
+    IReadOnlyList<NativeBphclClothStateTransformSetAccess> TransformSetAccesses);
 
 public sealed record NativeBphclVertexParticlePair(ushort VertexIndex, ushort ParticleIndex);
 
@@ -348,11 +362,26 @@ public sealed record NativeBphclConstraintSet(
     IReadOnlyList<NativeBphclConstraintLink> LocalConstraints,
     IReadOnlyList<NativeBphclConstraintLink> LocalStiffnessConstraints,
     IReadOnlyList<NativeBphclConstraintLink> TransitionParticles,
+    IReadOnlyList<NativeBphclVolumeConstraintFrameData> VolumeFrameData,
+    IReadOnlyList<NativeBphclVolumeConstraintApplyData> VolumeApplyData,
     IReadOnlyDictionary<string, double> Values)
 {
     public int LinkCount => Links.Count;
-    public int RecordCount => Links.Count + LocalConstraints.Count + LocalStiffnessConstraints.Count + TransitionParticles.Count;
+    public int RecordCount => Links.Count + LocalConstraints.Count + LocalStiffnessConstraints.Count +
+        TransitionParticles.Count + VolumeFrameData.Count + VolumeApplyData.Count;
 }
+
+public sealed record NativeBphclVolumeConstraintFrameData(
+    int Index,
+    Vector4 FrameVector,
+    int ParticleIndex,
+    float Weight);
+
+public sealed record NativeBphclVolumeConstraintApplyData(
+    int Index,
+    Vector4 FrameVector,
+    int ParticleIndex,
+    float Stiffness);
 
 public sealed record NativeBphclConstraintLink(
     int Index,

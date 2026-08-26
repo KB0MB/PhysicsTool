@@ -37,13 +37,20 @@ internal static class BphclSchemaAudit
                 }
 
                 var actualElementType = document.GetItem(storageItemIndex).TypeIndex;
-                if (actualElementType == expectedElementType.Value)
+                var expectedElementName = NativeBphclReflectionCatalog.GetTypeName(expectedElementType.Value);
+                var actualElementName = document.GetTypeName(actualElementType);
+                if (actualElementType == expectedElementType.Value ||
+                    string.Equals(actualElementName, expectedElementName, StringComparison.Ordinal))
+                {
+                    // Retail TYPE tables may contain equivalent aliases for the
+                    // same reflected array element class at different indices.
                     continue;
+                }
 
                 findings.Add(
                     $"ITEM {itemIndex} {typeName}.{member.Name}: expected " +
-                    $"{expectedElementType.Value}:{NativeBphclReflectionCatalog.GetTypeName(expectedElementType.Value)}, " +
-                    $"got {actualElementType}:{document.GetTypeName(actualElementType)} (storage ITEM {storageItemIndex}).");
+                    $"{expectedElementType.Value}:{expectedElementName}, " +
+                    $"got {actualElementType}:{actualElementName} (storage ITEM {storageItemIndex}).");
             }
         }
 
@@ -54,7 +61,33 @@ internal static class BphclSchemaAudit
     {
         var findings = new List<string>();
         var ranges = document.GetItemRanges();
-        var arrayType = NativeBphclReflectionCatalog.GetTypeIndex("hkArray");
+        var arrayTypes = document.TypeNames
+            .Select((name, index) => (name, index))
+            .Where(entry => string.Equals(entry.name, "hkArray", StringComparison.Ordinal))
+            .Select(entry => checked((uint)entry.index))
+            .ToHashSet();
+
+        uint? GetMemberTypeIndex(uint ownerTypeIndex, uint memberOffset)
+        {
+            var visited = new HashSet<uint>();
+            var currentTypeIndex = ownerTypeIndex;
+            while (currentTypeIndex != 0 && visited.Add(currentTypeIndex))
+            {
+                var definition = document.TypeDefinitions.FirstOrDefault(
+                    candidate => candidate.TypeIndex == currentTypeIndex);
+                if (definition is null)
+                    return null;
+
+                var member = definition.Members.FirstOrDefault(
+                    candidate => candidate.Offset == memberOffset);
+                if (member is not null)
+                    return member.TypeIndex;
+
+                currentTypeIndex = definition.ParentTypeIndex;
+            }
+
+            return null;
+        }
 
         foreach (var patch in document.InternalPatches)
         {
@@ -62,10 +95,10 @@ internal static class BphclSchemaAudit
             {
                 if (offset == 0)
                 {
-                    if (patch.TypeIndex != arrayType)
+                    if (!arrayTypes.Contains(patch.TypeIndex))
                     {
                         findings.Add(
-                            $"DATA+0x000000 root variants: expected {arrayType}:hkArray, " +
+                            "DATA+0x000000 root variants: expected a file-local hkArray type, " +
                             $"got {patch.TypeIndex}:{document.GetTypeName(patch.TypeIndex)}.");
                     }
                     continue;
@@ -76,14 +109,13 @@ internal static class BphclSchemaAudit
                     .Select(entry =>
                     {
                         var item = document.GetItem(entry.Key);
-                        var typeSize = NativeBphclReflectionCatalog.GetTypeSize(item.TypeIndex);
+                        var typeSize = document.TypeDefinitions.FirstOrDefault(
+                            candidate => candidate.TypeIndex == item.TypeIndex)?.Size ?? 0;
                         if (typeSize == 0 || offset < item.DataOffset)
                             return (ItemIndex: entry.Key, ExpectedType: (uint?)null);
 
                         var relative = offset - item.DataOffset;
-                        var expected = NativeBphclReflectionCatalog.GetMemberTypeIndex(
-                            item.TypeIndex,
-                            relative % typeSize);
+                        var expected = GetMemberTypeIndex(item.TypeIndex, relative % typeSize);
                         return (ItemIndex: entry.Key, ExpectedType: expected);
                     })
                     .Where(candidate => candidate.ExpectedType.HasValue)
@@ -98,7 +130,7 @@ internal static class BphclSchemaAudit
                 var labels = string.Join(
                     ", ",
                     candidates.Select(candidate =>
-                        $"ITEM {candidate.ItemIndex} expects {candidate.ExpectedType}:{NativeBphclReflectionCatalog.GetTypeName(candidate.ExpectedType!.Value)}"));
+                        $"ITEM {candidate.ItemIndex} expects {candidate.ExpectedType}:{document.GetTypeName(candidate.ExpectedType!.Value)}"));
                 findings.Add(
                     $"DATA+0x{offset:X}: PTCH says {patch.TypeIndex}:{document.GetTypeName(patch.TypeIndex)}, " +
                     labels + ".");

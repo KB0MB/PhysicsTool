@@ -134,15 +134,45 @@ public static class NativeBphclWriter
 
     public static void SaveWithoutCloth(NativeBphclDocument target, int clothIndex, string outputPath)
     {
-        var deleted = NativeBphclMerge.DeleteCloth(target, clothIndex);
-        // Re-open the logical deletion before compaction so root arrays, AAMP
-        // metadata, and collider pruning all participate in the live closure.
-        // Compact keeps the implicit hkRootLevelContainer at DATA+0 / ITEM 1.
-        var compacted = NativeBphclCompactor.Compact(NativeBphclDocument.Parse(deleted));
-        _ = NativeBphclDocument.Parse(compacted);
-        File.WriteAllBytes(outputPath, compacted);
+        File.WriteAllBytes(outputPath, DeleteClothAndCompact(target, clothIndex));
     }
 
+    public static byte[] DeleteClothAndCompact(NativeBphclDocument target, int clothIndex)
+    {
+        if ((uint)clothIndex >= (uint)target.Cloths.Count)
+            throw new ArgumentOutOfRangeException(nameof(clothIndex));
+
+        var expectedClothCount = target.Cloths.Count - 1;
+        var expectedSkeletonCount = target.Skeletons.Count -
+            (clothIndex < target.Skeletons.Count ? 1 : 0);
+        var deletedName = target.Cloths[clothIndex].Name;
+
+        var logicallyDeleted = NativeBphclMerge.DeleteCloth(target, clothIndex);
+        var compacted = NativeBphclCompactor.Compact(NativeBphclDocument.Parse(logicallyDeleted));
+        var result = NativeBphclDocument.Parse(compacted);
+
+        if (result.Cloths.Count != expectedClothCount)
+            throw new InvalidDataException(
+                $"BPHCL deletion produced {result.Cloths.Count} cloths; expected {expectedClothCount}.");
+        if (result.Skeletons.Count != expectedSkeletonCount)
+            throw new InvalidDataException(
+                $"BPHCL deletion produced {result.Skeletons.Count} skeletons; expected {expectedSkeletonCount}.");
+        if (result.Aamp.IsReadable && result.Aamp.ClothEntries.Any(entry =>
+                string.Equals(entry.Name, deletedName, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException(
+                $"BPHCL deletion left the removed cloth '{deletedName}' registered in AAMP metadata.");
+        }
+
+        var referencedColliders = result.Cloths
+            .SelectMany(cloth => cloth.SimCloths)
+            .SelectMany(simulation => simulation.CollidableItemIndices)
+            .ToHashSet();
+        if (result.Colliders.Any(collider => !referencedColliders.Contains(collider.ItemIndex)))
+            throw new InvalidDataException("BPHCL deletion left unreferenced colliders in the active collider array.");
+
+        return compacted;
+    }
     // Optional cleanup pass used only after a delete/merge has been
     // validated. It trims live collider references and AAMP metadata without
     // relocating arbitrary DATA allocations.

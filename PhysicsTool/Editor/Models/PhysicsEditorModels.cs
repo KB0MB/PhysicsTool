@@ -57,6 +57,7 @@ public sealed class ParticleRelationshipRow
     public float? Stiffness { get; set; }
     public float? BendStiffness { get; set; }
     public float? StretchStiffness { get; set; }
+    public float? CompressionLength { get; set; }
     public float? MaximumDistance { get; set; }
 
     public bool IsEditable => ConstraintSetIndex >= 0 && (LinkIndex >= 0 || LocalConstraintIndex >= 0);
@@ -138,7 +139,9 @@ public sealed record LocalRangeConstraintData(
     int ReferenceVertex,
     float ShapeRadius,
     float MaxNormalDistance,
-    float MinNormalDistance);
+    float MinNormalDistance,
+    string RecordTypeName = "hclLocalRangeConstraintSet::LocalConstraint",
+    float? RecordStiffness = null);
 
 // Bone planes constrain individual particles against a plane expressed in a
 // cloth transform-set bone's local space. They are neither links nor ranges,
@@ -251,7 +254,9 @@ public sealed record ClothOperatorData(
     IReadOnlyList<ClothVertexParticlePairData> VertexParticlePairs,
     int? SimulationClothIndex,
     int? ReferenceBufferIndex,
-    IReadOnlyList<ClothSimulateConfigData> SimulateConfigs);
+    IReadOnlyList<ClothSimulateConfigData> SimulateConfigs,
+    IReadOnlyList<ClothStateTransformSetAccessData>? OperatorTransformSetAccesses = null,
+    string? Name = null);
 
 public sealed record ClothVertexParticlePairData(ushort VertexIndex, ushort ParticleIndex);
 
