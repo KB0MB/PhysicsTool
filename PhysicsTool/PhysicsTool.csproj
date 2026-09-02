@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="NativeFbx\PhysicsToolFbxBridge.dll" CopyToOutputDirectory="PreserveNewest" TargetPath="PhysicsToolFbxBridge.dll" />
+    <None Update="Resources\VisualModel\*.png" CopyToOutputDirectory="PreserveNewest" TargetPath="Resources\VisualModel\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclTypeCatalog.bin" />
     <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclGameReadyTypeCatalog.bin" />
   </ItemGroup>

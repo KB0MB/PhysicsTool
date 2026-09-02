@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -119,6 +119,8 @@ public sealed class ViewportCameraState
 
 public sealed class ParticlePreviewControl : GLControl
 {
+    private const float DefaultYaw = -2.5915927f;
+    private const float DefaultPitch = -0.35f;
     private enum ParticleTransformMode
     {
         None,
@@ -144,6 +146,9 @@ public sealed class ParticlePreviewControl : GLControl
     public event EventHandler? ParticleMoveCanceled;
 
     private ParticlePreviewData? _data;
+    private readonly Dictionary<int, SysVec3> _physicsBindParticles = new();
+    private readonly Dictionary<int, SimulatedBonePreviewPose> _physicsBindBones = new();
+    private readonly Dictionary<int, ColliderPreviewShape> _physicsBindColliders = new();
     private Point _lastMouse;
     private Point _mouseDown;
     private bool _rotating;
@@ -158,8 +163,8 @@ public sealed class ParticlePreviewControl : GLControl
     private bool _colliderRadiusScale;
     private Rectangle _selectionRectangle;
     private readonly HashSet<int> _selectedParticleIndices = new();
-    private float _yaw = -0.55f;
-    private float _pitch = 0.35f;
+    private float _yaw = DefaultYaw;
+    private float _pitch = DefaultPitch;
     private float _orthoHeight = 1.0f;
     private Vector3 _target = Vector3.Zero;
     private Vector3 _baseCenter = Vector3.Zero;
@@ -177,8 +182,61 @@ public sealed class ParticlePreviewControl : GLControl
     private int _uColor;
     private int _uPointSize;
     private int _uRoundPoints;
+    private VisualModelData? _visualModel;
+    private VisualModelDisplaySettings _visualModelSettings = new();
+    private readonly List<VisualModelGpuMesh> _visualModelGpuMeshes = new();
+    private int _visualModelProgram;
+    private int _visualModelMvpLocation;
+    private int _visualModelModelLocation;
+    private int _visualModelColorLocation;
+    private int _visualModelTextureLocation;
+    private int _visualModelUseTextureLocation;
+    private int _visualModelSpecularTextureLocation;
+    private int _visualModelUseSpecularTextureLocation;
+    private int _visualModelNormalTextureLocation;
+    private int _visualModelUseNormalTextureLocation;
+    private int _visualModelAmbientOcclusionTextureLocation;
+    private int _visualModelUseAmbientOcclusionTextureLocation;
+    private int _visualModelAuxiliaryTextureLocation;
+    private int _visualModelUseAuxiliaryTextureLocation;
+    private int _visualModelEyeGlintTextureLocation;
+    private int _visualModelUseEyeGlintTextureLocation;
+    private int _visualModelAlphaModeLocation;
+    private int _visualModelShaderModelLocation;
+    private int _visualModelAuxiliaryStrengthLocation;
+    private int _visualModelEyeGlintStrengthLocation;
+    private int _visualModelMetalChannelLocation;
+    private int _visualModelSmoothnessChannelLocation;
+    private int _visualModelMetalScaleLocation;
+    private int _visualModelSmoothnessScaleLocation;
+    private int _visualModelNormalStrengthLocation;
+    private int _visualModelAmbientOcclusionStrengthLocation;
+    private int _visualModelOpacityLocation;
+    private int _visualModelKeyLightLocation;
+    private int _visualModelFillLightLocation;
+    private int _visualModelViewDirectionLocation;
+    private bool _visualModelGpuDirty;
     private readonly ContextMenuStrip _viewportMenu;
     private bool _mirrorModeEnabled;
+    private bool _physicsOverlayVisible = true;
+
+    private sealed class VisualModelGpuMesh
+    {
+        public int VertexArray { get; init; }
+        public int VertexBuffer { get; init; }
+        public int IndexBuffer { get; init; }
+        public int Texture { get; init; }
+        public int SpecularTexture { get; init; }
+        public int NormalTexture { get; init; }
+        public int AmbientOcclusionTexture { get; init; }
+        public int AuxiliaryTexture { get; init; }
+        public int EyeGlintTexture { get; init; }
+        public VisualModelAlphaMode AlphaMode { get; init; }
+        public VisualModelMaterialSettings Material { get; init; } = new();
+        public int IndexCount { get; init; }
+        public Vector4 BaseColor { get; init; }
+        public VisualModelCullingMode CullingMode { get; init; }
+    }
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -215,6 +273,165 @@ public sealed class ParticlePreviewControl : GLControl
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public SysVec3 ViewRoot => new(_viewRoot.X, _viewRoot.Y, _viewRoot.Z);
 
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool HasVisualModel => _visualModel != null;
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool PhysicsOverlayVisible
+    {
+        get => _physicsOverlayVisible;
+        set
+        {
+            if (_physicsOverlayVisible == value)
+                return;
+
+            _physicsOverlayVisible = value;
+            Invalidate();
+        }
+    }
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string? VisualModelPath => _visualModel?.SourcePath;
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public VisualModelData? VisualModel => _visualModel;
+
+    public VisualModelDisplaySettings GetVisualModelDisplaySettings() => _visualModelSettings.Clone();
+
+    public void RefreshVisualModelMaterials()
+    {
+        if (_glReady)
+        {
+            MakeCurrent();
+            ReleaseVisualModelGpu();
+        }
+        else
+        {
+            _visualModelGpuMeshes.Clear();
+        }
+
+        _visualModelGpuDirty = _visualModel != null;
+        Invalidate();
+    }
+
+    public void SetVisualModel(VisualModelData? model, bool resetCamera = true)
+    {
+        if (_glReady)
+        {
+            MakeCurrent();
+            ReleaseVisualModelGpu();
+        }
+        else
+        {
+            _visualModelGpuMeshes.Clear();
+        }
+
+        _visualModel = model;
+        _visualModelGpuDirty = model != null;
+        _visualModelSettings = new VisualModelDisplaySettings();
+        if (resetCamera)
+            ResetCameraToData();
+        else
+            UpdateSceneBounds(updateGrid: false, adjustCameraForGrowth: false);
+        Invalidate();
+    }
+
+    public void SetVisualModelPose(VisualModelData model)
+    {
+        if (_visualModel == null ||
+            _visualModelGpuMeshes.Count != model.Meshes.Count ||
+            _visualModelGpuMeshes.Where((gpu, index) =>
+                gpu.IndexCount != model.Meshes[index].Indices.Length).Any())
+        {
+            SetVisualModel(model, resetCamera: false);
+            return;
+        }
+
+        _visualModel = model;
+        if (_glReady)
+        {
+            MakeCurrent();
+            for (var index = 0; index < model.Meshes.Count; index++)
+            {
+                var vertices = BuildVisualModelGpuVertices(model.Meshes[index]);
+                GL.BindBuffer(BufferTarget.ArrayBuffer, _visualModelGpuMeshes[index].VertexBuffer);
+                GL.BufferData(
+                    BufferTarget.ArrayBuffer,
+                    vertices.Length * sizeof(float),
+                    vertices,
+                    BufferUsageHint.DynamicDraw);
+            }
+            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+        }
+
+        UpdateSceneBounds(updateGrid: false, adjustCameraForGrowth: false);
+        Invalidate();
+    }
+    public void ApplyBonePreviewPoses(IEnumerable<SidecarBonePreviewPose> poses)
+    {
+        if (_data == null)
+            return;
+
+        var byName = poses
+            .GroupBy(pose => NormalizeVisualBoneName(pose.Name), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
+        if (byName.Count == 0)
+            return;
+
+        var scale = Math.Max(0.0001f, _visualModelSettings.UniformScale);
+        var rotation = _visualModelSettings.RotationDegrees;
+        var model = SysMat4.CreateScale(
+                _visualModelSettings.MirrorX ? scale : -scale,
+                scale,
+                scale)
+            * SysMat4.CreateRotationX(MathHelper.DegreesToRadians(rotation.X))
+            * SysMat4.CreateRotationY(MathHelper.DegreesToRadians(rotation.Y))
+            * SysMat4.CreateRotationZ(MathHelper.DegreesToRadians(rotation.Z))
+            * SysMat4.CreateTranslation(_visualModelSettings.Offset);
+
+        foreach (var previewBone in _data.Bones)
+        {
+            if (!byName.TryGetValue(NormalizeVisualBoneName(previewBone.Name), out var pose))
+                continue;
+            previewBone.Position = SysVec3.Transform(pose.Position, model);
+            previewBone.AxisX = NormalizeOrDefault(
+                SysVec3.TransformNormal(SysVec3.Transform(SysVec3.UnitX, pose.Rotation), model),
+                SysVec3.UnitX);
+            previewBone.AxisY = NormalizeOrDefault(
+                SysVec3.TransformNormal(SysVec3.Transform(SysVec3.UnitY, pose.Rotation), model),
+                SysVec3.UnitY);
+            previewBone.AxisZ = NormalizeOrDefault(
+                SysVec3.TransformNormal(SysVec3.Transform(SysVec3.UnitZ, pose.Rotation), model),
+                SysVec3.UnitZ);
+        }
+
+        Invalidate();
+    }
+
+    private static string NormalizeVisualBoneName(string name)
+    {
+        var result = name ?? string.Empty;
+        var pipe = result.LastIndexOf('|');
+        if (pipe >= 0)
+            result = result[(pipe + 1)..];
+        var colon = result.LastIndexOf(':');
+        return colon >= 0 ? result[(colon + 1)..] : result;
+    }
+    public void ClearVisualModel() => SetVisualModel(null, resetCamera: false);
+
+    public void SetVisualModelDisplaySettings(VisualModelDisplaySettings settings, bool fitCamera = false)
+    {
+        _visualModelSettings = settings.Clone();
+        if (fitCamera)
+            ResetCameraToData();
+        else
+            UpdateSceneBounds(updateGrid: false, adjustCameraForGrowth: false);
+        Invalidate();
+    }
     public ViewportCameraState CaptureCameraState()
     {
         return new ViewportCameraState
@@ -260,6 +477,27 @@ public sealed class ParticlePreviewControl : GLControl
     {
         var hadSceneData = _data != null;
         _data = data;
+        _physicsBindParticles.Clear();
+        _physicsBindBones.Clear();
+        _physicsBindColliders.Clear();
+        if (data != null)
+        {
+            foreach (var particle in data.Particles)
+                _physicsBindParticles[particle.Index] = particle.Position;
+            foreach (var bone in data.Bones)
+            {
+                _physicsBindBones[bone.Index] = new SimulatedBonePreviewPose
+                {
+                    Position = bone.Position,
+                    AxisX = bone.AxisX,
+                    AxisY = bone.AxisY,
+                    AxisZ = bone.AxisZ,
+                    StretchScale = bone.StretchScale
+                };
+            }
+            foreach (var collider in data.Colliders)
+                _physicsBindColliders[collider.Index] = CloneCollider(collider);
+        }
         if (resetCamera || data == null)
             ResetCameraToData();
         else
@@ -334,7 +572,8 @@ public sealed class ParticlePreviewControl : GLControl
 
     public void UpdateSimulatedPose(
         IReadOnlyDictionary<int, SysVec3> particlePositions,
-        IReadOnlyDictionary<int, SimulatedBonePreviewPose> bonePoses)
+        IReadOnlyDictionary<int, SimulatedBonePreviewPose> bonePoses,
+        IReadOnlyDictionary<int, ColliderPreviewShape>? colliderPoses = null)
     {
         if (_data == null)
             return;
@@ -357,7 +596,261 @@ public sealed class ParticlePreviewControl : GLControl
             bone.StretchScale = pose.StretchScale;
         }
 
+        if (colliderPoses != null)
+        {
+            foreach (var collider in _data.Colliders)
+            {
+                if (colliderPoses.TryGetValue(collider.Index, out var pose))
+                    CopyColliderPose(collider, pose);
+            }
+        }
+
         Invalidate();
+    }
+
+    public void UpdateAnimatedPhysicsPose(
+        IReadOnlyDictionary<int, SysMat4> boneDeltas,
+        IReadOnlySet<int> clothDrivenBoneIndices,
+        IReadOnlySet<int>? particleAnimationExclusions = null)
+    {
+        if (_data == null)
+            return;
+
+        var bonesByIndex = _data.Bones
+            .GroupBy(bone => bone.Index)
+            .ToDictionary(group => group.Key, group => group.First());
+        var resolvedWorld = new Dictionary<int, SysMat4>();
+        var resolving = new HashSet<int>();
+
+        SysMat4 GetBindWorld(int boneIndex)
+        {
+            if (!_physicsBindBones.TryGetValue(boneIndex, out var bind))
+                return SysMat4.Identity;
+            return new SysMat4(
+                bind.AxisX.X, bind.AxisX.Y, bind.AxisX.Z, 0.0f,
+                bind.AxisY.X, bind.AxisY.Y, bind.AxisY.Z, 0.0f,
+                bind.AxisZ.X, bind.AxisZ.Y, bind.AxisZ.Z, 0.0f,
+                bind.Position.X, bind.Position.Y, bind.Position.Z, 1.0f);
+        }
+
+        SysMat4 ResolveWorld(int boneIndex)
+        {
+            if (resolvedWorld.TryGetValue(boneIndex, out var resolved))
+                return resolved;
+
+            var bindWorld = GetBindWorld(boneIndex);
+            if (!resolving.Add(boneIndex))
+                return bindWorld;
+
+            try
+            {
+                // Body and attachment bones consume their animation track.
+                // Cloth output bones deliberately ignore theirs, but retain
+                // their bind-local transform beneath the resolved parent.
+                if (!clothDrivenBoneIndices.Contains(boneIndex) &&
+                    boneDeltas.TryGetValue(boneIndex, out var animatedDelta))
+                {
+                    resolved = bindWorld * animatedDelta;
+                }
+                else if (bonesByIndex.TryGetValue(boneIndex, out var bone) &&
+                         bone.ParentIndex >= 0 &&
+                         _physicsBindBones.ContainsKey(bone.ParentIndex) &&
+                         SysMat4.Invert(GetBindWorld(bone.ParentIndex), out var inverseParentBind))
+                {
+                    var bindLocal = bindWorld * inverseParentBind;
+                    resolved = bindLocal * ResolveWorld(bone.ParentIndex);
+                }
+                else
+                {
+                    resolved = bindWorld;
+                }
+
+                resolvedWorld[boneIndex] = resolved;
+                return resolved;
+            }
+            finally
+            {
+                resolving.Remove(boneIndex);
+            }
+        }
+
+        var particleResolvedWorld = new Dictionary<int, SysMat4>();
+        var particleResolving = new HashSet<int>();
+        var particleExclusions = particleAnimationExclusions ?? clothDrivenBoneIndices;
+        SysMat4 ResolveParticleWorld(int boneIndex)
+        {
+            if (particleResolvedWorld.TryGetValue(boneIndex, out var resolved))
+                return resolved;
+            var bindWorld = GetBindWorld(boneIndex);
+            if (!particleResolving.Add(boneIndex))
+                return bindWorld;
+
+            try
+            {
+                if (!particleExclusions.Contains(boneIndex) &&
+                    boneDeltas.TryGetValue(boneIndex, out var animatedDelta))
+                {
+                    resolved = bindWorld * animatedDelta;
+                }
+                else if (bonesByIndex.TryGetValue(boneIndex, out var bone) &&
+                         bone.ParentIndex >= 0 &&
+                         _physicsBindBones.ContainsKey(bone.ParentIndex) &&
+                         SysMat4.Invert(GetBindWorld(bone.ParentIndex), out var inverseParentBind))
+                {
+                    resolved = bindWorld * inverseParentBind * ResolveParticleWorld(bone.ParentIndex);
+                }
+                else
+                {
+                    resolved = bindWorld;
+                }
+
+                particleResolvedWorld[boneIndex] = resolved;
+                return resolved;
+            }
+            finally
+            {
+                particleResolving.Remove(boneIndex);
+            }
+        }
+
+        foreach (var bone in _data.Bones)
+        {
+            if (!_physicsBindBones.TryGetValue(bone.Index, out var bind))
+                continue;
+
+            var world = ResolveWorld(bone.Index);
+            bone.Position = new SysVec3(world.M41, world.M42, world.M43);
+            bone.AxisX = NormalizeOrDefault(new SysVec3(world.M11, world.M12, world.M13), bind.AxisX);
+            bone.AxisY = NormalizeOrDefault(new SysVec3(world.M21, world.M22, world.M23), bind.AxisY);
+            bone.AxisZ = NormalizeOrDefault(new SysVec3(world.M31, world.M32, world.M33), bind.AxisZ);
+            bone.StretchScale = bind.StretchScale;
+        }
+
+        var attachmentsByParticle = _data.ParticleAttachments
+            .Where(attachment => attachment.BoneWeights.Count > 0)
+            .GroupBy(attachment => attachment.ParticleIndex)
+            .ToDictionary(group => group.Key, group => group.Last().BoneWeights);
+        var weightedAnchors = attachmentsByParticle
+            .Where(entry => _physicsBindParticles.ContainsKey(entry.Key))
+            .Select(entry => (
+                BindPosition: _physicsBindParticles[entry.Key],
+                Attachments: (IReadOnlyList<ParticlePreviewBoneWeight>)entry.Value))
+            .ToArray();
+
+        bool TryTransformParticlePoint(
+            SysVec3 bindPosition,
+            IReadOnlyList<ParticlePreviewBoneWeight> attachments,
+            out SysVec3 transformed)
+        {
+            transformed = SysVec3.Zero;
+            var totalWeight = 0.0f;
+            foreach (var attachment in attachments)
+            {
+                var weight = Math.Max(0.0f, attachment.Weight);
+                if (weight <= 0.0f ||
+                    !_physicsBindBones.ContainsKey(attachment.BoneIndex) ||
+                    !SysMat4.Invert(GetBindWorld(attachment.BoneIndex), out var inverseBindBone))
+                {
+                    continue;
+                }
+
+                var delta = inverseBindBone * ResolveParticleWorld(attachment.BoneIndex);
+                transformed += SysVec3.Transform(bindPosition, delta) * weight;
+                totalWeight += weight;
+            }
+            if (totalWeight <= 0.000001f)
+                return false;
+            transformed /= totalWeight;
+            return true;
+        }
+
+        foreach (var particle in _data.Particles)
+        {
+            if (!_physicsBindParticles.TryGetValue(particle.Index, out var bindPosition))
+                continue;
+            if (attachmentsByParticle.TryGetValue(particle.Index, out var attachments) &&
+                TryTransformParticlePoint(bindPosition, attachments, out var attachedPosition))
+            {
+                particle.Position = attachedPosition;
+                continue;
+            }
+
+            // Dynamic vertices usually have no direct transform-set weights.
+            // In the stopped preview, carry their authored rest shape with a
+            // smooth blend of the nearest weighted/fixed anchor transforms.
+            var position = SysVec3.Zero;
+            var totalWeight = 0.0f;
+            foreach (var anchor in weightedAnchors
+                         .OrderBy(anchor => SysVec3.DistanceSquared(bindPosition, anchor.BindPosition))
+                         .Take(4))
+            {
+                if (!TryTransformParticlePoint(bindPosition, anchor.Attachments, out var anchorPosition))
+                    continue;
+                var distanceSquared = SysVec3.DistanceSquared(bindPosition, anchor.BindPosition);
+                var weight = 1.0f / Math.Max(0.000001f, distanceSquared);
+                position += anchorPosition * weight;
+                totalWeight += weight;
+            }
+            if (totalWeight > 0.000001f)
+            {
+                particle.Position = position / totalWeight;
+                continue;
+            }
+
+            if (_physicsBindBones.ContainsKey(_data.TransferMotionTransformIndex) &&
+                SysMat4.Invert(GetBindWorld(_data.TransferMotionTransformIndex), out var inverseTransferBind))
+            {
+                particle.Position = SysVec3.Transform(
+                    bindPosition,
+                    inverseTransferBind * ResolveParticleWorld(_data.TransferMotionTransformIndex));
+            }
+            else
+            {
+                particle.Position = bindPosition;
+            }
+        }
+
+        foreach (var collider in _data.Colliders)
+        {
+            if (!_physicsBindColliders.TryGetValue(collider.Index, out var bind))
+                continue;
+            var bindBoneWorld = GetBindWorld(bind.BoneIndex);
+            var delta = SysMat4.Invert(bindBoneWorld, out var inverseBindBone)
+                ? inverseBindBone * ResolveWorld(bind.BoneIndex)
+                : SysMat4.Identity;
+            collider.Start = SysVec3.Transform(bind.Start, delta);
+            collider.End = SysVec3.Transform(bind.End, delta);
+            collider.PlaneNormal = NormalizeOrDefault(
+                SysVec3.TransformNormal(bind.PlaneNormal, delta),
+                bind.PlaneNormal);
+            collider.Radius = bind.Radius;
+            collider.EndRadius = bind.EndRadius;
+        }
+
+        Invalidate();
+    }
+
+    private static ColliderPreviewShape CloneCollider(ColliderPreviewShape source) => new()
+    {
+        Index = source.Index,
+        CollisionBit = source.CollisionBit,
+        Name = source.Name,
+        BoneIndex = source.BoneIndex,
+        Start = source.Start,
+        End = source.End,
+        Radius = source.Radius,
+        EndRadius = source.EndRadius,
+        PlaneNormal = source.PlaneNormal,
+        Kind = source.Kind
+    };
+
+    private static void CopyColliderPose(ColliderPreviewShape target, ColliderPreviewShape source)
+    {
+        target.Start = source.Start;
+        target.End = source.End;
+        target.Radius = source.Radius;
+        target.EndRadius = source.EndRadius;
+        target.PlaneNormal = source.PlaneNormal;
     }
 
     public void UpdateSimulatedRagdollPose(
@@ -491,6 +984,7 @@ public sealed class ParticlePreviewControl : GLControl
             GL.Enable(EnableCap.ProgramPointSize);
 
             CreateShaderProgram();
+            CreateVisualModelShaderProgram();
             _vao = GL.GenVertexArray();
             _vbo = GL.GenBuffer();
             GL.BindVertexArray(_vao);
@@ -510,15 +1004,19 @@ public sealed class ParticlePreviewControl : GLControl
 
     protected override void Dispose(bool disposing)
     {
-        if (_glReady)
+        if (_glReady && !IsDisposed)
         {
             MakeCurrent();
+            ReleaseVisualModelGpu();
             if (_vbo != 0)
                 GL.DeleteBuffer(_vbo);
             if (_vao != 0)
                 GL.DeleteVertexArray(_vao);
             if (_program != 0)
                 GL.DeleteProgram(_program);
+            if (_visualModelProgram != 0)
+                GL.DeleteProgram(_visualModelProgram);
+            _glReady = false;
         }
 
         base.Dispose(disposing);
@@ -579,8 +1077,8 @@ public sealed class ParticlePreviewControl : GLControl
 
         if (_rotating)
         {
-            _yaw += dx * 0.01f;
-            _pitch = Math.Clamp(_pitch + dy * 0.01f, -1.45f, 1.45f);
+            _yaw -= dx * 0.01f;
+            _pitch = Math.Clamp(_pitch - dy * 0.01f, -1.45f, 1.45f);
         }
         else if (_panning)
         {
@@ -1038,16 +1536,20 @@ public sealed class ParticlePreviewControl : GLControl
 
             var mvp = GetMvp();
             DrawGridAndAxes(mvp);
-            DrawColliders(mvp);
-            DrawRagdollConstraints(mvp);
-
-            if (_data != null && (_data.Particles.Count > 0 || _data.Bones.Count > 0))
+            DrawVisualModel(mvp);
+            if (_physicsOverlayVisible)
             {
-                DrawTriangles(mvp);
-                DrawSkeleton(mvp);
-                DrawLinks(mvp);
-                DrawParticles(mvp);
-                DrawTransformAxis(mvp);
+                DrawColliders(mvp);
+                DrawRagdollConstraints(mvp);
+
+                if (_data != null && (_data.Particles.Count > 0 || _data.Bones.Count > 0))
+                {
+                    DrawTriangles(mvp);
+                    DrawSkeleton(mvp);
+                    DrawLinks(mvp);
+                    DrawParticles(mvp);
+                    DrawTransformAxis(mvp);
+                }
             }
 
             DrawSelectionRectangle();
@@ -1064,13 +1566,13 @@ public sealed class ParticlePreviewControl : GLControl
 
     private void ResetCameraToData()
     {
-        if (_data == null)
+        if (_data == null && _visualModel == null)
         {
             _baseCenter = Vector3.Zero;
             _viewRoot = Vector3.Zero;
             _target = Vector3.Zero;
-            _yaw = -0.55f;
-            _pitch = 0.35f;
+            _yaw = DefaultYaw;
+            _pitch = DefaultPitch;
             _sceneRadius = 0.5f;
             _orthoHeight = 1.0f;
             return;
@@ -1078,24 +1580,31 @@ public sealed class ParticlePreviewControl : GLControl
 
         UpdateSceneBounds();
         _target = _viewRoot;
-        _yaw = -0.55f;
-        _pitch = 0.35f;
+        _yaw = DefaultYaw;
+        _pitch = DefaultPitch;
         _orthoHeight = Math.Max(0.2f, _sceneRadius * 2.4f);
     }
 
-    private void UpdateSceneBounds(bool updateGrid = true)
+    private void UpdateSceneBounds(bool updateGrid = true, bool adjustCameraForGrowth = true)
     {
-        if (_data == null)
-            return;
-
         var previousRadius = _sceneRadius;
-        var points = _data.Particles.Select(p => ToGl(p.Position))
-            .Concat(_data.Bones.Select(b => ToGl(b.Position)))
-            .Concat(_data.Colliders.Select(c => ToGl(c.Start)))
-            .Concat(_data.Colliders.Select(c => ToGl(c.End)))
-            .Where(IsFinite)
-            .ToList();
+        var points = new List<Vector3>();
+        if (_data != null)
+        {
+            points.AddRange(_data.Particles.Select(p => ToGl(p.Position)));
+            points.AddRange(_data.Bones.Select(b => ToGl(b.Position)));
+            points.AddRange(_data.Colliders.Select(c => ToGl(c.Start)));
+            points.AddRange(_data.Colliders.Select(c => ToGl(c.End)));
+        }
 
+        if (_visualModel != null && _visualModelSettings.Visible)
+        {
+            var modelMatrix = GetVisualModelMatrix();
+            foreach (var corner in GetBoundsCorners(_visualModel.BoundsMinimum, _visualModel.BoundsMaximum))
+                points.Add(Vector3.TransformPosition(corner, modelMatrix));
+        }
+
+        points = points.Where(IsFinite).ToList();
         if (points.Count == 0)
             return;
 
@@ -1113,7 +1622,7 @@ public sealed class ParticlePreviewControl : GLControl
 
         // A large manual coordinate edit should remain visible instead of
         // leaving the camera framed around the old, much smaller scene.
-        if (_sceneRadius > previousRadius * 1.5f)
+        if (adjustCameraForGrowth && _sceneRadius > previousRadius * 1.5f)
             _orthoHeight = Math.Max(_orthoHeight, _sceneRadius * 2.4f);
     }
 
@@ -1359,6 +1868,9 @@ public sealed class ParticlePreviewControl : GLControl
 
     private void DrawGridAndAxes(Matrix4 mvp)
     {
+        // The grid and world axes share the scene depth buffer. A model may
+        // cover lines behind it, while lines physically in front remain visible.
+        GL.DepthMask(true);
         var gridVertices = new List<Vector3>();
         var gridY = _viewRoot.Y;
         // Limit line count for performance, but expand the spacing to preserve
@@ -1386,7 +1898,7 @@ public sealed class ParticlePreviewControl : GLControl
             mvp,
             2.2f,
             1.0f,
-            false);
+            true);
         DrawSingleColor(
             PrimitiveType.Lines,
             new[] { new Vector3(centerX, gridY, centerZ - axisExtent), new Vector3(centerX, gridY, centerZ + axisExtent) },
@@ -1394,7 +1906,7 @@ public sealed class ParticlePreviewControl : GLControl
             mvp,
             2.2f,
             1.0f,
-            false);
+            true);
         DrawSingleColor(
             PrimitiveType.Lines,
             new[] { new Vector3(centerX, gridY - axisExtent * 0.55f, centerZ), new Vector3(centerX, gridY + axisExtent * 0.55f, centerZ) },
@@ -1402,7 +1914,7 @@ public sealed class ParticlePreviewControl : GLControl
             mvp,
             2.2f,
             1.0f,
-            false);
+            true);
     }
 
     private void DrawSkeleton(Matrix4 mvp)
@@ -1778,6 +2290,1019 @@ public sealed class ParticlePreviewControl : GLControl
             DrawSingleColor(PrimitiveType.Points, selectedParticles, new Vector4(1.0f, 0.80f, 0.18f, 1.0f), mvp, 1.0f, 13.0f, false);
     }
 
+    private void DrawVisualModel(Matrix4 viewProjection)
+    {
+        if (_visualModel == null || !_visualModelSettings.Visible)
+            return;
+
+        EnsureVisualModelGpu();
+        if (_visualModelGpuMeshes.Count == 0)
+            return;
+
+        var model = GetVisualModelMatrix();
+        var mvp = model * viewProjection;
+        var opacity = Math.Clamp(_visualModelSettings.Opacity, 0.05f, 1.0f);
+        GL.Enable(EnableCap.DepthTest);
+        GL.DepthMask(true);
+        GL.DepthFunc(DepthFunction.Less);
+        GL.Disable(EnableCap.Blend);
+        GL.CullFace(CullFaceMode.Back);
+        GL.PolygonMode(MaterialFace.FrontAndBack, _visualModelSettings.Wireframe ? PolygonMode.Line : PolygonMode.Fill);
+        GL.UseProgram(_visualModelProgram);
+        GL.UniformMatrix4(_visualModelMvpLocation, false, ref mvp);
+        GL.UniformMatrix4(_visualModelModelLocation, false, ref model);
+        GL.Uniform1(_visualModelOpacityLocation, opacity);
+        GL.Uniform1(_visualModelTextureLocation, 0);
+        GL.Uniform1(_visualModelSpecularTextureLocation, 1);
+        GL.Uniform1(_visualModelNormalTextureLocation, 2);
+        GL.Uniform1(_visualModelAmbientOcclusionTextureLocation, 3);
+        GL.Uniform1(_visualModelAuxiliaryTextureLocation, 4);
+        GL.Uniform1(_visualModelEyeGlintTextureLocation, 5);
+        var (forward, right, up) = GetCameraBasis();
+        var worldKey = Vector3.Normalize(new Vector3(0.35f, 0.80f, 0.45f));
+        var studioKey = Vector3.Normalize(-forward * 0.62f + right * 0.34f + up * 0.70f);
+        var keyLight = Vector3.Normalize(worldKey * 0.28f + studioKey * 0.72f);
+        var fillLight = Vector3.Normalize(-forward * 0.45f - right * 0.72f + up * 0.22f);
+        GL.Uniform3(_visualModelKeyLightLocation, keyLight);
+        GL.Uniform3(_visualModelFillLightLocation, fillLight);
+        // The viewport projection is orthographic, so every fragment shares
+        // one surface-to-camera direction. Using a perspective-style vector
+        // from a synthetic camera position bends facing and rim masks across
+        // large meshes.
+        GL.Uniform3(_visualModelViewDirectionLocation, -forward);
+
+        // Populate depth for the complete model first. The color pass can then
+        // blend the model as one visible shell instead of exposing later meshes
+        // through hair, clothing, and other outer surfaces.
+        GL.ColorMask(false, false, false, false);
+        DrawVisualModelMeshes();
+
+        GL.ColorMask(true, true, true, true);
+        GL.DepthFunc(DepthFunction.Equal);
+        GL.DepthMask(false);
+        if (opacity < 0.999f || _visualModelGpuMeshes.Any(mesh => mesh.AlphaMode == VisualModelAlphaMode.Blend))
+        {
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        }
+        DrawVisualModelMeshes();
+
+        GL.BindVertexArray(0);
+        GL.ActiveTexture(TextureUnit.Texture5);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture4);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture3);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture2);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture1);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.UseProgram(0);
+        GL.Disable(EnableCap.CullFace);
+        GL.FrontFace(FrontFaceDirection.Ccw);
+        GL.PolygonMode(MaterialFace.FrontAndBack, PolygonMode.Fill);
+        GL.DepthMask(true);
+        GL.DepthFunc(DepthFunction.Less);
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+    }
+
+    private void DrawVisualModelMeshes()
+    {
+        foreach (var mesh in _visualModelGpuMeshes)
+        {
+            ApplyVisualModelCulling(mesh.CullingMode);
+            GL.Uniform4(_visualModelColorLocation, mesh.BaseColor);
+            var showTextures = _visualModelSettings.ShowTextures;
+            var material = mesh.Material;
+            var useTexture = showTextures && material.UseAlbedo && mesh.Texture != 0;
+            var useSpecularTexture = showTextures && material.UseSpm && mesh.SpecularTexture != 0;
+            var useNormalTexture = showTextures && material.UseNormal && mesh.NormalTexture != 0;
+            var useAmbientOcclusion = showTextures && material.UseAmbientOcclusion && mesh.AmbientOcclusionTexture != 0;
+            var useAuxiliary = showTextures && material.UseAuxiliary && mesh.AuxiliaryTexture != 0;
+            var useEyeGlint = showTextures && material.UseEyeGlint && mesh.EyeGlintTexture != 0;
+            GL.Uniform1(_visualModelUseTextureLocation, useTexture ? 1 : 0);
+            GL.Uniform1(_visualModelUseSpecularTextureLocation, useSpecularTexture ? 1 : 0);
+            GL.Uniform1(_visualModelUseNormalTextureLocation, useNormalTexture ? 1 : 0);
+            GL.Uniform1(_visualModelUseAmbientOcclusionTextureLocation, useAmbientOcclusion ? 1 : 0);
+            GL.Uniform1(_visualModelUseAuxiliaryTextureLocation, useAuxiliary ? 1 : 0);
+            GL.Uniform1(_visualModelUseEyeGlintTextureLocation, useEyeGlint ? 1 : 0);
+            GL.Uniform1(_visualModelAlphaModeLocation, useTexture ? (int)mesh.AlphaMode : (int)VisualModelAlphaMode.Opaque);
+            GL.Uniform1(_visualModelShaderModelLocation, (int)material.ShaderModel);
+            GL.Uniform1(_visualModelAuxiliaryStrengthLocation, Math.Clamp(material.AuxiliaryStrength, 0.0f, 2.0f));
+            GL.Uniform1(_visualModelEyeGlintStrengthLocation, Math.Clamp(material.EyeGlintStrength, 0.0f, 2.0f));
+            GL.Uniform1(_visualModelMetalChannelLocation, (int)material.MetalChannel);
+            GL.Uniform1(_visualModelSmoothnessChannelLocation, (int)material.SmoothnessChannel);
+            GL.Uniform1(_visualModelMetalScaleLocation, Math.Clamp(material.MetalScale, 0.0f, 2.0f));
+            GL.Uniform1(_visualModelSmoothnessScaleLocation, Math.Clamp(material.SmoothnessScale, 0.0f, 2.0f));
+            GL.Uniform1(_visualModelNormalStrengthLocation, Math.Clamp(material.NormalStrength, 0.0f, 2.0f));
+            GL.Uniform1(_visualModelAmbientOcclusionStrengthLocation, Math.Clamp(material.AmbientOcclusionStrength, 0.0f, 1.0f));
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, useTexture ? mesh.Texture : 0);
+            GL.ActiveTexture(TextureUnit.Texture1);
+            GL.BindTexture(TextureTarget.Texture2D, useSpecularTexture ? mesh.SpecularTexture : 0);
+            GL.ActiveTexture(TextureUnit.Texture2);
+            GL.BindTexture(TextureTarget.Texture2D, useNormalTexture ? mesh.NormalTexture : 0);
+            GL.ActiveTexture(TextureUnit.Texture3);
+            GL.BindTexture(TextureTarget.Texture2D, useAmbientOcclusion ? mesh.AmbientOcclusionTexture : 0);
+            GL.ActiveTexture(TextureUnit.Texture4);
+            GL.BindTexture(TextureTarget.Texture2D, useAuxiliary ? mesh.AuxiliaryTexture : 0);
+            GL.ActiveTexture(TextureUnit.Texture5);
+            GL.BindTexture(TextureTarget.Texture2D, useEyeGlint ? mesh.EyeGlintTexture : 0);
+            GL.BindVertexArray(mesh.VertexArray);
+            GL.DrawElements(PrimitiveType.Triangles, mesh.IndexCount, DrawElementsType.UnsignedInt, 0);
+        }
+    }
+
+    private void ApplyVisualModelCulling(VisualModelCullingMode cullingMode)
+    {
+        if (cullingMode == VisualModelCullingMode.Off)
+        {
+            GL.Disable(EnableCap.CullFace);
+            return;
+        }
+
+        GL.Enable(EnableCap.CullFace);
+        var clockwise = cullingMode == VisualModelCullingMode.Clockwise;
+        // Physics geometry crosses the Havok-to-OpenGL boundary through ToGl,
+        // which reflects X. The FBX model matrix applies the same base
+        // reflection, so reverse winding unless the optional user mirror
+        // cancels it.
+        if (!_visualModelSettings.MirrorX)
+            clockwise = !clockwise;
+        GL.FrontFace(clockwise ? FrontFaceDirection.Cw : FrontFaceDirection.Ccw);
+    }
+    private void EnsureVisualModelGpu()
+    {
+        if (!_visualModelGpuDirty || _visualModel == null)
+            return;
+
+        ReleaseVisualModelGpu();
+        foreach (var source in _visualModel.Meshes)
+        {
+            var vao = GL.GenVertexArray();
+            var vbo = GL.GenBuffer();
+            var ebo = GL.GenBuffer();
+            GL.BindVertexArray(vao);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+            var gpuVertices = BuildVisualModelGpuVertices(source);
+            GL.BufferData(
+                BufferTarget.ArrayBuffer,
+                gpuVertices.Length * sizeof(float),
+                gpuVertices,
+                BufferUsageHint.StaticDraw);
+            GL.BindBuffer(BufferTarget.ElementArrayBuffer, ebo);
+            GL.BufferData(
+                BufferTarget.ElementArrayBuffer,
+                source.Indices.Length * sizeof(uint),
+                source.Indices,
+                BufferUsageHint.StaticDraw);
+
+            const int stride = 20 * sizeof(float);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+            GL.EnableVertexAttribArray(1);
+            GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
+            GL.EnableVertexAttribArray(2);
+            GL.VertexAttribPointer(3, 2, VertexAttribPointerType.Float, false, stride, 8 * sizeof(float));
+            GL.EnableVertexAttribArray(3);
+            GL.VertexAttribPointer(4, 2, VertexAttribPointerType.Float, false, stride, 10 * sizeof(float));
+            GL.EnableVertexAttribArray(4);
+            GL.VertexAttribPointer(5, 2, VertexAttribPointerType.Float, false, stride, 12 * sizeof(float));
+            GL.EnableVertexAttribArray(5);
+            GL.VertexAttribPointer(6, 2, VertexAttribPointerType.Float, false, stride, 14 * sizeof(float));
+            GL.EnableVertexAttribArray(6);
+            GL.VertexAttribPointer(7, 4, VertexAttribPointerType.Float, false, stride, 16 * sizeof(float));
+            GL.EnableVertexAttribArray(7);
+
+            var texture = source.Texture == null ? 0 : UploadVisualModelTexture(source.Texture);
+            var specularTexture = source.SpecularTexture == null ? 0 : UploadVisualModelTexture(source.SpecularTexture);
+            var normalTexture = source.NormalTexture == null ? 0 : UploadVisualModelTexture(source.NormalTexture);
+            var ambientOcclusionTexture = source.AmbientOcclusionTexture == null
+                ? 0
+                : UploadVisualModelTexture(source.AmbientOcclusionTexture);
+            var auxiliaryTexture = source.AuxiliaryTexture == null
+                ? 0
+                : UploadVisualModelTexture(source.AuxiliaryTexture);
+            var eyeGlintTexture = source.EyeGlintTexture == null
+                ? 0
+                : UploadVisualModelTexture(source.EyeGlintTexture);
+            _visualModelGpuMeshes.Add(new VisualModelGpuMesh
+            {
+                VertexArray = vao,
+                VertexBuffer = vbo,
+                IndexBuffer = ebo,
+                Texture = texture,
+                SpecularTexture = specularTexture,
+                NormalTexture = normalTexture,
+                AmbientOcclusionTexture = ambientOcclusionTexture,
+                AuxiliaryTexture = auxiliaryTexture,
+                EyeGlintTexture = eyeGlintTexture,
+                AlphaMode = source.Texture?.AlphaMode ?? VisualModelAlphaMode.Opaque,
+                Material = source.Material.Clone(),
+                IndexCount = source.Indices.Length,
+                BaseColor = new Vector4(
+                    source.Material.Tint.X,
+                    source.Material.Tint.Y,
+                    source.Material.Tint.Z,
+                    source.Material.Tint.W),
+                CullingMode = source.CullingMode
+            });
+        }
+
+        GL.BindVertexArray(0);
+        _visualModelGpuDirty = false;
+    }
+
+    private static float[] BuildVisualModelGpuVertices(VisualModelMesh source)
+    {
+        const int sourceStride = 8;
+        const int targetStride = 20;
+        var vertexCount = source.Vertices.Length / sourceStride;
+        var result = new float[checked(vertexCount * targetStride)];
+        var albedo = ResolveUvCoordinates(source, source.Material.AlbedoUvSet);
+        var spm = ResolveUvCoordinates(source, source.Material.SpmUvSet);
+        var normal = ResolveUvCoordinates(source, source.Material.NormalUvSet);
+        var ao = ResolveUvCoordinates(source, source.Material.AmbientOcclusionUvSet);
+        var auxiliary = ResolveUvCoordinates(source, source.Material.AuxiliaryUvSet);
+
+        for (var vertex = 0; vertex < vertexCount; vertex++)
+        {
+            var sourceOffset = vertex * sourceStride;
+            var targetOffset = vertex * targetStride;
+            Array.Copy(source.Vertices, sourceOffset, result, targetOffset, 6);
+            CopyUv(albedo, source.Vertices, vertex, result, targetOffset + 6);
+            CopyUv(spm, source.Vertices, vertex, result, targetOffset + 8);
+            CopyUv(normal, source.Vertices, vertex, result, targetOffset + 10);
+            CopyUv(ao, source.Vertices, vertex, result, targetOffset + 12);
+            CopyUv(auxiliary, source.Vertices, vertex, result, targetOffset + 14);
+        }
+
+        WriteVisualModelTangents(source, normal, result, targetStride);
+
+        return result;
+    }
+
+    private static void WriteVisualModelTangents(
+        VisualModelMesh source,
+        IReadOnlyList<float>? normalUvs,
+        float[] target,
+        int targetStride)
+    {
+        const int sourceStride = 8;
+        var vertexCount = source.Vertices.Length / sourceStride;
+        var tangentGroups = new Dictionary<
+            (Vector3 Position, Vector3 Normal, Vector2 Uv, int Orientation),
+            (Vector3 Tangent, Vector3 Bitangent)>();
+        var vertexOrientations = new int[vertexCount];
+        for (var vertex = 0; vertex < vertexCount; vertex++)
+        {
+            var normal = ReadVisualModelVector(source.Vertices, vertex, 3);
+            var reference = Math.Abs(normal.Y) < 0.999f ? Vector3.UnitY : Vector3.UnitX;
+            var tangent = NormalizeOrFallback(Vector3.Cross(reference, normal), Vector3.UnitX);
+            WriteVisualModelTangent(target, vertex, targetStride, tangent, 1.0f);
+        }
+
+        for (var triangle = 0; triangle + 2 < source.Indices.Length; triangle += 3)
+        {
+            var first = checked((int)source.Indices[triangle]);
+            var second = checked((int)source.Indices[triangle + 1]);
+            var third = checked((int)source.Indices[triangle + 2]);
+            if ((uint)first >= vertexCount || (uint)second >= vertexCount || (uint)third >= vertexCount)
+                continue;
+
+            var edge1 = ReadVisualModelVector(source.Vertices, second, 0)
+                - ReadVisualModelVector(source.Vertices, first, 0);
+            var edge2 = ReadVisualModelVector(source.Vertices, third, 0)
+                - ReadVisualModelVector(source.Vertices, first, 0);
+            var uv0 = ReadVisualModelUv(normalUvs, source.Vertices, first);
+            var uv1 = ReadVisualModelUv(normalUvs, source.Vertices, second) - uv0;
+            var uv2 = ReadVisualModelUv(normalUvs, source.Vertices, third) - uv0;
+            var determinant = uv1.X * uv2.Y - uv1.Y * uv2.X;
+            if (Math.Abs(determinant) < 0.00000001f)
+                continue;
+
+            var inverseDeterminant = 1.0f / determinant;
+            var triangleTangent = (edge1 * uv2.Y - edge2 * uv1.Y) * inverseDeterminant;
+            var triangleBitangent = (edge2 * uv1.X - edge1 * uv2.X) * inverseDeterminant;
+            if (triangleTangent.LengthSquared < 0.00000001f ||
+                triangleBitangent.LengthSquared < 0.00000001f)
+                continue;
+
+            triangleTangent.Normalize();
+            triangleBitangent.Normalize();
+            var orientation = determinant < 0.0f ? -1 : 1;
+            var triangleVertices = new[] { first, second, third };
+            for (var corner = 0; corner < triangleVertices.Length; corner++)
+            {
+                var vertex = triangleVertices[corner];
+                var normal = NormalizeOrFallback(
+                    ReadVisualModelVector(source.Vertices, vertex, 3),
+                    Vector3.UnitY);
+                var position = ReadVisualModelVector(source.Vertices, vertex, 0);
+                var uv = ReadVisualModelUv(normalUvs, source.Vertices, vertex);
+                var previous = triangleVertices[(corner + 2) % 3];
+                var next = triangleVertices[(corner + 1) % 3];
+                var previousEdge = ReadVisualModelVector(source.Vertices, previous, 0) - position;
+                var nextEdge = ReadVisualModelVector(source.Vertices, next, 0) - position;
+                var cornerWeight = VisualModelCornerAngle(previousEdge, nextEdge);
+                var key = (position, normal, uv, orientation);
+                tangentGroups.TryGetValue(key, out var accumulated);
+                tangentGroups[key] = (
+                    accumulated.Tangent + triangleTangent * cornerWeight,
+                    accumulated.Bitangent + triangleBitangent * cornerWeight);
+                vertexOrientations[vertex] = orientation;
+            }
+        }
+
+        for (var vertex = 0; vertex < vertexCount; vertex++)
+        {
+            var orientation = vertexOrientations[vertex];
+            if (orientation == 0)
+                continue;
+
+            var normal = NormalizeOrFallback(
+                ReadVisualModelVector(source.Vertices, vertex, 3),
+                Vector3.UnitY);
+            var key = (
+                ReadVisualModelVector(source.Vertices, vertex, 0),
+                normal,
+                ReadVisualModelUv(normalUvs, source.Vertices, vertex),
+                orientation);
+            if (!tangentGroups.TryGetValue(key, out var accumulated))
+                continue;
+
+            // The FBX bridge expands every polygon corner. Recombine corners
+            // that MikkTSpace considers one smooth tangent vertex, while the
+            // UV and orientation keys keep seams and mirrored islands split.
+            var tangent = accumulated.Tangent - normal * Vector3.Dot(normal, accumulated.Tangent);
+            var tangentReference = Math.Abs(normal.Y) < 0.999f ? Vector3.UnitY : Vector3.UnitX;
+            tangent = NormalizeOrFallback(
+                tangent,
+                Vector3.Cross(tangentReference, normal));
+            var handedness = Vector3.Dot(
+                Vector3.Cross(normal, tangent),
+                accumulated.Bitangent) < 0.0f
+                ? -1.0f
+                : 1.0f;
+            WriteVisualModelTangent(target, vertex, targetStride, tangent, handedness);
+        }
+    }
+
+    private static float VisualModelCornerAngle(Vector3 first, Vector3 second)
+    {
+        if (first.LengthSquared < 0.00000001f || second.LengthSquared < 0.00000001f)
+            return 1.0f;
+
+        first.Normalize();
+        second.Normalize();
+        return MathF.Acos(Math.Clamp(Vector3.Dot(first, second), -1.0f, 1.0f));
+    }
+
+    private static Vector3 ReadVisualModelVector(
+        IReadOnlyList<float> vertices,
+        int vertex,
+        int componentOffset)
+    {
+        var offset = vertex * 8 + componentOffset;
+        return new Vector3(vertices[offset], vertices[offset + 1], vertices[offset + 2]);
+    }
+
+    private static Vector2 ReadVisualModelUv(
+        IReadOnlyList<float>? coordinates,
+        IReadOnlyList<float> fallbackVertices,
+        int vertex)
+    {
+        return coordinates != null && vertex * 2 + 1 < coordinates.Count
+            ? new Vector2(coordinates[vertex * 2], coordinates[vertex * 2 + 1])
+            : new Vector2(fallbackVertices[vertex * 8 + 6], fallbackVertices[vertex * 8 + 7]);
+    }
+
+    private static void WriteVisualModelTangent(
+        float[] target,
+        int vertex,
+        int targetStride,
+        Vector3 tangent,
+        float handedness)
+    {
+        var offset = vertex * targetStride + 16;
+        target[offset] = tangent.X;
+        target[offset + 1] = tangent.Y;
+        target[offset + 2] = tangent.Z;
+        target[offset + 3] = handedness;
+    }
+
+    private static float[]? ResolveUvCoordinates(VisualModelMesh source, string name)
+    {
+        return source.UvSets.FirstOrDefault(uv =>
+            uv.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Coordinates;
+    }
+
+    private static void CopyUv(
+        IReadOnlyList<float>? coordinates,
+        IReadOnlyList<float> fallbackVertices,
+        int vertex,
+        float[] target,
+        int targetOffset)
+    {
+        if (coordinates != null && vertex * 2 + 1 < coordinates.Count)
+        {
+            target[targetOffset] = coordinates[vertex * 2];
+            target[targetOffset + 1] = coordinates[vertex * 2 + 1];
+            return;
+        }
+
+        target[targetOffset] = fallbackVertices[vertex * 8 + 6];
+        target[targetOffset + 1] = fallbackVertices[vertex * 8 + 7];
+    }
+
+    private static int UploadVisualModelTexture(VisualModelTexture source)
+    {
+        var texture = GL.GenTexture();
+        GL.BindTexture(TextureTarget.Texture2D, texture);
+        GL.TexImage2D(
+            TextureTarget.Texture2D,
+            0,
+            PixelInternalFormat.Rgba,
+            source.Width,
+            source.Height,
+            0,
+            PixelFormat.Rgba,
+            PixelType.UnsignedByte,
+            source.Pixels);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+        GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
+        return texture;
+    }
+
+    private void ReleaseVisualModelGpu()
+    {
+        foreach (var mesh in _visualModelGpuMeshes)
+        {
+            if (mesh.Texture != 0)
+                GL.DeleteTexture(mesh.Texture);
+            if (mesh.SpecularTexture != 0)
+                GL.DeleteTexture(mesh.SpecularTexture);
+            if (mesh.NormalTexture != 0)
+                GL.DeleteTexture(mesh.NormalTexture);
+            if (mesh.AmbientOcclusionTexture != 0)
+                GL.DeleteTexture(mesh.AmbientOcclusionTexture);
+            if (mesh.AuxiliaryTexture != 0)
+                GL.DeleteTexture(mesh.AuxiliaryTexture);
+            if (mesh.EyeGlintTexture != 0)
+                GL.DeleteTexture(mesh.EyeGlintTexture);
+            if (mesh.IndexBuffer != 0)
+                GL.DeleteBuffer(mesh.IndexBuffer);
+            if (mesh.VertexBuffer != 0)
+                GL.DeleteBuffer(mesh.VertexBuffer);
+            if (mesh.VertexArray != 0)
+                GL.DeleteVertexArray(mesh.VertexArray);
+        }
+
+        _visualModelGpuMeshes.Clear();
+    }
+
+    private bool TryGetVisualModelCenter(out Vector3 center)
+    {
+        if (_visualModel == null)
+        {
+            center = Vector3.Zero;
+            return false;
+        }
+
+        center = Vector3.TransformPosition(
+            new Vector3(
+                (_visualModel.BoundsMinimum.X + _visualModel.BoundsMaximum.X) * 0.5f,
+                (_visualModel.BoundsMinimum.Y + _visualModel.BoundsMaximum.Y) * 0.5f,
+                (_visualModel.BoundsMinimum.Z + _visualModel.BoundsMaximum.Z) * 0.5f),
+            GetVisualModelMatrix());
+        return true;
+    }
+
+    private Matrix4 GetVisualModelMatrix()
+    {
+        var scale = Math.Max(0.0001f, _visualModelSettings.UniformScale);
+        var rotation = _visualModelSettings.RotationDegrees;
+        // Keep FBX overlays in the same presentation handedness as ToGl for
+        // particles, bones, colliders, and editable physics geometry.
+        return Matrix4.CreateScale(_visualModelSettings.MirrorX ? scale : -scale, scale, scale)
+            * Matrix4.CreateRotationX(MathHelper.DegreesToRadians(rotation.X))
+            * Matrix4.CreateRotationY(MathHelper.DegreesToRadians(rotation.Y))
+            * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(rotation.Z))
+            * Matrix4.CreateTranslation(
+                _visualModelSettings.Offset.X,
+                _visualModelSettings.Offset.Y,
+                _visualModelSettings.Offset.Z);
+    }
+
+    private static IEnumerable<Vector3> GetBoundsCorners(SysVec3 minimum, SysVec3 maximum)
+    {
+        yield return new Vector3(minimum.X, minimum.Y, minimum.Z);
+        yield return new Vector3(maximum.X, minimum.Y, minimum.Z);
+        yield return new Vector3(minimum.X, maximum.Y, minimum.Z);
+        yield return new Vector3(maximum.X, maximum.Y, minimum.Z);
+        yield return new Vector3(minimum.X, minimum.Y, maximum.Z);
+        yield return new Vector3(maximum.X, minimum.Y, maximum.Z);
+        yield return new Vector3(minimum.X, maximum.Y, maximum.Z);
+        yield return new Vector3(maximum.X, maximum.Y, maximum.Z);
+    }
+
+    private void CreateVisualModelShaderProgram()
+    {
+        const string vertexSource = """
+            #version 330 core
+            layout(location = 0) in vec3 aPosition;
+            layout(location = 1) in vec3 aNormal;
+            layout(location = 2) in vec2 aAlbedoUv;
+            layout(location = 3) in vec2 aSpmUv;
+            layout(location = 4) in vec2 aNormalUv;
+            layout(location = 5) in vec2 aAmbientOcclusionUv;
+            layout(location = 6) in vec2 aAuxiliaryUv;
+            layout(location = 7) in vec4 aTangent;
+            uniform mat4 uMvp;
+            uniform mat4 uModel;
+            out vec3 vNormal;
+            out vec3 vTangent;
+            out float vTangentSign;
+            out vec3 vWorldPosition;
+            out vec2 vAlbedoUv;
+            out vec2 vSpmUv;
+            out vec2 vNormalUv;
+            out vec2 vAmbientOcclusionUv;
+            out vec2 vAuxiliaryUv;
+            void main()
+            {
+                gl_Position = uMvp * vec4(aPosition, 1.0);
+                mat3 normalMatrix = mat3(transpose(inverse(uModel)));
+                vNormal = normalize(normalMatrix * aNormal);
+                vTangent = normalize(normalMatrix * aTangent.xyz);
+                vTangentSign = aTangent.w * sign(determinant(mat3(uModel)));
+                vWorldPosition = (uModel * vec4(aPosition, 1.0)).xyz;
+                vAlbedoUv = aAlbedoUv;
+                vSpmUv = aSpmUv;
+                vNormalUv = aNormalUv;
+                vAmbientOcclusionUv = aAmbientOcclusionUv;
+                vAuxiliaryUv = aAuxiliaryUv;
+            }
+            """;
+
+        // This is a compact real-time approximation of the reference
+        // BOTW/TOTK Cloth Shader: albedo plus SPM smoothness/metal channels,
+        // optional tangent-space normals, and fixed sun/indirect lighting.
+        const string fragmentSource = """
+            #version 330 core
+            in vec3 vNormal;
+            in vec3 vTangent;
+            in float vTangentSign;
+            in vec3 vWorldPosition;
+            in vec2 vAlbedoUv;
+            in vec2 vSpmUv;
+            in vec2 vNormalUv;
+            in vec2 vAmbientOcclusionUv;
+            in vec2 vAuxiliaryUv;
+            uniform mat4 uModel;
+            uniform vec4 uColor;
+            uniform sampler2D uTexture;
+            uniform sampler2D uSpecularTexture;
+            uniform sampler2D uNormalTexture;
+            uniform sampler2D uAmbientOcclusionTexture;
+            uniform sampler2D uAuxiliaryTexture;
+            uniform sampler2D uEyeGlintTexture;
+            uniform int uUseTexture;
+            uniform int uUseSpecularTexture;
+            uniform int uUseNormalTexture;
+            uniform int uUseAmbientOcclusionTexture;
+            uniform int uUseAuxiliaryTexture;
+            uniform int uUseEyeGlintTexture;
+            uniform int uAlphaMode;
+            uniform int uShaderModel;
+            uniform int uMetalChannel;
+            uniform int uSmoothnessChannel;
+            uniform float uMetalScale;
+            uniform float uSmoothnessScale;
+            uniform float uNormalStrength;
+            uniform float uAmbientOcclusionStrength;
+            uniform float uAuxiliaryStrength;
+            uniform float uEyeGlintStrength;
+            uniform float uOpacity;
+            uniform vec3 uKeyLight;
+            uniform vec3 uFillLight;
+            uniform vec3 uViewDirection;
+            out vec4 FragColor;
+
+            float sampleChannel(vec3 value, int channel)
+            {
+                if (channel == 0) return value.r;
+                if (channel == 1) return value.g;
+                if (channel == 2) return value.b;
+                return 0.0;
+            }
+
+            float antialiasedStep(float edge, float value)
+            {
+                // The Blender graph uses clamped x10000 thresholds. Widen only
+                // by the screen-space derivative so minified normal-map texels
+                // cannot become isolated square patches at narrow mesh tips.
+                float transition = max(fwidth(value) * 0.75, 0.001);
+                return smoothstep(edge - transition, edge + transition, value);
+            }
+
+            vec3 srgbToLinear(vec3 value)
+            {
+                bvec3 low = lessThanEqual(value, vec3(0.04045));
+                vec3 lower = value / 12.92;
+                vec3 upper = pow((value + 0.055) / 1.055, vec3(2.4));
+                return mix(upper, lower, low);
+            }
+
+            vec3 linearToSrgb(vec3 value)
+            {
+                value = max(value, vec3(0.0));
+                bvec3 low = lessThanEqual(value, vec3(0.0031308));
+                vec3 lower = value * 12.92;
+                vec3 upper = 1.055 * pow(value, vec3(1.0 / 2.4)) - 0.055;
+                return mix(upper, lower, low);
+            }
+
+            vec3 agxDefaultContrast(vec3 value)
+            {
+                vec3 value2 = value * value;
+                vec3 value4 = value2 * value2;
+                return 15.5 * value4 * value2
+                    - 40.14 * value4 * value
+                    + 31.96 * value4
+                    - 6.868 * value2 * value
+                    + 0.4298 * value2
+                    + 0.1191 * value
+                    - 0.00232;
+            }
+
+            vec3 agxToneMap(vec3 value)
+            {
+                const mat3 inset = mat3(
+                    0.8424790623, 0.0423282423, 0.0423756549,
+                    0.0784336000, 0.8784686365, 0.0784336000,
+                    0.0792237451, 0.0791661275, 0.8791429738);
+                const mat3 outset = mat3(
+                    1.1968790051, -0.0528968518, -0.0529716355,
+                    -0.0980208811, 1.1519031299, -0.0980434501,
+                    -0.0990297441, -0.0989611768, 1.1510736726);
+                const float minimumEv = -12.47393;
+                const float maximumEv = 4.026069;
+
+                value = inset * max(value, vec3(0.0000001));
+                value = clamp(log2(value), minimumEv, maximumEv);
+                value = (value - minimumEv) / (maximumEv - minimumEv);
+                value = agxDefaultContrast(value);
+                value = max(outset * value, vec3(0.0));
+                // AgX's contrast approximation is display-encoded. Restore a
+                // linear value before the shared linear-to-sRGB output stage.
+                return clamp(pow(value, vec3(2.2)), 0.0, 1.0);
+            }
+
+            vec3 applyNormalMap(vec3 geometricNormal, vec3 encodedNormal)
+            {
+                vec3 tangent = normalize(
+                    vTangent - geometricNormal * dot(geometricNormal, vTangent));
+                vec3 bitangent = normalize(
+                    cross(geometricNormal, tangent) * vTangentSign);
+                mat3 tangentBasis = mat3(tangent, bitangent, geometricNormal);
+                vec3 mapped = encodedNormal * 2.0 - 1.0;
+                // Blender's node groups feed the authored normal into every
+                // directional and facing band. A small gain keeps that detail
+                // legible after the broad real-time interpolation.
+                mapped.xy *= uNormalStrength * (uShaderModel == 3 ? 1.0 : 1.20);
+                return normalize(tangentBasis * normalize(mapped));
+            }
+
+            vec3 inverseRotateEulerXyz(vec3 value, vec3 rotation)
+            {
+                float cz = cos(-rotation.z);
+                float sz = sin(-rotation.z);
+                value = vec3(
+                    cz * value.x - sz * value.y,
+                    sz * value.x + cz * value.y,
+                    value.z);
+
+                float cy = cos(-rotation.y);
+                float sy = sin(-rotation.y);
+                value = vec3(
+                    cy * value.x + sy * value.z,
+                    value.y,
+                    -sy * value.x + cy * value.z);
+
+                float cx = cos(-rotation.x);
+                float sx = sin(-rotation.x);
+                return vec3(
+                    value.x,
+                    cx * value.y - sx * value.z,
+                    sx * value.y + cx * value.z);
+            }
+
+            void main()
+            {
+                vec4 surface = uUseTexture != 0 ? texture(uTexture, vAlbedoUv) : vec4(1.0);
+                float sourceAlpha = surface.a * uColor.a;
+                if ((uAlphaMode == 1 && sourceAlpha < 0.5) ||
+                    (uAlphaMode == 2 && sourceAlpha < 0.01))
+                    discard;
+
+                vec3 geometricNormal = normalize(vNormal);
+                vec3 normal = geometricNormal;
+                if (uUseNormalTexture != 0)
+                    normal = applyNormalMap(normal, texture(uNormalTexture, vNormalUv).xyz);
+
+                // The supplied Blender materials mark SPM as sRGB, then split
+                // its linearized R/G channels into smoothness and metal.
+                vec3 spm = uUseSpecularTexture != 0
+                    ? srgbToLinear(texture(uSpecularTexture, vSpmUv).rgb)
+                    : vec3(0.0);
+                float metal = uUseSpecularTexture != 0
+                    ? clamp(sampleChannel(spm, uMetalChannel) * uMetalScale, 0.0, 1.0)
+                    : 0.0;
+                float smoothness = uUseSpecularTexture != 0
+                    ? clamp(sampleChannel(spm, uSmoothnessChannel) * uSmoothnessScale, 0.0, 1.0)
+                    : 0.25;
+                if (uShaderModel == 2)
+                {
+                    // The skin group also uses SPM green as a separate shine
+                    // control, while metal is not meaningful for skin.
+                    smoothness = max(smoothness, spm.g * 0.65 * uSmoothnessScale);
+                    metal = 0.0;
+                }
+                else if (uShaderModel == 3)
+                {
+                    metal = 0.0;
+                }
+                float occlusion = 1.0;
+                if (uUseAmbientOcclusionTexture != 0)
+                {
+                    float sampledAo = srgbToLinear(texture(uAmbientOcclusionTexture, vAmbientOcclusionUv).rgb).r;
+                    occlusion = mix(1.0, sampledAo, uAmbientOcclusionStrength);
+                }
+
+                vec3 baseColor = srgbToLinear(surface.rgb) * uColor.rgb;
+                if (uShaderModel == 4 && uUseAuxiliaryTexture != 0)
+                {
+                    vec3 eyeShadow = srgbToLinear(texture(uAuxiliaryTexture, vAuxiliaryUv).rgb);
+                    baseColor *= mix(vec3(1.0), eyeShadow, clamp(uAuxiliaryStrength, 0.0, 1.0));
+                }
+                if (uShaderModel == 4 && uUseEyeGlintTexture != 0)
+                {
+                    vec3 viewDirection = normalize(uViewDirection);
+                    vec2 glintUv = vAlbedoUv + vec2(viewDirection.x, -viewDirection.y) * 0.025;
+                    vec4 glint = texture(uEyeGlintTexture, glintUv);
+                    float glintAmount = glint.a * clamp(uEyeGlintStrength, 0.0, 2.0);
+                    baseColor = mix(baseColor, srgbToLinear(glint.rgb), glintAmount);
+                }
+                vec3 viewDirection = normalize(uViewDirection);
+                float facing = clamp(dot(normal, viewDirection), 0.0, 1.0);
+                float key = dot(normal, uKeyLight);
+                float geometricKey = dot(geometricNormal, uKeyLight);
+                float fill = max(dot(normal, uFillLight), 0.0);
+                vec3 halfVector = normalize(uKeyLight + viewDirection);
+                vec3 sunColor = vec3(0.61634, 0.64574, 0.48622);
+                vec3 indirectColor = vec3(0.96272, 0.94923, 1.0);
+
+                if (uShaderModel == 3)
+                {
+                    // FBX SDK converts Blender Z-up to OpenGL Y-up, and the
+                    // viewport''s presentation matrix then reflects X. Restore
+                    // Blender space before evaluating its authored hair graph.
+                    vec3 blenderNormal = normalize(vec3(-normal.x, -normal.z, normal.y));
+                    vec3 blenderView = normalize(vec3(
+                        -viewDirection.x,
+                        -viewDirection.z,
+                        viewDirection.y));
+                    // Match the inverse Euler rotation authored in the supplied
+                    // BOTW/TOTK Hair Shader group. These values steer every
+                    // normal-map lighting band, so approximating them moves the
+                    // broad highlight regions to the wrong side of the hair.
+                    const vec3 hairLightRotation = vec3(
+                        1.823601,
+                        -0.173579,
+                        2.596994);
+                    float lightZ = inverseRotateEulerXyz(
+                        blenderNormal,
+                        hairLightRotation).z;
+
+                    float positiveLight = antialiasedStep(0.10, lightZ);
+                    float negativeLight = 1.0 - positiveLight;
+                    // Blender Layer Weight/Facing is one minus the absolute
+                    // view-normal dot product. It selects grazing silhouettes,
+                    // not the camera-facing center of the surface.
+                    float facingBlender = clamp(
+                        1.0 - abs(dot(blenderNormal, blenderView)),
+                        0.0,
+                        1.0);
+                    float facingBand = antialiasedStep(0.70, facingBlender);
+
+                    // Base World Light: Alb * (1 + positiveLight).
+                    vec3 hairLayers = baseColor * (1.0 + positiveLight);
+
+                    // Back Rim Light. Blender transforms world Z into camera
+                    // space; the view elevation is its local equivalent here.
+                    float cameraLightZ = inverseRotateEulerXyz(
+                        blenderView,
+                        hairLightRotation).z;
+                    float negativeSlope = max(negativeLight - clamp(-lightZ, 0.0, 1.0), 0.0);
+                    float backRim = antialiasedStep(
+                        0.20,
+                        cameraLightZ * negativeSlope * facingBlender);
+                    hairLayers *= 1.0 + backRim;
+
+                    // Vector Sunlight Rimlight and Fade Rimlight add neutral
+                    // bands before the lighting-controller tint is applied.
+                    hairLayers += vec3(0.30) * positiveLight * facingBand;
+                    float fadeRim = negativeLight * facingBand * cameraLightZ;
+                    hairLayers += vec3(0.10) * fadeRim;
+
+                    // Hair Specular is another cel multiplier, not a glossy
+                    // lobe. The graph combines reflected-Z thresholds at 0.1
+                    // and 0.9, then gates them with positiveLight.
+                    // Blender builds this as Incoming - 2*N*dot(N, Incoming),
+                    // then multiplies the result by -1 before rotating it.
+                    vec3 reflectedIncoming = -reflect(-blenderView, blenderNormal);
+                    float reflectedZ = inverseRotateEulerXyz(
+                        reflectedIncoming,
+                        hairLightRotation).z;
+                    float reflectedLow = antialiasedStep(0.10, reflectedZ);
+                    float reflectedHigh = antialiasedStep(0.90, reflectedZ);
+                    float hairSpecular = positiveLight
+                        * clamp(reflectedLow * 0.5 + reflectedHigh, 0.0, 1.0);
+                    hairLayers *= 1.0 + hairSpecular;
+
+                    // Scene Lighting Data selects between the supplied indirect
+                    // tint and the sun color at strength 2.
+                    vec3 hairColor = hairLayers
+                        * mix(indirectColor, sunColor * 2.0, positiveLight);
+                    float hairAlpha = uAlphaMode == 1 ? 1.0 : sourceAlpha;
+                    FragColor = vec4(
+                        linearToSrgb(agxToneMap(hairColor)),
+                        hairAlpha * uOpacity);
+                    return;
+                }
+
+                vec3 shadowTint = vec3(0.82, 0.80, 0.76);
+                if (uShaderModel == 2)
+                    shadowTint = vec3(0.82, 0.70, 0.64);
+                else if (uShaderModel == 3)
+                    shadowTint = vec3(0.62, 0.50, 0.20);
+                else if (uShaderModel == 5)
+                    shadowTint = vec3(0.24);
+
+                // The reference Blender groups use large multiply/add values to
+                // turn diffuse light into hard BOTW/TOTK-style color bands.
+                float mainBand = smoothstep(0.055, 0.085, key);
+                float brightBand = smoothstep(0.58, 0.64, key);
+                vec3 lighting = mix(shadowTint, indirectColor, mainBand);
+                lighting = mix(lighting, vec3(1.10, 1.07, 0.98), brightBand * 0.58);
+                lighting += indirectColor * smoothstep(0.30, 0.55, fill) * 0.035;
+
+                // The Blender groups use Layer Weight/Facing repeatedly. This
+                // broad view-facing band is what makes their shading move as
+                // the camera orbits, without turning the material glossy.
+                float grazing = 1.0 - facing;
+                float facingShade = smoothstep(0.70, 0.94, grazing);
+                lighting = mix(lighting, shadowTint * 0.92, facingShade * 0.18);
+
+                if (uUseNormalTexture != 0)
+                {
+                    float normalDetail = clamp(key - geometricKey, -0.50, 0.50);
+                    lighting *= 1.0 + normalDetail * 0.30;
+                }
+
+                if (uShaderModel == 4)
+                    lighting = mix(vec3(0.84), vec3(1.10), smoothstep(-0.15, 0.24, key));
+
+                float resolvedAo = uShaderModel == 2
+                    ? clamp(occlusion * 5.0 - 1.25, 0.0, 1.0)
+                    : occlusion;
+                // In the reference skin group AO participates in the color-band
+                // selection (AO * 5 - 1.25), rather than uniformly darkening the
+                // final color. Approximate that by steering only shadowed and
+                // grazing lighting toward the authored shadow tint.
+                float aoAmount = 1.0 - resolvedAo;
+                float aoShadowGate = 1.0 - smoothstep(-0.10, 0.56, key);
+                float aoWeight = aoAmount
+                    * mix(0.08, uShaderModel == 2 ? 0.42 : 0.28, aoShadowGate)
+                    * mix(0.82, 1.14, smoothstep(0.42, 0.90, grazing));
+                lighting = mix(lighting, shadowTint * 0.86, clamp(aoWeight, 0.0, 0.46));
+                vec3 diffuse = baseColor * lighting;
+                diffuse *= mix(1.0, 0.78, metal);
+
+                float halfDot = max(dot(normal, halfVector), 0.0);
+                float lightGate = smoothstep(-0.04, 0.28, key);
+                float specularPower = mix(12.0, 88.0, smoothness);
+                float specularLobe = pow(halfDot, specularPower);
+                float specularBand = smoothstep(0.07, 0.24, specularLobe);
+                float specularStrength = mix(0.006, 0.090, smoothness) * mix(1.0, 1.65, metal) * lightGate;
+                vec3 specularColor = mix(indirectColor, baseColor, metal);
+
+                if (uShaderModel == 1)
+                {
+                    // Cloth uses broad view-facing color bands. Smoothness opens
+                    // the band while metal selects a stronger albedo-tinted path.
+                    float clothLobe = pow(halfDot, mix(7.0, 34.0, smoothness));
+                    float clothFacing = smoothstep(
+                        mix(0.92, 0.66, smoothness),
+                        mix(0.99, 0.86, smoothness),
+                        grazing);
+                    specularBand = max(smoothstep(0.08, 0.28, clothLobe), clothFacing * 0.72);
+                    specularStrength = mix(0.004, 0.048, smoothness)
+                        * mix(1.0, 2.35, metal) * lightGate;
+                    specularColor = mix(indirectColor, baseColor, metal);
+                }
+                else if (uShaderModel == 2)
+                {
+                    float skinLobe = pow(halfDot, mix(18.0, 72.0, smoothness));
+                    specularBand = smoothstep(0.10, 0.30, skinLobe);
+                    specularStrength = mix(0.002, 0.028, smoothness) * lightGate;
+                    specularColor = mix(indirectColor, vec3(1.0, 0.78, 0.70), 0.18);
+                }
+                else if (uShaderModel == 3)
+                {
+                    // Smoothness is exposed but unused by the supplied Blender
+                    // hair group. Its highlights are already in the cel bands.
+                    specularStrength = 0.0;
+                }
+                else if (uShaderModel == 4)
+                {
+                    // Eye highlights come from the authored glint texture. A
+                    // second view-dependent lobe makes the eyeballs look wet.
+                    specularStrength = 0.0;
+                }
+                else if (uShaderModel == 5)
+                {
+                    specularStrength = 0.0;
+                }
+
+                specularColor = mix(specularColor, sunColor * 1.12, metal * 0.32);
+                float rim = 1.0 - facing;
+                float rimBand = smoothstep(0.82, 0.94, rim);
+                float rimStrength = uShaderModel == 3 ? 0.03 :
+                    (uShaderModel == 4 || uShaderModel == 5 ? 0.0 : 0.018);
+                vec3 color = diffuse
+                    + specularColor * specularBand * specularStrength
+                    + baseColor * rimBand * rimStrength;
+                color *= 2.0;
+                float resolvedAlpha = uAlphaMode == 1 ? 1.0 : sourceAlpha;
+                FragColor = vec4(linearToSrgb(color), resolvedAlpha * uOpacity);
+            }
+            """;
+
+        var vertex = CompileShader(ShaderType.VertexShader, vertexSource);
+        var fragment = CompileShader(ShaderType.FragmentShader, fragmentSource);
+        _visualModelProgram = GL.CreateProgram();
+        GL.AttachShader(_visualModelProgram, vertex);
+        GL.AttachShader(_visualModelProgram, fragment);
+        GL.LinkProgram(_visualModelProgram);
+        GL.GetProgram(_visualModelProgram, GetProgramParameterName.LinkStatus, out var linked);
+        if (linked == 0)
+            throw new InvalidOperationException(GL.GetProgramInfoLog(_visualModelProgram));
+
+        GL.DetachShader(_visualModelProgram, vertex);
+        GL.DetachShader(_visualModelProgram, fragment);
+        GL.DeleteShader(vertex);
+        GL.DeleteShader(fragment);
+        _visualModelMvpLocation = GL.GetUniformLocation(_visualModelProgram, "uMvp");
+        _visualModelModelLocation = GL.GetUniformLocation(_visualModelProgram, "uModel");
+        _visualModelColorLocation = GL.GetUniformLocation(_visualModelProgram, "uColor");
+        _visualModelTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uTexture");
+        _visualModelUseTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uUseTexture");
+        _visualModelSpecularTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uSpecularTexture");
+        _visualModelUseSpecularTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uUseSpecularTexture");
+        _visualModelNormalTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uNormalTexture");
+        _visualModelUseNormalTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uUseNormalTexture");
+        _visualModelAmbientOcclusionTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uAmbientOcclusionTexture");
+        _visualModelUseAmbientOcclusionTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uUseAmbientOcclusionTexture");
+        _visualModelAuxiliaryTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uAuxiliaryTexture");
+        _visualModelUseAuxiliaryTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uUseAuxiliaryTexture");
+        _visualModelEyeGlintTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uEyeGlintTexture");
+        _visualModelUseEyeGlintTextureLocation = GL.GetUniformLocation(_visualModelProgram, "uUseEyeGlintTexture");
+        _visualModelAlphaModeLocation = GL.GetUniformLocation(_visualModelProgram, "uAlphaMode");
+        _visualModelShaderModelLocation = GL.GetUniformLocation(_visualModelProgram, "uShaderModel");
+        _visualModelAuxiliaryStrengthLocation = GL.GetUniformLocation(_visualModelProgram, "uAuxiliaryStrength");
+        _visualModelEyeGlintStrengthLocation = GL.GetUniformLocation(_visualModelProgram, "uEyeGlintStrength");
+        _visualModelMetalChannelLocation = GL.GetUniformLocation(_visualModelProgram, "uMetalChannel");
+        _visualModelSmoothnessChannelLocation = GL.GetUniformLocation(_visualModelProgram, "uSmoothnessChannel");
+        _visualModelMetalScaleLocation = GL.GetUniformLocation(_visualModelProgram, "uMetalScale");
+        _visualModelSmoothnessScaleLocation = GL.GetUniformLocation(_visualModelProgram, "uSmoothnessScale");
+        _visualModelNormalStrengthLocation = GL.GetUniformLocation(_visualModelProgram, "uNormalStrength");
+        _visualModelAmbientOcclusionStrengthLocation = GL.GetUniformLocation(_visualModelProgram, "uAmbientOcclusionStrength");
+        _visualModelOpacityLocation = GL.GetUniformLocation(_visualModelProgram, "uOpacity");
+        _visualModelKeyLightLocation = GL.GetUniformLocation(_visualModelProgram, "uKeyLight");
+        _visualModelFillLightLocation = GL.GetUniformLocation(_visualModelProgram, "uFillLight");
+        _visualModelViewDirectionLocation = GL.GetUniformLocation(_visualModelProgram, "uViewDirection");
+    }
+
     private void DrawSingleColor(
         PrimitiveType primitive,
         IReadOnlyList<Vector3> vertices,
@@ -2013,6 +3538,3 @@ public sealed class ParticlePreviewControl : GLControl
             graphics.DrawString(details, Font, brush, 12, 34);
     }
 }
-
-
-

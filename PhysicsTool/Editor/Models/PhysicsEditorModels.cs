@@ -392,8 +392,11 @@ public sealed class HkrgConstraintEditRow
 public sealed class ParticlePreviewData
 {
     public List<ParticlePreviewPoint> Particles { get; } = new();
+    public List<ParticlePreviewAttachment> ParticleAttachments { get; } = new();
+    public List<ParticlePreviewConstraintSet> ConstraintSets { get; } = new();
     public List<ParticlePreviewLink> Links { get; } = new();
     public List<ParticlePreviewLocalRange> LocalRanges { get; } = new();
+    public List<ParticlePreviewBendStiffness> BendStiffnessConstraints { get; } = new();
     public List<ParticlePreviewTriangle> Triangles { get; } = new();
     public List<ParticlePreviewBoneBinding> BoneBindings { get; } = new();
     public List<BonePreviewPoint> Bones { get; } = new();
@@ -403,6 +406,46 @@ public sealed class ParticlePreviewData
     public bool HasViewRoot { get; set; }
     public Vector3 Gravity { get; set; } = new(0.0f, -9.81f, 0.0f);
     public float DampingPerSecond { get; set; }
+    public float CollisionTolerance { get; set; }
+    public List<int> ConstraintExecution { get; } = new();
+    public int SimulationSubSteps { get; set; } = 1;
+    public int SimulationSolveIterations { get; set; } = 1;
+    public bool AdaptConstraintStiffness { get; set; }
+    public bool TransferMotionEnabled { get; set; }
+    public int TransferMotionTransformSetIndex { get; set; }
+    public int TransferMotionTransformIndex { get; set; }
+    public bool TransferTranslationMotion { get; set; }
+    public float MinTranslationSpeed { get; set; }
+    public float MaxTranslationSpeed { get; set; }
+    public float MinTranslationBlend { get; set; }
+    public float MaxTranslationBlend { get; set; }
+    public bool TransferRotationMotion { get; set; }
+    public float MinRotationSpeed { get; set; }
+    public float MaxRotationSpeed { get; set; }
+    public float MinRotationBlend { get; set; }
+    public float MaxRotationBlend { get; set; }
+}
+
+public sealed class ParticlePreviewConstraintSet
+{
+    public int Index { get; set; }
+    public string Kind { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+}
+
+// hclMoveParticlesOperator copies selected reference-buffer vertices into the
+// simulation. These weights identify the animated skeleton transforms that
+// produced each copied vertex, so fixed particles can follow the model pose.
+public sealed class ParticlePreviewAttachment
+{
+    public int ParticleIndex { get; set; }
+    public List<ParticlePreviewBoneWeight> BoneWeights { get; } = new();
+}
+
+public sealed class ParticlePreviewBoneWeight
+{
+    public int BoneIndex { get; set; }
+    public float Weight { get; set; }
 }
 
 
@@ -418,8 +461,16 @@ public sealed class RagdollConstraintPreviewLink
 }
 public sealed class ParticlePreviewLocalRange
 {
+    public int ConstraintSetIndex { get; set; } = -1;
     public int ParticleIndex { get; set; }
+    public int ReferenceVertex { get; set; } = -1;
+    public int ReferenceBufferIndex { get; set; }
+    public List<ParticlePreviewBoneWeight> ReferenceBoneWeights { get; } = new();
     public float MaximumDistance { get; set; }
+    public float MinNormalDistance { get; set; } = float.NegativeInfinity;
+    public float MaxNormalDistance { get; set; } = float.PositiveInfinity;
+    public float Stiffness { get; set; } = 1.0f;
+    public bool ApplyNormalComponent { get; set; }
 }
 
 public sealed class ParticlePreviewPoint
@@ -430,11 +481,13 @@ public sealed class ParticlePreviewPoint
     public float Radius { get; set; }
     public float Mass { get; set; }
     public float InverseMass { get; set; }
+    public float Friction { get; set; }
     public uint CollisionMask { get; set; }
 }
 
 public sealed class ParticlePreviewLink
 {
+    public int ConstraintSetIndex { get; set; } = -1;
     public int ParticleA { get; set; }
     public int ParticleB { get; set; }
     public string Kind { get; set; } = string.Empty;
@@ -444,6 +497,21 @@ public sealed class ParticlePreviewLink
     public float? Stiffness { get; set; }
     public float? BendStiffness { get; set; }
     public float? StretchStiffness { get; set; }
+}
+
+public sealed class ParticlePreviewBendStiffness
+{
+    public int ConstraintSetIndex { get; set; } = -1;
+    public int ParticleA { get; set; }
+    public int ParticleB { get; set; }
+    public int ParticleC { get; set; }
+    public int ParticleD { get; set; }
+    public float WeightA { get; set; }
+    public float WeightB { get; set; }
+    public float WeightC { get; set; }
+    public float WeightD { get; set; }
+    public float BendStiffness { get; set; }
+    public float RestCurvature { get; set; }
 }
 
 public sealed class ParticlePreviewTriangle
@@ -459,6 +527,8 @@ public sealed class ParticlePreviewBoneBinding
     public int ParticleA { get; set; }
     public int ParticleB { get; set; }
     public int ParticleC { get; set; }
+    public int BoneAxis { get; set; } = 3;
+    public Matrix4x4 LocalBoneTransform { get; set; } = Matrix4x4.Identity;
 }
 
 // A runtime-only pose used by the preview solver. It is never written back to HKCL.

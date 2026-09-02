@@ -4,3 +4,4 @@
 **/__pycache__/
 *.user
 /PhysicsTool.RegressionTests/PhysicsTool.RegressionTests.csproj
+/PhysicsTool/NativeFbx/build/

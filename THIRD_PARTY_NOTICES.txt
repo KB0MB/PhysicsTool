@@ -1,0 +1,14 @@
+Autodesk FBX SDK 2020.3.7
+
+Copyright (c) Autodesk, Inc. All rights reserved.
+
+PhysicsTool's native FBX bridge is developed by the PhysicsTool project and
+statically links Autodesk FBX SDK redistributable components. Use and
+redistribution of Autodesk FBX SDK components are governed by the Autodesk
+license agreement supplied with the SDK.
+
+FBX is a trademark of Autodesk, Inc. PhysicsTool is not affiliated with or
+endorsed by Autodesk.
+
+SDK information and downloads:
+https://aps.autodesk.com/developer/overview/fbx-sdk

@@ -12,8 +12,8 @@ It works with complete physics graphs rather than isolated values: cloth simulat
 | --- | --- | --- |
 | `.hkcl` | BotW Havok cloth | Open, save, merge, remove, duplicate, rename, inspect, directly edit, and convert to BPHCL. |
 | `.bphcl` | TotK Phive/Havok cloth | Open, save, merge, remove, duplicate, rename, inspect, directly edit, and convert to HKCL. |
-| `.bphhb` | TotK helper-bone configuration | Open, save, edit helper-bone records, add, duplicate, rename, mirror, reorder, and convert to BotW `.bphyssb`. This is not a full actor skeleton. |
-| `.bphyssb` | BotW support-bone configuration | Open, inspect, save, and convert to TotK `.bphhb`. |
+| `.bphhb` | TotK helper-bone configuration | Open, save, edit, merge independent driver groups, add, duplicate, rename, mirror, reorder, and convert to BotW `.bphyssb`. This is not a full actor skeleton. |
+| `.bphyssb` | BotW support-bone configuration | Open, inspect, save, edit, merge independent driver groups, and convert to TotK `.bphhb`. |
 | `.hkrg` | BotW Havok ragdoll | Open, save, inspect, and edit model bones, ragdoll bones, rigid bodies, and supported constraints. |
 | `.json` | PhysicsTool diagnostic export | Open and export for inspection. It is not the recommended authoring workflow. |
 
@@ -41,18 +41,35 @@ PhysicsTool can also export a BotW `.bphysics` AAMP sidecar for an HKCL file. Th
 - Duplicate, rename, and mirror cloth geometry. Mirroring follows the BPHCL native payloads, not HKCL serialization.
 - Use the same viewport editing tools as HKCL for supported BPHCL data.
 
-### BPHHB Helper Bones
+### Support and Helper Bones
 
-- Edit bone names and transforms.
-- Add or duplicate a helper-bone graph record.
-- Move selected records up or down, and mirror the selected helper bone across X.
-- Inspect the graph-derived values stored in the helper-bone configuration.
+PhysicsTool calls each independent connected motion graph a **driver group**. A driver group contains the driver bone or bones that provide motion input, the curves and outputs that transform that motion, and the driven bones affected by the result. A group can have multiple drivers when their outputs converge on the same driven graph.
 
-### BPHYSSB Support Bones
+- Browse BPHHB and BPHYSSB files as indexed driver groups rather than one indivisible configuration.
+- View each group's motion-input bones and affected bones in the right pane.
+- Double-click a group, press `Enter`, or use **Editor** to open the existing bone editor scoped to that group.
+- Open a same-format donor and merge one selected driver group. PhysicsTool remaps bone references, curves, outputs, poses, and native table indices into the target graph.
+- Use **Create Support** on an affected bone to clone its known-good driven setup onto a new or existing target bone name. This retains the current driver relationship instead of creating an empty, disconnected record.
+- Edit supported bone names and base transforms, duplicate records, and reorder records.
+- Use **Mirror Group** to reflect every input and affected base pose in the selected driver group across X, including its aim/up directions, and swap recognized left/right name tokens.
+- Convert BPHHB and BPHYSSB in either direction while preserving the graph structure represented by both formats.
 
-- Inspect BotW support-bone names, base transforms, curves, and output relationships.
-- Save native BPHYSSB files and convert their support-bone graph to TotK BPHHB.
-- Convert BPHHB back to BPHYSSB while preserving the graph structure represented by both formats.
+Driver-group merging is currently same-format: BPHHB into BPHHB or BPHYSSB into BPHYSSB. Convert a donor first when moving a group between games.
+
+### Visual FBX Reference Models
+
+- Use **Load FBX** in any direct editor to place a visual-only model behind cloth, skeleton, collider, ragdoll, or support/helper-bone data.
+- The loaded model remains available while switching physics tabs and driver groups.
+- Autodesk FBX SDK bakes node and geometric transforms into the displayed geometry, converts the file's declared units to meters, and normalizes its axis system for the Havok view.
+- Albedo, SPM, normal, and ambient-occlusion textures can come from embedded FBX media or external image files. For stale absolute paths, PhysicsTool also looks for the same texture filename beside the FBX and in its subfolders.
+- Meshes without a readable texture use a neutral checker material and still load normally.
+- **Model** controls visibility, textures, wireframe display, opacity, X mirroring, uniform scale, XYZ offset, and XYZ rotation.
+- **Materials** edits each mesh independently. Every texture slot can use its own FBX UV set; shader family, SPM metal and smoothness channels, map strengths, AO, normal strength, auxiliary maps, and tint can also be adjusted. The preview decodes color and packed material maps in the same color spaces used by the reference Blender shaders and detects hard alpha cutouts automatically.
+- **Import .anim** loads a Maya ASCII `.anim` file into memory for visual playback on the FBX skeleton. **Play/Pause** loops the source frame range at its declared frame rate, and **Reset Pose** restores the original FBX pose. Animation remains visual-only.
+- In a support/helper-bone driver-group editor, the preview bones snap to the animated FBX skeleton when every driver and affected bone in that group can be matched by name. Partial matches are rejected so the graph cannot be shown in a misleading half-snapped pose.
+- Eye materials use the packaged glint overlay by default. **Materials** can disable it or adjust its strength. Eye tint and sketch-line resources are shipped beside the Release executable for future/custom material layouts.
+- Legacy neighboring `<model>.materials.json` layouts and older per-model presets are migrated automatically. **Save Preset** now stores every model profile in one shared `%LocalAppData%\PhysicsTool\presets.json` database; matching mesh and texture names load automatically.
+- The FBX and animation are session-only reference data. They are never written into HKCL, BPHCL, HKRG, BPHHB, or BPHYSSB files.
 
 ### HKRG Ragdolls
 
@@ -90,11 +107,11 @@ Both directions are structurally verified against matched files, and the reverse
 
 ## Recommended Workflow
 
-### Merge a Cloth
+### Merge a Cloth or Driver Group
 
 1. Use **Open Physics** to load the target file.
 2. Use **Open Donor** to load the source file.
-3. Select the donor cloth.
+3. Select the donor cloth or driver group.
 4. Choose **Merge Selected** or press `M` in merge mode.
 5. Read the preflight message, save, reopen the result, then test it in-game.
 
@@ -116,10 +133,10 @@ Shortcuts intentionally do not override an active text cell. Finish or cancel te
 
 | Shortcut | Action |
 | --- | --- |
-| `Enter` | Open the selected cloth in the direct editor. |
+| `Enter` | Open the selected cloth or driver group in the direct editor. |
 | `Ctrl+S` | Save to the current path. |
 | `Ctrl+Shift+S` | Save As. |
-| `M` | Merge the selected donor cloth in merge mode. |
+| `M` | Merge the selected donor cloth or same-format driver group in merge mode. |
 | `Delete` | Remove the selected cloth in merge mode. |
 | Right click a cloth | Rename or duplicate the selected cloth. |
 
@@ -150,6 +167,13 @@ Shortcuts intentionally do not override an active text cell. Finish or cancel te
 | Right click in the viewport | Mirror Global/Local, Copy, Paste, Paste X-Flipped, and Delete Selected. |
 | `F` | Link exactly two or three selected HKCL particles. |
 | `Space` | Run or stop HKCL preview simulation when the viewport has focus. |
+| **Load FBX** | Load a session-only visual reference model into the active viewport. |
+| **Import .anim** | Load a Maya ASCII `.anim` into memory for playback on the visual FBX. |
+| **Play/Pause** | Start or pause the imported visual animation. |
+| **Reset Pose** | Restore the original FBX pose without unloading the imported animation. |
+| **Clear Model** | Remove the visual reference without changing physics data. |
+| **Model** | Align the reference model and adjust texture, opacity, mirror, and wireframe display. |
+| **Materials** | Assign per-texture UV sets and tune the visual material or save a reusable preset. |
 
 The axis widget in the top-right corner of the viewport changes camera direction; its reset control restores the default camera framing.
 
@@ -169,6 +193,7 @@ The axis widget in the top-right corner of the viewport changes camera direction
 - A successful open/save or reopen test does **not** prove a file works in-game.
 - The preview simulation is not an authoritative replacement for Havok.
 - JSON is retained as a diagnostic export, not as the primary authoring format.
+- FBX textures appear only when the exporter embedded the image data or the referenced external image can be found. An FBX can contain material paths without containing the image bytes.
 
 ## Build and Run
 
@@ -200,8 +225,18 @@ PhysicsTool/
   UI/                 Windows Forms interface and conversion dialogs
 ```
 
+### Rebuilding the Native FBX Bridge
+
+The checked-in `PhysicsToolFbxBridge.dll` is a self-contained x64 bridge built with Autodesk FBX SDK. To rebuild it, install Autodesk FBX SDK 2020.3.7 or newer for Windows and run:
+
+```powershell
+PhysicsTool\NativeFbx\build-native.ps1 -Configuration Release
+```
+
+The script uses the newest installed SDK by default. Pass `-FbxSdkRoot` to select a different compatible installation.
 ## Credits
 
 - [banan039 / totkbits](https://github.com/banan039/totkbits) for foundational BPHCL reverse-engineering work.
 - [VelouriasMoon / HKCLTool](https://github.com/VelouriasMoon/HKCLTool) for the original HKCLTool project this work grew from.
 - [HKX2](https://github.com/krenyy/HKX2) and [Json.NET](https://www.newtonsoft.com/json) for supporting libraries.
+- [Autodesk FBX SDK](https://aps.autodesk.com/developer/overview/fbx-sdk) for native FBX geometry, material, UV-set, texture, transform, and triangulation support.

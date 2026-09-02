@@ -229,6 +229,58 @@ public static class BphyssbBridge
         });
     }
 
+    /// <summary>
+    /// Creates support for a new or existing target bone by cloning the selected
+    /// affected bone's native support records. Output handles stay shared with
+    /// the source because BPHYSSB uses them as reusable driver mappings.
+    /// </summary>
+    public static (BphyssbDocumentSummary Document, int TargetBoneIndex) CreateSupportFromBone(
+        BphyssbDocumentSummary document,
+        int sourceBoneIndex,
+        string targetBoneName)
+    {
+        var targetBoneIndex = -1;
+        var rebuilt = Rebuild(document, root =>
+        {
+            var data = RequireDataRoot(root);
+            var bones = RequireList(data, BoneListHash, "bone_list");
+            var support = RequireList(data, SupportBoneListHash, "support_bone_list");
+            if (sourceBoneIndex < 0 || sourceBoneIndex >= bones.Objects.Count)
+                throw new ArgumentOutOfRangeException(nameof(sourceBoneIndex));
+
+            var sourceRecords = support.Objects
+                .Where(item => GetInt(item, TargetBoneHash) == sourceBoneIndex)
+                .ToArray();
+            if (sourceRecords.Length == 0)
+                throw new InvalidOperationException("The selected bone has no support graph to clone.");
+
+            targetBoneIndex = bones.Objects.FindIndex(item =>
+                string.Equals(GetString(item, NameHash), targetBoneName, StringComparison.Ordinal));
+            if (targetBoneIndex < 0)
+            {
+                targetBoneIndex = bones.Objects.Count;
+                var targetBone = CloneObject(bones.Objects[sourceBoneIndex], $"bone_{targetBoneIndex}");
+                SetString(targetBone, NameHash, targetBoneName);
+                bones.Objects.Add(targetBone);
+            }
+            else if (targetBoneIndex == sourceBoneIndex)
+            {
+                throw new InvalidOperationException("Choose a different target bone name.");
+            }
+
+            if (support.Objects.Any(item => GetInt(item, TargetBoneHash) == targetBoneIndex))
+                throw new InvalidOperationException($"{targetBoneName} already has support data in this file.");
+
+            foreach (var sourceRecord in sourceRecords)
+            {
+                var cloned = CloneObject(sourceRecord, $"support_bone_{support.Objects.Count}");
+                SetInt(cloned, TargetBoneHash, targetBoneIndex);
+                support.Objects.Add(cloned);
+            }
+        });
+
+        return (rebuilt, targetBoneIndex);
+    }
     public static BphyssbDocumentSummary AddBone(BphyssbDocumentSummary document, int preferredSourceIndex)
     {
         var sourceIndex = document.Graph?.Bones.Count > 0
@@ -237,6 +289,47 @@ public static class BphyssbBridge
         return DuplicateBone(document, sourceIndex, "SupportBone_" + document.Graph!.Bones.Count.ToString());
     }
 
+    /// <summary>
+    /// Reflects every input and affected pose in one connected driver group.
+    /// Curves and reusable outputs stay connected because both endpoint frames
+    /// are reflected together.
+    /// </summary>
+    public static BphyssbDocumentSummary MirrorDriverGroupAcrossX(
+        BphyssbDocumentSummary document,
+        int groupIndex)
+    {
+        var group = BuildDriverGroups(document).ElementAtOrDefault(groupIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(groupIndex));
+        var groupBoneIndices = group.Summary.DriverBoneIndices
+            .Concat(group.Summary.DrivenBoneIndices)
+            .Distinct()
+            .ToArray();
+
+        return Rebuild(document, root =>
+        {
+            var data = RequireDataRoot(root);
+            var bones = RequireList(data, BoneListHash, "bone_list");
+            foreach (var boneIndex in groupBoneIndices)
+            {
+                if (boneIndex < 0 || boneIndex >= bones.Objects.Count)
+                    continue;
+                var bone = bones.Objects[boneIndex];
+                var name = GetString(bone, NameHash);
+                if (!string.IsNullOrWhiteSpace(name))
+                    SetString(bone, NameHash, SwapSideTokens(name));
+            }
+
+            var main = RequireList(data, MainBoneListHash, "main_bone_list");
+            MirrorTransformRecords(group.DriverIndices
+                .Where(index => index >= 0 && index < main.Objects.Count)
+                .Select(index => main.Objects[index]));
+
+            var support = RequireList(data, SupportBoneListHash, "support_bone_list");
+            MirrorTransformRecords(group.SupportIndices
+                .Where(index => index >= 0 && index < support.Objects.Count)
+                .Select(index => support.Objects[index]));
+        });
+    }
     public static BphyssbDocumentSummary MirrorBoneAcrossX(BphyssbDocumentSummary document, int boneIndex)
     {
         return Rebuild(document, root =>
@@ -291,6 +384,361 @@ public static class BphyssbBridge
         });
     }
 
+    public static IReadOnlyList<SidecarDriverGroup> GetDriverGroups(BphyssbDocumentSummary document) =>
+        BuildDriverGroups(document).Select(group => group.Summary).ToArray();
+
+    /// <summary>
+    /// Imports one connected BotW support-bone graph and remaps its compact
+    /// driver, curve, output, and bone references into the target archive.
+    /// </summary>
+    public static BphyssbDocumentSummary MergeDriverGroup(
+        BphyssbDocumentSummary target,
+        BphyssbDocumentSummary source,
+        int groupIndex)
+    {
+        var sourceGroups = BuildDriverGroups(source);
+        var group = sourceGroups.ElementAtOrDefault(groupIndex)
+            ?? throw new ArgumentOutOfRangeException(nameof(groupIndex));
+        var sourceArchive = source.Archive
+            ?? throw new InvalidOperationException("The reference BPHYSSB graph could not be decoded.");
+        var sourceData = FindDataRoot(sourceArchive)
+            ?? throw new InvalidDataException("The reference BPHYSSB has no support-bone data root.");
+
+        return Rebuild(target, root =>
+        {
+            var targetData = RequireDataRoot(root);
+            var targetBones = RequireList(targetData, BoneListHash, "bone_list");
+            var targetCurves = RequireList(targetData, ConnectionCurveListHash, "connection_curve_list");
+            var targetSingles = RequireList(targetData, OutputSingleListHash, "output_single_list");
+            var targetDoubles = FindList(targetData, OutputDoubleListHash);
+            if (targetDoubles == null)
+            {
+                targetDoubles = new BotwAampWriter.AampListNode("output_double_list", OutputDoubleListHash);
+                var singleIndex = targetData.Children.IndexOf(targetSingles);
+                targetData.Children.Insert(singleIndex + 1, targetDoubles);
+            }
+            var targetMain = RequireList(targetData, MainBoneListHash, "main_bone_list");
+            var targetSupport = RequireList(targetData, SupportBoneListHash, "support_bone_list");
+
+            var sourceBones = sourceData.FindChild(BoneListHash) ?? throw new InvalidDataException("The reference BPHYSSB has no bone_list.");
+            var sourceCurves = sourceData.FindChild(ConnectionCurveListHash) ?? throw new InvalidDataException("The reference BPHYSSB has no connection_curve_list.");
+            var sourceSingles = sourceData.FindChild(OutputSingleListHash) ?? throw new InvalidDataException("The reference BPHYSSB has no output_single_list.");
+            var sourceDoubles = sourceData.FindChild(OutputDoubleListHash);
+            var sourceMain = sourceData.FindChild(MainBoneListHash) ?? throw new InvalidDataException("The reference BPHYSSB has no main_bone_list.");
+            var sourceSupport = sourceData.FindChild(SupportBoneListHash) ?? throw new InvalidDataException("The reference BPHYSSB has no support_bone_list.");
+
+            var boneMap = new Dictionary<int, int>();
+            int MapBone(int sourceBoneIndex)
+            {
+                if (sourceBoneIndex < 0)
+                    return -1;
+                if (boneMap.TryGetValue(sourceBoneIndex, out var mapped))
+                    return mapped;
+                if (sourceBoneIndex >= sourceBones.Objects.Count)
+                    throw new InvalidDataException($"The reference driver group uses missing bone #{sourceBoneIndex}.");
+
+                var sourceBone = sourceBones.Objects[sourceBoneIndex];
+                var name = sourceBone.Find(NameHash)?.AsString() ?? $"bone_{sourceBoneIndex}";
+                for (var index = 0; index < targetBones.Objects.Count; index++)
+                {
+                    if (string.Equals(GetString(targetBones.Objects[index], NameHash), name, StringComparison.Ordinal))
+                    {
+                        boneMap[sourceBoneIndex] = index;
+                        return index;
+                    }
+                }
+
+                var targetIndex = targetBones.Objects.Count;
+                targetBones.Objects.Add(CloneObject(sourceBone, $"bone_{targetIndex}"));
+                boneMap[sourceBoneIndex] = targetIndex;
+                return targetIndex;
+            }
+
+            foreach (var boneIndex in group.RequiredBoneIndices)
+                MapBone(boneIndex);
+
+            var driverMap = new Dictionary<int, int>();
+            foreach (var sourceDriverIndex in group.DriverIndices)
+            {
+                var sourceDriver = sourceMain.Objects[sourceDriverIndex];
+                var targetBoneIndex = MapBone(sourceDriver.Find(TargetBoneHash)?.AsInt32() ?? -1);
+                var existing = targetMain.Objects.FindIndex(item => GetInt(item, TargetBoneHash) == targetBoneIndex);
+                if (existing >= 0)
+                {
+                    driverMap[sourceDriverIndex] = existing;
+                    continue;
+                }
+
+                var cloned = CloneObject(sourceDriver, $"main_bone_{targetMain.Objects.Count}");
+                SetInt(cloned, TargetBoneHash, targetBoneIndex);
+                SetInt(cloned, TargetSpaceHash, MapBone(sourceDriver.Find(TargetSpaceHash)?.AsInt32() ?? -1));
+                driverMap[sourceDriverIndex] = targetMain.Objects.Count;
+                targetMain.Objects.Add(cloned);
+            }
+
+            var curveMap = new Dictionary<int, int>();
+            foreach (var sourceCurveIndex in group.CurveIndices)
+            {
+                var sourceCurve = sourceCurves.Objects[sourceCurveIndex];
+                var packed = sourceCurve.Find(TargetBoneAttributeHash)?.AsInt32() ?? -1;
+                var sourceDriverIndex = (int)((uint)packed >> 16);
+                if (!driverMap.TryGetValue(sourceDriverIndex, out var targetDriverIndex))
+                    throw new InvalidDataException($"Curve #{sourceCurveIndex} escapes the selected driver group.");
+
+                var cloned = CloneObject(sourceCurve, $"connection_curve_{targetCurves.Objects.Count}");
+                SetInt(cloned, TargetBoneAttributeHash, (targetDriverIndex << 16) | (packed & 0xffff));
+                curveMap[sourceCurveIndex] = targetCurves.Objects.Count;
+                targetCurves.Objects.Add(cloned);
+            }
+
+            var outputMap = new Dictionary<int, int>();
+            foreach (var sourceHandle in group.OutputHandles)
+            {
+                if (IsDoubleOutputHandle(sourceHandle))
+                {
+                    var sourceIndex = sourceHandle & 0xffff;
+                    if (sourceDoubles == null || sourceIndex >= sourceDoubles.Objects.Count)
+                        throw new InvalidDataException($"The reference driver group uses missing double output #{sourceIndex}.");
+                    var cloned = CloneObject(sourceDoubles.Objects[sourceIndex], $"output_double_{targetDoubles.Objects.Count}");
+                    RemapPackedCurve(cloned, TargetConnection0Hash, curveMap);
+                    RemapPackedCurve(cloned, TargetConnection1Hash, curveMap);
+                    outputMap[sourceHandle] = 0x0001_0000 | targetDoubles.Objects.Count;
+                    targetDoubles.Objects.Add(cloned);
+                }
+                else
+                {
+                    if (sourceHandle < 0 || sourceHandle >= sourceSingles.Objects.Count)
+                        throw new InvalidDataException($"The reference driver group uses missing single output #{sourceHandle}.");
+                    var cloned = CloneObject(sourceSingles.Objects[sourceHandle], $"output_single_{targetSingles.Objects.Count}");
+                    var sourceCurveReference = sourceSingles.Objects[sourceHandle].Find(TargetConnectionHash)?.AsInt32() ?? -1;
+                    if (sourceCurveReference >= 0)
+                        RemapPackedCurve(cloned, TargetConnectionHash, curveMap);
+                    outputMap[sourceHandle] = targetSingles.Objects.Count;
+                    targetSingles.Objects.Add(cloned);
+                }
+            }
+
+            foreach (var sourceSupportIndex in group.SupportIndices)
+            {
+                var sourceRecord = sourceSupport.Objects[sourceSupportIndex];
+                var cloned = CloneObject(sourceRecord, $"support_bone_{targetSupport.Objects.Count}");
+                SetInt(cloned, TargetBoneHash, MapBone(sourceRecord.Find(TargetBoneHash)?.AsInt32() ?? -1));
+                SetInt(cloned, TargetSpaceHash, MapBone(sourceRecord.Find(TargetSpaceHash)?.AsInt32() ?? -1));
+                foreach (var outputHash in SupportOutputHashes)
+                {
+                    var sourceHandle = sourceRecord.Find(outputHash)?.AsInt32() ?? -1;
+                    if (sourceHandle >= 0)
+                    {
+                        if (!outputMap.TryGetValue(sourceHandle, out var targetHandle))
+                            throw new InvalidDataException("A support-bone output escapes the selected driver group.");
+                        SetInt(cloned, outputHash, targetHandle);
+                    }
+                }
+                targetSupport.Objects.Add(cloned);
+            }
+
+            if (targetDoubles.Objects.Count == 0)
+                targetData.Children.Remove(targetDoubles);
+        });
+    }
+
+    private static IReadOnlyList<BphyssbDriverGroupData> BuildDriverGroups(BphyssbDocumentSummary document)
+    {
+        var archive = document.Archive
+            ?? throw new InvalidOperationException("This BPHYSSB file could not be decoded into driver groups.");
+        var data = FindDataRoot(archive)
+            ?? throw new InvalidDataException("BPHYSSB has no support-bone data root.");
+        var bones = data.FindChild(BoneListHash) ?? throw new InvalidDataException("BPHYSSB has no bone_list.");
+        var curves = data.FindChild(ConnectionCurveListHash) ?? throw new InvalidDataException("BPHYSSB has no connection_curve_list.");
+        var singles = data.FindChild(OutputSingleListHash) ?? throw new InvalidDataException("BPHYSSB has no output_single_list.");
+        var doubles = data.FindChild(OutputDoubleListHash);
+        var main = data.FindChild(MainBoneListHash) ?? throw new InvalidDataException("BPHYSSB has no main_bone_list.");
+        var support = data.FindChild(SupportBoneListHash) ?? throw new InvalidDataException("BPHYSSB has no support_bone_list.");
+        if (main.Objects.Count == 0)
+            return Array.Empty<BphyssbDriverGroupData>();
+
+        var parents = Enumerable.Range(0, main.Objects.Count).ToArray();
+        int Find(int index)
+        {
+            while (parents[index] != index)
+            {
+                parents[index] = parents[parents[index]];
+                index = parents[index];
+            }
+            return index;
+        }
+        void Union(int left, int right)
+        {
+            var leftRoot = Find(left);
+            var rightRoot = Find(right);
+            if (leftRoot != rightRoot)
+                parents[rightRoot] = leftRoot;
+        }
+
+        var curveDrivers = curves.Objects
+            .Select(item => (int)((uint)(item.Find(TargetBoneAttributeHash)?.AsInt32() ?? -1) >> 16))
+            .ToArray();
+        IEnumerable<int> CurvesForHandle(int handle)
+        {
+            if (IsDoubleOutputHandle(handle))
+            {
+                var index = handle & 0xffff;
+                if (doubles == null || index >= doubles.Objects.Count)
+                    return Array.Empty<int>();
+                return new[]
+                {
+                    DecodePackedCurve(doubles.Objects[index].Find(TargetConnection0Hash)?.AsInt32() ?? -1),
+                    DecodePackedCurve(doubles.Objects[index].Find(TargetConnection1Hash)?.AsInt32() ?? -1)
+                };
+            }
+            if (handle < 0 || handle >= singles.Objects.Count)
+                return Array.Empty<int>();
+            return new[] { DecodePackedCurve(singles.Objects[handle].Find(TargetConnectionHash)?.AsInt32() ?? -1) };
+        }
+
+        var allHandles = Enumerable.Range(0, singles.Objects.Count)
+            .Concat(Enumerable.Range(0, doubles?.Objects.Count ?? 0).Select(index => 0x0001_0000 | index))
+            .ToArray();
+        foreach (var handle in allHandles)
+        {
+            var linkedDrivers = CurvesForHandle(handle)
+                .Where(index => index >= 0 && index < curveDrivers.Length)
+                .Select(index => curveDrivers[index])
+                .Where(index => index >= 0 && index < main.Objects.Count)
+                .Distinct()
+                .ToArray();
+            for (var index = 1; index < linkedDrivers.Length; index++)
+                Union(linkedDrivers[0], linkedDrivers[index]);
+        }
+        foreach (var supportRecord in support.Objects)
+        {
+            var linkedDrivers = SupportOutputHashes
+                .Select(hash => supportRecord.Find(hash)?.AsInt32() ?? -1)
+                .Where(handle => handle >= 0)
+                .SelectMany(CurvesForHandle)
+                .Where(index => index >= 0 && index < curveDrivers.Length)
+                .Select(index => curveDrivers[index])
+                .Where(index => index >= 0 && index < main.Objects.Count)
+                .Distinct()
+                .ToArray();
+            for (var index = 1; index < linkedDrivers.Length; index++)
+                Union(linkedDrivers[0], linkedDrivers[index]);
+        }
+
+        var boneNames = bones.Objects
+            .Select((item, index) => item.Find(NameHash)?.AsString() ?? $"bone_{index}")
+            .ToArray();
+        return Enumerable.Range(0, main.Objects.Count)
+            .GroupBy(Find)
+            .Select(group => group.OrderBy(index => index).ToArray())
+            .OrderBy(group => group[0])
+            .Select((driverIndices, groupIndex) =>
+            {
+                var driverSet = driverIndices.ToHashSet();
+                var curveIndices = curveDrivers
+                    .Select((driverIndex, curveIndex) => (driverIndex, curveIndex))
+                    .Where(item => driverSet.Contains(item.driverIndex))
+                    .Select(item => item.curveIndex)
+                    .ToArray();
+                var curveSet = curveIndices.ToHashSet();
+                var activeHandles = allHandles.Where(handle => CurvesForHandle(handle).Any(curveSet.Contains)).ToHashSet();
+                var supportIndices = support.Objects
+                    .Select((item, supportIndex) => (item, supportIndex))
+                    .Where(item => SupportOutputHashes
+                        .Select(hash => item.item.Find(hash)?.AsInt32() ?? -1)
+                        .Any(activeHandles.Contains))
+                    .Select(item => item.supportIndex)
+                    .ToArray();
+                var outputHandles = supportIndices
+                    .SelectMany(index => SupportOutputHashes.Select(hash => support.Objects[index].Find(hash)?.AsInt32() ?? -1))
+                    .Where(handle => handle >= 0)
+                    .Distinct()
+                    .ToArray();
+                var driverBoneIndices = driverIndices
+                    .Select(index => main.Objects[index].Find(TargetBoneHash)?.AsInt32() ?? -1)
+                    .Where(index => index >= 0)
+                    .Distinct()
+                    .ToArray();
+                var drivenBoneIndices = supportIndices
+                    .Select(index => support.Objects[index].Find(TargetBoneHash)?.AsInt32() ?? -1)
+                    .Where(index => index >= 0)
+                    .Distinct()
+                    .ToArray();
+                var requiredBones = driverIndices
+                    .SelectMany(index => new[]
+                    {
+                        main.Objects[index].Find(TargetBoneHash)?.AsInt32() ?? -1,
+                        main.Objects[index].Find(TargetSpaceHash)?.AsInt32() ?? -1
+                    })
+                    .Concat(supportIndices.SelectMany(index => new[]
+                    {
+                        support.Objects[index].Find(TargetBoneHash)?.AsInt32() ?? -1,
+                        support.Objects[index].Find(TargetSpaceHash)?.AsInt32() ?? -1
+                    }))
+                    .Where(index => index >= 0)
+                    .Distinct()
+                    .ToArray();
+                var summary = new SidecarDriverGroup(
+                    groupIndex,
+                    driverIndices,
+                    driverBoneIndices,
+                    drivenBoneIndices,
+                    driverBoneIndices.Select(index => BoneName(boneNames, index)).ToArray(),
+                    drivenBoneIndices.Select(index => BoneName(boneNames, index)).ToArray(),
+                    requiredBones,
+                    requiredBones.Select(index => BoneName(boneNames, index)).ToArray(),
+                    curveIndices.Length,
+                    outputHandles.Length);
+                return new BphyssbDriverGroupData(summary, driverIndices, curveIndices, outputHandles, supportIndices, requiredBones);
+            })
+            .ToArray();
+    }
+
+    private static AampReadList? FindDataRoot(AampReadArchive archive) =>
+        archive.Root.Children.FirstOrDefault(child =>
+            child.FindChild(BoneListHash) != null &&
+            child.FindChild(ConnectionCurveListHash) != null &&
+            child.FindChild(MainBoneListHash) != null &&
+            child.FindChild(SupportBoneListHash) != null);
+
+    private static readonly uint[] SupportOutputHashes =
+    {
+        TargetBendHHash,
+        TargetBendVHash,
+        TargetRollHash,
+        TargetTranslateXHash,
+        TargetTranslateYHash,
+        TargetTranslateZHash
+    };
+
+    private static bool IsDoubleOutputHandle(int handle) =>
+        ((uint)handle & 0xffff_0000u) == 0x0001_0000u;
+
+    private static int DecodePackedCurve(int reference) =>
+        reference < 0 ? -1 : IsDoubleOutputHandle(reference) ? reference & 0xffff : reference;
+
+    private static void RemapPackedCurve(
+        BotwAampWriter.AampObjectNode item,
+        uint hash,
+        IReadOnlyDictionary<int, int> curveMap)
+    {
+        var sourceReference = GetInt(item, hash);
+        var sourceCurveIndex = DecodePackedCurve(sourceReference);
+        if (sourceCurveIndex < 0 || !curveMap.TryGetValue(sourceCurveIndex, out var targetCurveIndex))
+            throw new InvalidDataException("An output references a curve outside the selected driver group.");
+        SetInt(item, hash, IsDoubleOutputHandle(sourceReference) ? 0x0001_0000 | targetCurveIndex : targetCurveIndex);
+    }
+
+    private static string BoneName(IReadOnlyList<string> names, int index) =>
+        index >= 0 && index < names.Count ? names[index] : $"bone_{index}";
+
+    private sealed record BphyssbDriverGroupData(
+        SidecarDriverGroup Summary,
+        IReadOnlyList<int> DriverIndices,
+        IReadOnlyList<int> CurveIndices,
+        IReadOnlyList<int> OutputHandles,
+        IReadOnlyList<int> SupportIndices,
+        IReadOnlyList<int> RequiredBoneIndices);
     public static BphyssbExportSummary Export(BphhbDocumentSummary source, string outputPath)
     {
         if (!Path.GetExtension(outputPath).Equals(".bphyssb", StringComparison.OrdinalIgnoreCase))
@@ -704,6 +1152,13 @@ public static class BphyssbBridge
         return result;
     }
 
+    private static BotwAampWriter.AampObjectNode CloneObject(AampReadObject source, string replacementName)
+    {
+        var result = new BotwAampWriter.AampObjectNode(replacementName);
+        foreach (var parameter in source.Parameters)
+            result.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(parameter.Hash, parameter.Type, parameter.Bytes));
+        return result;
+    }
     private static BotwAampWriter.AampObjectNode CloneObject(BotwAampWriter.AampObjectNode source, string? replacementName = null)
     {
         var result = replacementName == null
@@ -818,9 +1273,22 @@ public static class BphyssbBridge
             var rotation = GetVector4(record, SourceBaseRotationHash);
             if (rotation.HasValue)
                 SetVector4(record, SourceBaseRotationHash, MirrorQuaternionAcrossX(rotation.Value));
+
+            MirrorDirectionAcrossX(record, TargetAimHash);
+            MirrorDirectionAcrossX(record, TargetUpHash);
         }
     }
 
+    private static void MirrorDirectionAcrossX(BotwAampWriter.AampObjectNode record, uint hash)
+    {
+        var direction = GetVector3(record, hash);
+        if (!direction.HasValue)
+            return;
+
+        var mirrored = direction.Value;
+        mirrored.X = -mirrored.X;
+        SetVector3(record, hash, mirrored);
+    }
     private static Vector4 MirrorQuaternionAcrossX(Vector4 rotation)
     {
         var quaternion = Quaternion.Normalize(new Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W));

@@ -20,6 +20,313 @@ internal static class Program
 	{
 		try
 		{
+			if (args.Length == 3 && string.Equals(args[0], "--inspect-physics-visual-binds", StringComparison.OrdinalIgnoreCase))
+			{
+				var service = new HkclService();
+				service.Load(args[1]);
+				using var pose = VisualModelImporter.OpenPose(args[2]);
+				var visualByName = pose.Bones
+					.GroupBy(bone => Normalize(bone.Name), StringComparer.OrdinalIgnoreCase)
+					.ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+				for (var clothIndex = 0; clothIndex < service.GetClothSummaries().Count; clothIndex++)
+				{
+					var preview = service.GetParticlePreview(clothIndex);
+					var driven = preview.BoneBindings.Select(binding => binding.BoneIndex).ToHashSet();
+					foreach (var physics in preview.Bones.Where(bone => driven.Contains(bone.Index)))
+					{
+						if (!visualByName.TryGetValue(Normalize(physics.Name), out var visual))
+						{
+							Console.WriteLine($"bindCompare|cloth={clothIndex}:{service.GetClothName(clothIndex)}|bone={physics.Index}:{physics.Name}|visual=missing");
+							continue;
+						}
+						Console.WriteLine(
+							$"bindCompare|cloth={clothIndex}:{service.GetClothName(clothIndex)}|bone={physics.Index}:{physics.Name}|position={Vector3.Distance(physics.Position, visual.Position):R}|axisDots={Vector3.Dot(physics.AxisX, visual.AxisX):R},{Vector3.Dot(physics.AxisY, visual.AxisY):R},{Vector3.Dot(physics.AxisZ, visual.AxisZ):R}");
+					}
+				}
+				return;
+
+				static string Normalize(string name)
+				{
+					var value = name ?? string.Empty;
+					var pipe = value.LastIndexOf('|');
+					if (pipe >= 0)
+						value = value[(pipe + 1)..];
+					var colon = value.LastIndexOf(':');
+					return colon >= 0 ? value[(colon + 1)..] : value;
+				}
+			}
+			if (args.Length == 2 && string.Equals(args[0], "--inspect-cloth-bone-deformers", StringComparison.OrdinalIgnoreCase))
+			{
+				var service = new HkclService();
+				service.Load(args[1]);
+				for (var clothIndex = 0; clothIndex < service.GetClothSummaries().Count; clothIndex++)
+				{
+					var deformers = service.GetSimpleMeshBoneDeformData(clothIndex);
+					var preview = service.GetParticlePreview(clothIndex);
+					var runtime = service.GetClothRuntimeData(clothIndex);
+					var driven = preview.BoneBindings.Select(binding => binding.BoneIndex).ToHashSet();
+					var inherited = preview.Bones.Where(bone =>
+						!driven.Contains(bone.Index) &&
+						HasDrivenAncestor(bone.ParentIndex, preview.Bones, driven)).ToArray();
+					Console.WriteLine(
+						$"clothBoneDeformers|index={clothIndex}|name={service.GetClothName(clothIndex)}|operators={deformers.Count}|values=[{string.Join(";", deformers.Select(deformer => $"op{deformer.OperatorIndex}:in{deformer.InputBufferIndex}:axis{deformer.BoneAxis}:pairs{deformer.TriangleBonePairs.Count}:locals{deformer.LocalBoneTransforms.Count}"))}]|buffers=[{string.Join(";", runtime.Buffers.Select(buffer => $"{buffer.Index}:{buffer.BufferName}:v{buffer.VertexCount}:t{buffer.TriangleCount}:indices{buffer.TriangleIndices.Count}"))}]|previewTriangles={preview.Triangles.Count}|driven=[{string.Join(";", preview.Bones.Where(bone => driven.Contains(bone.Index)).Select(bone => $"{bone.Index}:{bone.Name}"))}]|inherited=[{string.Join(";", inherited.Select(bone => $"{bone.Index}:{bone.Name}"))}]");
+					var particles = preview.Particles.ToDictionary(particle => particle.Index);
+					foreach (var deformer in deformers)
+					{
+						foreach (var pair in deformer.TriangleBonePairs)
+						{
+							var boneIndex = pair.BoneOffset / 64;
+							var triangleIndex = pair.TriangleOffset / 6;
+							if (triangleIndex >= preview.Triangles.Count)
+								continue;
+							var triangle = preview.Triangles[triangleIndex];
+							if (!particles.TryGetValue(triangle.ParticleA, out var a) ||
+								!particles.TryGetValue(triangle.ParticleB, out var b) ||
+								!particles.TryGetValue(triangle.ParticleC, out var c))
+								continue;
+							var centroid = (a.Position + b.Position + c.Position) / 3.0f;
+							var boneName = preview.Bones.FirstOrDefault(bone => bone.Index == boneIndex)?.Name ?? "?";
+							Console.WriteLine($"triangleBone|cloth={clothIndex}|bone={boneIndex}:{boneName}|triangle={triangleIndex}:{triangle.ParticleA},{triangle.ParticleB},{triangle.ParticleC}|centroid={centroid.X:R},{centroid.Y:R},{centroid.Z:R}");
+						}
+					}
+				}
+				return;
+
+				static bool HasDrivenAncestor(
+					int boneIndex,
+					IReadOnlyList<BonePreviewPoint> bones,
+					IReadOnlySet<int> driven)
+				{
+					var byIndex = bones.ToDictionary(bone => bone.Index);
+					var visited = new HashSet<int>();
+					while (boneIndex >= 0 && visited.Add(boneIndex) && byIndex.TryGetValue(boneIndex, out var bone))
+					{
+						if (driven.Contains(boneIndex))
+							return true;
+						boneIndex = bone.ParentIndex;
+					}
+					return false;
+				}
+			}
+			if (args.Length == 2 && string.Equals(args[0], "--inspect-bphcl-bone-scales", StringComparison.OrdinalIgnoreCase))
+			{
+				var document = NativeBphclDocument.Open(args[1]);
+				foreach (var skeleton in document.Skeletons)
+				{
+					var scaled = skeleton.Bones.Where(bone =>
+						MathF.Abs(bone.Scale.X - 1.0f) > 0.000001f ||
+						MathF.Abs(bone.Scale.Y - 1.0f) > 0.000001f ||
+						MathF.Abs(bone.Scale.Z - 1.0f) > 0.000001f).ToArray();
+					Console.WriteLine($"boneScales|skeleton={skeleton.Index}:{skeleton.Name}|bones={skeleton.Bones.Count}|nonUnit={scaled.Length}|values=[{string.Join(";", scaled.Select(bone => $"{bone.Index}:{bone.Name}:{bone.Scale.X:R},{bone.Scale.Y:R},{bone.Scale.Z:R}"))}]");
+				}
+				return;
+			}
+			if (args.Length is 3 or 4 && string.Equals(args[0], "--validate-fbx-override-roundtrip", StringComparison.OrdinalIgnoreCase))
+			{
+				using var animation = VisualModelImporter.OpenAnimation(args[1], args[2]);
+				var frame = args.Length == 4
+					? double.Parse(args[3], CultureInfo.InvariantCulture)
+					: animation.StartFrame;
+				var baseline = animation.Sample(frame);
+				var overrides = baseline.Bones.Select(bone => new VisualBoneOverride(
+					bone.Name,
+					bone.Position,
+					bone.Rotation,
+					bone.Scale)).ToArray();
+				var roundTrip = animation.Sample(frame, boneOverrides: overrides);
+				var maxPositionError = 0.0f;
+				var maxNormalError = 0.0f;
+				var comparedVertices = 0;
+				for (var meshIndex = 0; meshIndex < Math.Min(baseline.Meshes.Count, roundTrip.Meshes.Count); meshIndex++)
+				{
+					var expected = baseline.Meshes[meshIndex].Vertices;
+					var actual = roundTrip.Meshes[meshIndex].Vertices;
+					for (var offset = 0; offset + 7 < Math.Min(expected.Length, actual.Length); offset += 8)
+					{
+						maxPositionError = Math.Max(maxPositionError, Vector3.Distance(
+							new Vector3(expected[offset], expected[offset + 1], expected[offset + 2]),
+							new Vector3(actual[offset], actual[offset + 1], actual[offset + 2])));
+						maxNormalError = Math.Max(maxNormalError, Vector3.Distance(
+							new Vector3(expected[offset + 3], expected[offset + 4], expected[offset + 5]),
+							new Vector3(actual[offset + 3], actual[offset + 4], actual[offset + 5])));
+						comparedVertices++;
+					}
+				}
+				Console.WriteLine(
+					$"fbxOverrideRoundTrip|frame={frame:R}|bones={overrides.Length}|meshes={baseline.Meshes.Count}/{roundTrip.Meshes.Count}|vertices={comparedVertices}|maxPositionError={maxPositionError:R}|maxNormalError={maxNormalError:R}");
+				return;
+			}
+			if (args.Length == 3 && string.Equals(args[0], "--validate-animation-tracks", StringComparison.OrdinalIgnoreCase))
+			{
+				using var animation = VisualModelImporter.OpenAnimation(args[1], args[2]);
+				Console.WriteLine(
+					$"animationTracks|start={animation.StartFrame:R}|end={animation.EndFrame:R}|fps={animation.FramesPerSecond:R}|bones={animation.AnimatedBoneNames.Count}|names=[{string.Join(";", animation.AnimatedBoneNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))}]");
+				return;
+			}
+			if (args.Length is >= 2 and <= 4 && string.Equals(args[0], "--validate-cloth-preview-simulation", StringComparison.OrdinalIgnoreCase))
+			{
+				var frames = args.Length >= 3
+					? Math.Clamp(int.Parse(args[2], CultureInfo.InvariantCulture), 1, 3600)
+					: 240;
+				var stage = args.Length == 4 ? args[3] : "all";
+				var diagnosticSolverIterations = 1;
+				if (stage.StartsWith("solver", StringComparison.OrdinalIgnoreCase) &&
+					int.TryParse(stage[6..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedSolverIterations))
+				{
+					diagnosticSolverIterations = Math.Clamp(parsedSolverIterations, 1, 24);
+					stage = "all";
+				}
+				var service = new HkclService();
+				service.Load(args[1]);
+				for (var clothIndex = 0; clothIndex < service.GetClothSummaries().Count; clothIndex++)
+				{
+					var preview = service.GetParticlePreview(clothIndex);
+					if (!string.Equals(stage, "all", StringComparison.OrdinalIgnoreCase))
+					{
+						preview.ConstraintExecution.Clear();
+						switch (stage.ToLowerInvariant())
+						{
+							case "local": preview.ConstraintExecution.Add(2); break;
+							case "standard": preview.ConstraintExecution.Add(0); break;
+							case "stretch": preview.ConstraintExecution.Add(1); break;
+							case "collisions": preview.ConstraintExecution.Add(-1); break;
+							case "no-collisions":
+								preview.ConstraintExecution.AddRange(new[] { 2, 3, 0, 0, 1 });
+								break;
+							default: throw new ArgumentException($"Unknown simulation stage '{stage}'.");
+						}
+					}
+					var simulator = new HkclPreviewSimulator(preview);
+					simulator.SolverIterations = diagnosticSolverIterations;
+					var bindingFallbacks = 0;
+					var bindingFlipCorrections = 0;
+					var maxBonePositionStep = 0.0f;
+					var maxBoneAngleStepDegrees = 0.0f;
+					var maxBoneAngleName = string.Empty;
+					var maxBoneAngleFrame = -1;
+					var maxBoneAngleAxisSteps = Vector3.Zero;
+					var boneAngleSpikes = 0;
+					var maxJointLengthRatio = 1.0f;
+					var maxJointLengthStep = 0.0f;
+					var maxJointLengthBone = string.Empty;
+					var maxJointLengthFrame = -1;
+					var restBonesByIndex = preview.Bones.ToDictionary(bone => bone.Index);
+					IReadOnlyDictionary<int, SimulatedBonePreviewPose>? previousBonePoses = null;
+					for (var frame = 0; frame < frames; frame++)
+					{
+						simulator.Step(1.0f / 60.0f);
+						var currentBonePoses = simulator.GetBonePoses();
+						if (previousBonePoses != null)
+						{
+							foreach (var (boneIndex, currentPose) in currentBonePoses)
+							{
+								if (!previousBonePoses.TryGetValue(boneIndex, out var previousPose))
+									continue;
+
+								maxBonePositionStep = Math.Max(
+									maxBonePositionStep,
+									Vector3.Distance(previousPose.Position, currentPose.Position));
+								var trace = Vector3.Dot(previousPose.AxisX, currentPose.AxisX) +
+									Vector3.Dot(previousPose.AxisY, currentPose.AxisY) +
+									Vector3.Dot(previousPose.AxisZ, currentPose.AxisZ);
+								var angle = MathF.Acos(Math.Clamp((trace - 1.0f) * 0.5f, -1.0f, 1.0f)) *
+									180.0f / MathF.PI;
+								if (angle > maxBoneAngleStepDegrees)
+								{
+									maxBoneAngleStepDegrees = angle;
+									maxBoneAngleName = restBonesByIndex.TryGetValue(boneIndex, out var angleBone)
+										? angleBone.Name
+										: boneIndex.ToString(CultureInfo.InvariantCulture);
+									maxBoneAngleFrame = frame;
+									maxBoneAngleAxisSteps = new Vector3(
+										MathF.Acos(Math.Clamp(Vector3.Dot(previousPose.AxisX, currentPose.AxisX), -1.0f, 1.0f)) * 180.0f / MathF.PI,
+										MathF.Acos(Math.Clamp(Vector3.Dot(previousPose.AxisY, currentPose.AxisY), -1.0f, 1.0f)) * 180.0f / MathF.PI,
+										MathF.Acos(Math.Clamp(Vector3.Dot(previousPose.AxisZ, currentPose.AxisZ), -1.0f, 1.0f)) * 180.0f / MathF.PI);
+								}
+								if (angle > 45.0f)
+									boneAngleSpikes++;
+
+								if (!restBonesByIndex.TryGetValue(boneIndex, out var restBone) ||
+									restBone.ParentIndex < 0 ||
+									!restBonesByIndex.TryGetValue(restBone.ParentIndex, out var restParent) ||
+									!currentBonePoses.TryGetValue(restBone.ParentIndex, out var currentParent) ||
+									!previousBonePoses.TryGetValue(restBone.ParentIndex, out var previousParent))
+								{
+									continue;
+								}
+
+								var restLength = Vector3.Distance(restBone.Position, restParent.Position);
+								var currentLength = Vector3.Distance(currentPose.Position, currentParent.Position);
+								var previousLength = Vector3.Distance(previousPose.Position, previousParent.Position);
+								if (restLength > 0.000001f && currentLength / restLength > maxJointLengthRatio)
+								{
+									maxJointLengthRatio = currentLength / restLength;
+									maxJointLengthBone = $"{restParent.Name}>{restBone.Name}";
+									maxJointLengthFrame = frame;
+								}
+								maxJointLengthStep = Math.Max(maxJointLengthStep, MathF.Abs(currentLength - previousLength));
+							}
+						}
+						previousBonePoses = currentBonePoses;
+						bindingFallbacks += simulator.LastBindingFallbackCount;
+						bindingFlipCorrections += simulator.LastBindingFlipCorrectionCount;
+					}
+					var positions = simulator.GetPositions();
+					var rest = preview.Particles.ToDictionary(particle => particle.Index, particle => particle.Position);
+					var finite = positions.Values.All(value => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z));
+					var maxExcursion = positions.Count == 0
+						? 0.0f
+						: positions.Max(entry => rest.TryGetValue(entry.Key, out var origin) ? Vector3.Distance(entry.Value, origin) : 0.0f);
+					var bonePoses = simulator.GetBonePoses().Values.ToArray();
+					var maxBoneOrthogonalityError = bonePoses.Length == 0 ? 0.0f : bonePoses.Max(pose => Math.Max(
+						MathF.Abs(Vector3.Dot(pose.AxisX, pose.AxisY)),
+						Math.Max(
+							MathF.Abs(Vector3.Dot(pose.AxisX, pose.AxisZ)),
+							MathF.Abs(Vector3.Dot(pose.AxisY, pose.AxisZ)))));
+					var minBoneHandedness = bonePoses.Length == 0 ? 1.0f : bonePoses.Min(pose =>
+						Vector3.Dot(Vector3.Cross(pose.AxisX, pose.AxisY), pose.AxisZ));
+					Console.WriteLine($"clothPreviewSimulation|index={clothIndex}|name={service.GetClothName(clothIndex)}|frames={frames}|particles={positions.Count}|localRange={preview.LocalRanges.Count}|bend={preview.BendStiffnessConstraints.Count}|substeps={preview.SimulationSubSteps}|iterations={preview.SimulationSolveIterations}|adaptive={preview.AdaptConstraintStiffness}|execution=[{string.Join(',', preview.ConstraintExecution)}]|transfer={preview.TransferMotionEnabled}|finite={finite}|maxExcursion={maxExcursion:R}|bindingFallbacks={bindingFallbacks}|bindingFlipCorrections={bindingFlipCorrections}");
+					Console.WriteLine($"clothPreviewBoneBasis|index={clothIndex}|maxOrthogonalityError={maxBoneOrthogonalityError:R}|minHandedness={minBoneHandedness:R}|maxPositionStep={maxBonePositionStep:R}|maxAngleStepDegrees={maxBoneAngleStepDegrees:R}|maxAngleBone={maxBoneAngleName}|maxAngleFrame={maxBoneAngleFrame}|maxAngleAxisSteps={maxBoneAngleAxisSteps.X:R},{maxBoneAngleAxisSteps.Y:R},{maxBoneAngleAxisSteps.Z:R}|angleSpikesOver45={boneAngleSpikes}|maxJointLengthRatio={maxJointLengthRatio:R}|maxJointLengthStep={maxJointLengthStep:R}|maxJoint={maxJointLengthBone}|maxJointFrame={maxJointLengthFrame}");
+				}
+				return;
+			}
+			if (args.Length == 2 && string.Equals(args[0], "--validate-cloth-preview-rest", StringComparison.OrdinalIgnoreCase))
+			{
+				var service = new HkclService();
+				service.Load(args[1]);
+				for (var clothIndex = 0; clothIndex < service.GetClothSummaries().Count; clothIndex++)
+				{
+					var preview = service.GetParticlePreview(clothIndex);
+					var simulator = new HkclPreviewSimulator(preview);
+					var poses = simulator.GetBonePoses();
+					var restBones = preview.Bones.ToDictionary(bone => bone.Index);
+					var maxPositionError = 0.0f;
+					var maxAxisErrorDegrees = 0.0f;
+					var measured = 0;
+					foreach (var boneIndex in simulator.DrivenBoneIndices)
+					{
+						if (!restBones.TryGetValue(boneIndex, out var rest) || !poses.TryGetValue(boneIndex, out var pose))
+							continue;
+
+						maxPositionError = Math.Max(maxPositionError, Vector3.Distance(rest.Position, pose.Position));
+						foreach (var (restAxis, currentAxis) in new[]
+						{
+							(rest.AxisX, pose.AxisX),
+							(rest.AxisY, pose.AxisY),
+							(rest.AxisZ, pose.AxisZ)
+						})
+						{
+							var dot = Math.Clamp(Vector3.Dot(Vector3.Normalize(restAxis), Vector3.Normalize(currentAxis)), -1.0f, 1.0f);
+							maxAxisErrorDegrees = Math.Max(maxAxisErrorDegrees, MathF.Acos(dot) * 180.0f / MathF.PI);
+						}
+						measured++;
+					}
+
+					Console.WriteLine(
+						$"clothPreviewRest|index={clothIndex}|name={service.GetClothName(clothIndex)}|bindings={preview.BoneBindings.Count}|localFirst={simulator.LocalFirstBoneBindingCount}|frameFirst={simulator.FrameFirstBoneBindingCount}|affine={simulator.AffineBoneBindingCount}|nativeCentroid={simulator.NativeCentroidBoneBindingCount}|bones={measured}|maxPositionError={maxPositionError:R}|maxAxisErrorDegrees={maxAxisErrorDegrees:R}");
+				}
+				return;
+			}
 			if (args.Length == 4 && string.Equals(args[0], "--delete-bphcl-cloth", StringComparison.OrdinalIgnoreCase))
 			{
 				NativeBphclDocument source = NativeBphclDocument.Open(args[1]);
@@ -2245,15 +2552,11 @@ internal static class Program
 				service11.Load(args[1]);
 				for (int clothIndex20 = 0; clothIndex20 < service11.GetClothSummaries().Count; clothIndex20++)
 				{
-					int particleCount = service11.GetParticleRows(clothIndex20).Count;
-					for (int particleIndex = 0; particleIndex < particleCount; particleIndex++)
+					var preview = service11.GetParticlePreview(clothIndex20);
+					foreach (var range in preview.LocalRanges)
 					{
-						foreach (ParticleRelationshipRow relationship in from row in service11.GetParticleRelationships(clothIndex20, particleIndex)
-							where row.MaximumDistance.HasValue
-							select row)
-						{
-							Console.WriteLine($"{clothIndex20}|{service11.GetClothName(clothIndex20)}|particle={particleIndex}|{relationship.Kind}:{relationship.Name}|max={relationship.MaximumDistance.Value:G8}");
-						}
+						Console.WriteLine(
+							$"{clothIndex20}|{service11.GetClothName(clothIndex20)}|particle={range.ParticleIndex}|set={range.ConstraintSetIndex}|referenceVertex={range.ReferenceVertex}|referenceBuffer={range.ReferenceBufferIndex}|weights={range.ReferenceBoneWeights.Count}|radius={range.MaximumDistance:G8}|minNormal={range.MinNormalDistance:G8}|maxNormal={range.MaxNormalDistance:G8}|stiffness={range.Stiffness:G8}|applyNormal={range.ApplyNormalComponent}");
 					}
 				}
 				return;

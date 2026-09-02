@@ -310,10 +310,14 @@ public sealed partial class HkclService
             return _bphcl.Cloths.Select((cloth, i) => $"{i}: {cloth.Value<string>("name") ?? $"Cloth {i}"}  |  particles: {cloth.Value<int?>("particleCount") ?? 0}  |  bones: {cloth["skeleton"]?["boneCount"]?.Value<int>() ?? 0}  |  BPHCL").ToList();
 
         if (_bphhb != null)
-            return new[] { $"0: Helper bone configuration  |  bones: {_bphhb.HelperBoneNames.Count}  |  BPHHB" };
+            return BphhbBridge.GetDriverGroups(_bphhb)
+                .Select(group => $"{group.Index}: {group.DisplayName}  |  driven: {group.DrivenBoneNames.Count}  |  curves: {group.CurveCount}  |  BPHHB")
+                .ToArray();
 
         if (_bphyssb != null)
-            return new[] { $"0: Support bone configuration  |  bones: {_bphyssb.SupportBoneNames.Count}  |  BPHYSSB" };
+            return BphyssbBridge.GetDriverGroups(_bphyssb)
+                .Select(group => $"{group.Index}: {group.DisplayName}  |  driven: {group.DrivenBoneNames.Count}  |  curves: {group.CurveCount}  |  BPHYSSB")
+                .ToArray();
 
         if (IsHkrg)
         {
@@ -343,6 +347,37 @@ public sealed partial class HkclService
         return result;
     }
 
+    public SidecarDriverGroup? GetSidecarDriverGroup(int groupIndex)
+    {
+        if (_bphhb != null)
+            return BphhbBridge.GetDriverGroups(_bphhb).ElementAtOrDefault(groupIndex);
+        if (_bphyssb != null)
+            return BphyssbBridge.GetDriverGroups(_bphyssb).ElementAtOrDefault(groupIndex);
+        return null;
+    }
+
+    public IReadOnlyList<SidecarDriverGroup> GetSidecarDriverGroups()
+    {
+        if (_bphhb != null)
+            return BphhbBridge.GetDriverGroups(_bphhb);
+        if (_bphyssb != null)
+            return BphyssbBridge.GetDriverGroups(_bphyssb);
+        return Array.Empty<SidecarDriverGroup>();
+    }
+
+    public SidecarPreviewEvaluation EvaluateSidecarDriverGroup(
+        int groupIndex,
+        IReadOnlyList<VisualModelBone> currentBones,
+        IReadOnlyList<VisualModelBone> restBones)
+    {
+        if (_bphhb != null)
+            return SidecarPreviewEvaluator.Evaluate(_bphhb, groupIndex, currentBones, restBones);
+        if (_bphyssb != null)
+            return SidecarPreviewEvaluator.Evaluate(_bphyssb, groupIndex, currentBones, restBones);
+        return new SidecarPreviewEvaluation(
+            Array.Empty<SidecarBonePreviewPose>(),
+            Array.Empty<string>());
+    }
     public IReadOnlyList<string> GetSkeletonBones(int clothIndex)
     {
         if (_bphcl != null)
@@ -362,10 +397,10 @@ public sealed partial class HkclService
         }
 
         if (_bphhb != null)
-            return _bphhb.HelperBoneNames.Select((name, index) => $"{index}: {name}  |  helper bone").ToArray();
+            return DescribeSidecarGroupBones(BphhbBridge.GetDriverGroups(_bphhb), clothIndex);
 
         if (_bphyssb != null)
-            return _bphyssb.SupportBoneNames.Select((name, index) => $"{index}: {name}  |  support bone").ToArray();
+            return DescribeSidecarGroupBones(BphyssbBridge.GetDriverGroups(_bphyssb), clothIndex);
 
         if (IsHkrg)
         {
@@ -405,6 +440,49 @@ public sealed partial class HkclService
         return result;
     }
 
+    private static IReadOnlyList<string> DescribeSidecarGroupBones(
+        IReadOnlyList<SidecarDriverGroup> groups,
+        int groupIndex)
+    {
+        var group = groups.ElementAtOrDefault(groupIndex);
+        if (group == null)
+            return Array.Empty<string>();
+
+        return group.DriverBoneIndices
+            .Zip(group.DriverBoneNames, (index, name) => $"Driver: {index}: {name}  |  motion input")
+            .Concat(group.DrivenBoneIndices.Zip(
+                group.DrivenBoneNames,
+                (index, name) => $"Driven: {index}: {name}  |  affected bone"))
+            .ToArray();
+    }
+    private static string GetSidecarGroupDetails(
+        IReadOnlyList<SidecarDriverGroup> groups,
+        int groupIndex,
+        string format,
+        string role)
+    {
+        var group = groups.ElementAtOrDefault(groupIndex);
+        if (group == null)
+            return string.Empty;
+
+        var builder = new StringBuilder();
+        builder.AppendLine($"{role} driver group {group.Index}: {group.DisplayName}");
+        builder.AppendLine(new string('-', 64));
+        builder.AppendLine($"Format: {format}");
+        builder.AppendLine($"Driver records: {group.DriverIndices.Count}");
+        builder.AppendLine($"Driven bones: {group.DrivenBoneNames.Count}");
+        builder.AppendLine($"Curves: {group.CurveCount}");
+        builder.AppendLine($"Outputs: {group.OutputCount}");
+        builder.AppendLine();
+        builder.AppendLine("Motion inputs");
+        foreach (var name in group.DriverBoneNames)
+            builder.AppendLine($"  {name}");
+        builder.AppendLine();
+        builder.AppendLine("Affected bones");
+        foreach (var name in group.DrivenBoneNames)
+            builder.AppendLine($"  {name}");
+        return builder.ToString();
+    }
     public string GetClothDetails(int clothIndex)
     {
         if (_bphcl != null)
@@ -453,36 +531,10 @@ public sealed partial class HkclService
         }
 
         if (_bphhb != null)
-        {
-            var helperBuilder = new StringBuilder();
-            helperBuilder.AppendLine("Helper bone configuration");
-            helperBuilder.AppendLine(new string('-', 64));
-            helperBuilder.AppendLine("Format: BPHHB / AAMP phhb");
-            helperBuilder.AppendLine($"Archive version: {_bphhb.ArchiveVersion}");
-            helperBuilder.AppendLine($"Helper bones: {_bphhb.HelperBoneNames.Count}");
-            helperBuilder.AppendLine($"Lists: {_bphhb.ListCount}");
-            helperBuilder.AppendLine($"Objects: {_bphhb.ObjectCount}");
-            helperBuilder.AppendLine($"Parameters: {_bphhb.ParameterCount}");
-            helperBuilder.AppendLine();
-            helperBuilder.AppendLine("This is a native BPHHB inspector. Save is byte-preserving until the AAMP writer and helper-bone editor are implemented.");
-            return helperBuilder.ToString();
-        }
+            return GetSidecarGroupDetails(BphhbBridge.GetDriverGroups(_bphhb), clothIndex, "BPHHB", "Helper");
 
         if (_bphyssb != null)
-        {
-            var supportBuilder = new StringBuilder();
-            supportBuilder.AppendLine("Support bone configuration");
-            supportBuilder.AppendLine(new string('-', 64));
-            supportBuilder.AppendLine("Format: BPHYSSB / AAMP physsb");
-            supportBuilder.AppendLine($"Archive version: {_bphyssb.ArchiveVersion}");
-            supportBuilder.AppendLine($"Support bones: {_bphyssb.SupportBoneNames.Count}");
-            supportBuilder.AppendLine($"Lists: {_bphyssb.ListCount}");
-            supportBuilder.AppendLine($"Objects: {_bphyssb.ObjectCount}");
-            supportBuilder.AppendLine($"Parameters: {_bphyssb.ParameterCount}");
-            supportBuilder.AppendLine();
-            supportBuilder.AppendLine("This is a native BPHYSSB editor for BotW support-bone names and base-pose records.");
-            return supportBuilder.ToString();
-        }
+            return GetSidecarGroupDetails(BphyssbBridge.GetDriverGroups(_bphyssb), clothIndex, "BPHYSSB", "Support");
 
         if (IsHkrg)
             return GetHkrgDetails();
@@ -2021,10 +2073,10 @@ public sealed partial class HkclService
     public IReadOnlyList<BoneEditRow> GetBoneRows(int clothIndex)
     {
         if (_bphhb != null)
-            return GetBphhbBoneRows(_bphhb);
+            return FilterSidecarBoneRows(GetBphhbBoneRows(_bphhb), BphhbBridge.GetDriverGroups(_bphhb), clothIndex);
 
         if (_bphyssb != null)
-            return GetBphyssbBoneRows(_bphyssb);
+            return FilterSidecarBoneRows(GetBphyssbBoneRows(_bphyssb), BphyssbBridge.GetDriverGroups(_bphyssb), clothIndex);
 
         if (IsHkrg)
             return clothIndex == 0 ? GetHkrgBoneRows() : Array.Empty<BoneEditRow>();
@@ -2088,6 +2140,17 @@ public sealed partial class HkclService
         return result;
     }
 
+    private static IReadOnlyList<BoneEditRow> FilterSidecarBoneRows(
+        IReadOnlyList<BoneEditRow> rows,
+        IReadOnlyList<SidecarDriverGroup> groups,
+        int groupIndex)
+    {
+        var group = groups.ElementAtOrDefault(groupIndex);
+        if (group == null)
+            return Array.Empty<BoneEditRow>();
+        var used = group.DriverBoneIndices.Concat(group.DrivenBoneIndices).ToHashSet();
+        return rows.Where(row => used.Contains(row.Index)).ToArray();
+    }
     private static IReadOnlyList<BoneEditRow> GetBphhbBoneRows(BphhbDocumentSummary helper)
     {
         var graph = helper.Graph;
@@ -2523,6 +2586,31 @@ public sealed partial class HkclService
         return result;
     }
 
+    public int CreateSupportFromBone(int sourceBoneIndex, string targetBoneName)
+    {
+        if (string.IsNullOrWhiteSpace(targetBoneName))
+            throw new ArgumentException("A target bone name is required.", nameof(targetBoneName));
+
+        if (_bphhb != null)
+        {
+            (_bphhb, var targetBoneIndex) = BphhbBridge.CreateSupportFromBone(
+                _bphhb,
+                sourceBoneIndex,
+                targetBoneName.Trim());
+            return targetBoneIndex;
+        }
+
+        if (_bphyssb != null)
+        {
+            (_bphyssb, var targetBoneIndex) = BphyssbBridge.CreateSupportFromBone(
+                _bphyssb,
+                sourceBoneIndex,
+                targetBoneName.Trim());
+            return targetBoneIndex;
+        }
+
+        throw new InvalidOperationException("A helper/support-bone file is not open.");
+    }
     public void DuplicateHelperBone(int boneIndex)
     {
         if (_bphhb != null)
@@ -2557,6 +2645,22 @@ public sealed partial class HkclService
         throw new InvalidOperationException("A helper/support-bone file is not open.");
     }
 
+    public void MirrorHelperGroupAcrossX(int groupIndex)
+    {
+        if (_bphhb != null)
+        {
+            _bphhb = BphhbBridge.MirrorDriverGroupAcrossX(_bphhb, groupIndex);
+            return;
+        }
+
+        if (_bphyssb != null)
+        {
+            _bphyssb = BphyssbBridge.MirrorDriverGroupAcrossX(_bphyssb, groupIndex);
+            return;
+        }
+
+        throw new InvalidOperationException("A helper/support-bone file is not open.");
+    }
     public void MirrorHelperBoneAcrossX(int boneIndex)
     {
         if (_bphhb != null)
@@ -2802,7 +2906,7 @@ public sealed partial class HkclService
         var preview = new ParticlePreviewData();
         if (IsHelperBoneSidecar)
         {
-            var helperBones = GetBoneRows(0);
+            var helperBones = GetBoneRows(Math.Max(0, clothIndex));
             foreach (var bone in helperBones)
             {
                 preview.Bones.Add(new BonePreviewPoint
@@ -2845,6 +2949,7 @@ public sealed partial class HkclService
                     Radius = particle.Radius,
                     Mass = particle.Mass,
                     InverseMass = particle.InverseMass,
+                    Friction = particle.Friction,
                     CollisionMask = simulation.StaticCollisionMasks.Count > particle.Index
                         ? simulation.StaticCollisionMasks[particle.Index]
                         : GetBphclCollisionMask(
@@ -2860,6 +2965,21 @@ public sealed partial class HkclService
                 simulation.SimulationInfo.Gravity.Y,
                 simulation.SimulationInfo.Gravity.Z);
             preview.DampingPerSecond = simulation.SimulationInfo.GlobalDampingPerSecond;
+            preview.CollisionTolerance = simulation.Runtime.LandscapeCollisionData.CollisionTolerance;
+            var nativeTransferMotion = simulation.Runtime.TransferMotionData;
+            preview.TransferMotionEnabled = simulation.Runtime.TransferMotionEnabled;
+            preview.TransferMotionTransformSetIndex = nativeTransferMotion.TransformSetIndex;
+            preview.TransferMotionTransformIndex = nativeTransferMotion.TransformIndex;
+            preview.TransferTranslationMotion = nativeTransferMotion.TransferTranslationMotion;
+            preview.MinTranslationSpeed = nativeTransferMotion.MinTranslationSpeed;
+            preview.MaxTranslationSpeed = nativeTransferMotion.MaxTranslationSpeed;
+            preview.MinTranslationBlend = nativeTransferMotion.MinTranslationBlend;
+            preview.MaxTranslationBlend = nativeTransferMotion.MaxTranslationBlend;
+            preview.TransferRotationMotion = nativeTransferMotion.TransferRotationMotion;
+            preview.MinRotationSpeed = nativeTransferMotion.MinRotationSpeed;
+            preview.MaxRotationSpeed = nativeTransferMotion.MaxRotationSpeed;
+            preview.MinRotationBlend = nativeTransferMotion.MinRotationBlend;
+            preview.MaxRotationBlend = nativeTransferMotion.MaxRotationBlend;
 
             for (var triangleIndex = 0; triangleIndex + 2 < simulation.TriangleIndices.Count; triangleIndex += 3)
             {
@@ -2873,10 +2993,41 @@ public sealed partial class HkclService
 
             foreach (var constraintSet in simulation.ConstraintSets)
             {
+                preview.ConstraintSets.Add(new ParticlePreviewConstraintSet
+                {
+                    Index = constraintSet.Index,
+                    Kind = constraintSet.ClassName,
+                    Name = constraintSet.Name
+                });
                 foreach (var link in constraintSet.Links.Where(link => link.ParticleA.HasValue && link.ParticleB.HasValue))
                 {
+                    if (constraintSet.ClassName.Contains("BendStiffness", StringComparison.Ordinal))
+                    {
+                        var particleC = GetNativeConstraintValue(link, "particleC");
+                        var particleD = GetNativeConstraintValue(link, "particleD");
+                        if (particleC.HasValue && particleD.HasValue)
+                        {
+                            preview.BendStiffnessConstraints.Add(new ParticlePreviewBendStiffness
+                            {
+                                ConstraintSetIndex = constraintSet.Index,
+                                ParticleA = link.ParticleA!.Value,
+                                ParticleB = link.ParticleB!.Value,
+                                ParticleC = checked((int)particleC.Value),
+                                ParticleD = checked((int)particleD.Value),
+                                WeightA = GetNativeConstraintValue(link, "weightA") ?? 0.0f,
+                                WeightB = GetNativeConstraintValue(link, "weightB") ?? 0.0f,
+                                WeightC = GetNativeConstraintValue(link, "weightC") ?? 0.0f,
+                                WeightD = GetNativeConstraintValue(link, "weightD") ?? 0.0f,
+                                BendStiffness = GetNativeConstraintValue(link, "bendStiffness") ?? 0.0f,
+                                RestCurvature = GetNativeConstraintValue(link, "restCurvature") ?? 0.0f
+                            });
+                        }
+                        continue;
+                    }
+
                     preview.Links.Add(new ParticlePreviewLink
                     {
+                        ConstraintSetIndex = constraintSet.Index,
                         ParticleA = link.ParticleA!.Value,
                         ParticleB = link.ParticleB!.Value,
                         Kind = constraintSet.ClassName,
@@ -2888,11 +3039,38 @@ public sealed partial class HkclService
                         StretchStiffness = GetNativeConstraintValue(link, "stretchStiffness")
                     });
                 }
+
+                foreach (var local in constraintSet.LocalConstraints.Concat(constraintSet.LocalStiffnessConstraints))
+                {
+                    var particleIndex = GetNativeConstraintValue(local, "particleIndex") ?? local.ParticleA;
+                    var maximumDistance = GetNativeConstraintValue(local, "maximumDistance")
+                        ?? GetNativeConstraintValue(local, "maxDistance")
+                        ?? GetNativeConstraintValue(local, "shapeRadius");
+                    if (!particleIndex.HasValue || !maximumDistance.HasValue || maximumDistance.Value < 0.0f)
+                        continue;
+
+                    preview.LocalRanges.Add(new ParticlePreviewLocalRange
+                    {
+                        ConstraintSetIndex = constraintSet.Index,
+                        ParticleIndex = checked((int)particleIndex.Value),
+                        ReferenceVertex = checked((int)(GetNativeConstraintValue(local, "referenceVertex") ?? -1.0f)),
+                        ReferenceBufferIndex = checked((int)(GetNativeConstraintValue(constraintSet.Values, "referenceMeshBufferIdx") ?? 0.0f)),
+                        MaximumDistance = maximumDistance.Value,
+                        MinNormalDistance = GetNativeConstraintValue(local, "minNormalDistance") ?? float.NegativeInfinity,
+                        MaxNormalDistance = GetNativeConstraintValue(local, "maxNormalDistance") ?? float.PositiveInfinity,
+                        Stiffness = GetNativeConstraintValue(local, "stiffness")
+                            ?? GetNativeConstraintValue(constraintSet.Values, "stiffness")
+                            ?? 1.0f,
+                        ApplyNormalComponent = (GetNativeConstraintValue(constraintSet.Values, "applyNormalComponent") ?? 0.0f) != 0.0f
+                    });
+                }
             }
 
             AddNativeBphclPreviewSkeleton(preview, bphcl.Skeletons.ElementAtOrDefault(clothIndex));
+            AddPreviewParticleAttachments(preview, clothIndex);
             AddNativeBphclPreviewBoneBindings(preview, nativeCloth);
             AddNativeBphclPreviewColliders(preview, bphcl, clothIndex);
+            AddPreviewSimulationConfig(preview, clothIndex);
             return preview;
         }
 
@@ -2918,19 +3096,38 @@ public sealed partial class HkclService
                 Radius = row.Radius,
                 Mass = row.Mass,
                 InverseMass = row.InverseMass,
+                Friction = row.Friction,
                 CollisionMask = row.CollisionMask
             });
         }
 
         var simData = GetFirst(GetValue(cloth, "simClothDatas"));
-        if (GetValue(simData, "gravity") is Vector4 gravity)
+        var simulationInfo = GetValue(simData, "simulationInfo") ?? simData;
+        if (GetValue(simulationInfo, "gravity") is Vector4 gravity)
             preview.Gravity = new Vector3(gravity.X, gravity.Y, gravity.Z);
-        preview.DampingPerSecond = Convert.ToSingle(GetValue(simData, "globalDampingPerSecond") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.DampingPerSecond = Convert.ToSingle(GetValue(simulationInfo, "globalDampingPerSecond") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.CollisionTolerance = Convert.ToSingle(GetValue(simulationInfo, "collisionTolerance") ?? 0.0f, CultureInfo.InvariantCulture);
+        var hkclTransferMotion = GetValue(simData, "transferMotionData");
+        preview.TransferMotionEnabled = ToBool(GetValue(simData, "transferMotionEnabled"));
+        preview.TransferMotionTransformSetIndex = ToInt(GetValue(hkclTransferMotion, "transformSetIndex"), 0);
+        preview.TransferMotionTransformIndex = ToInt(GetValue(hkclTransferMotion, "transformIndex"), 0);
+        preview.TransferTranslationMotion = ToBool(GetValue(hkclTransferMotion, "transferTranslationMotion"));
+        preview.MinTranslationSpeed = Convert.ToSingle(GetValue(hkclTransferMotion, "minTranslationSpeed") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.MaxTranslationSpeed = Convert.ToSingle(GetValue(hkclTransferMotion, "maxTranslationSpeed") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.MinTranslationBlend = Convert.ToSingle(GetValue(hkclTransferMotion, "minTranslationBlend") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.MaxTranslationBlend = Convert.ToSingle(GetValue(hkclTransferMotion, "maxTranslationBlend") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.TransferRotationMotion = ToBool(GetValue(hkclTransferMotion, "transferRotationMotion"));
+        preview.MinRotationSpeed = Convert.ToSingle(GetValue(hkclTransferMotion, "minRotationSpeed") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.MaxRotationSpeed = Convert.ToSingle(GetValue(hkclTransferMotion, "maxRotationSpeed") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.MinRotationBlend = Convert.ToSingle(GetValue(hkclTransferMotion, "minRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.MaxRotationBlend = Convert.ToSingle(GetValue(hkclTransferMotion, "maxRotationBlend") ?? 0.0f, CultureInfo.InvariantCulture);
         AddPreviewTriangles(preview, simData);
         AddPreviewLinks(preview, simData, cloth);
         AddPreviewSkeleton(preview, root, clothIndex);
+        AddPreviewParticleAttachments(preview, clothIndex);
         AddPreviewBoneBindings(preview, cloth);
         AddPreviewColliders(preview, root, cloth);
+        AddPreviewSimulationConfig(preview, clothIndex);
         return preview;
     }
 
@@ -4118,7 +4315,23 @@ public sealed partial class HkclService
     public string MergeClothFrom(HkclService reference, int clothIndex, int templateClothIndex = 0)
     {
         if (IsHelperBoneSidecar || reference.IsHelperBoneSidecar)
-            throw new InvalidOperationException("Helper/support-bone merging is not implemented yet. It needs its own AAMP merge path, separate from cloth merging.");
+        {
+            if (_bphhb != null && reference._bphhb != null)
+            {
+                _bphhb = BphhbBridge.MergeDriverGroup(_bphhb, reference._bphhb, clothIndex);
+                return "Merged selected BPHHB driver group.";
+            }
+
+            if (_bphyssb != null && reference._bphyssb != null)
+            {
+                _bphyssb = BphyssbBridge.MergeDriverGroup(_bphyssb, reference._bphyssb, clothIndex);
+                return "Merged selected BPHYSSB driver group.";
+            }
+
+            throw new InvalidOperationException(
+                "Driver-group merging currently requires both files to use the same sidecar format. " +
+                "Convert the donor first when moving between BPHHB and BPHYSSB.");
+        }
 
         if (_bphcl != null || reference._bphcl != null)
         {
@@ -6949,12 +7162,18 @@ public sealed partial class HkclService
             ?? Array.Empty<object>();
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var constraint in constraints)
+        for (var constraintIndex = 0; constraintIndex < constraints.Count; constraintIndex++)
         {
-            var kind = GetString(constraint, "name") ?? constraint.GetType().Name;
-            var links = GetList(GetValue(constraint, "links"));
-            if (links == null)
-                continue;
+            var constraint = constraints[constraintIndex];
+            var kind = constraint.GetType().Name;
+            var name = GetString(constraint, "name") ?? kind;
+            preview.ConstraintSets.Add(new ParticlePreviewConstraintSet
+            {
+                Index = constraintIndex,
+                Kind = kind,
+                Name = name
+            });
+            var links = GetList(GetValue(constraint, "links")) ?? Array.Empty<object>();
 
             foreach (var link in links)
             {
@@ -6963,12 +7182,37 @@ public sealed partial class HkclService
                 if (a < 0 || b < 0)
                     continue;
 
-                var key = a < b ? $"{a}:{b}:{kind}" : $"{b}:{a}:{kind}";
+                if (kind.Contains("BendStiffness", StringComparison.Ordinal))
+                {
+                    var c = ToInt(GetValue(link, "particleC"), -1);
+                    var d = ToInt(GetValue(link, "particleD"), -1);
+                    if (c >= 0 && d >= 0)
+                    {
+                        preview.BendStiffnessConstraints.Add(new ParticlePreviewBendStiffness
+                        {
+                            ConstraintSetIndex = constraintIndex,
+                            ParticleA = a,
+                            ParticleB = b,
+                            ParticleC = c,
+                            ParticleD = d,
+                            WeightA = ReadConstraintFloat(link, "weightA") ?? 0.0f,
+                            WeightB = ReadConstraintFloat(link, "weightB") ?? 0.0f,
+                            WeightC = ReadConstraintFloat(link, "weightC") ?? 0.0f,
+                            WeightD = ReadConstraintFloat(link, "weightD") ?? 0.0f,
+                            BendStiffness = ReadConstraintFloat(link, "bendStiffness") ?? 0.0f,
+                            RestCurvature = ReadConstraintFloat(link, "restCurvature") ?? 0.0f
+                        });
+                    }
+                    continue;
+                }
+
+                var key = a < b ? $"{a}:{b}:{constraintIndex}" : $"{b}:{a}:{constraintIndex}";
                 if (!seen.Add(key))
                     continue;
 
                 preview.Links.Add(new ParticlePreviewLink
                 {
+                    ConstraintSetIndex = constraintIndex,
                     ParticleA = a,
                     ParticleB = b,
                     Kind = kind,
@@ -6985,17 +7229,51 @@ public sealed partial class HkclService
             {
                 var particleIndex = ToInt(GetValue(local, "particleIndex"), -1);
                 var maximumDistance = ReadConstraintFloat(local, "maximumDistance")
-                    ?? ReadConstraintFloat(local, "maxDistance");
+                    ?? ReadConstraintFloat(local, "maxDistance")
+                    ?? ReadConstraintFloat(local, "shapeRadius");
                 if (particleIndex < 0 || !maximumDistance.HasValue || maximumDistance.Value < 0.0f)
                     continue;
 
                 preview.LocalRanges.Add(new ParticlePreviewLocalRange
                 {
+                    ConstraintSetIndex = constraintIndex,
                     ParticleIndex = particleIndex,
-                    MaximumDistance = maximumDistance.Value
+                    ReferenceVertex = ToInt(GetValue(local, "referenceVertex"), -1),
+                    ReferenceBufferIndex = ToInt(GetValue(constraint, "referenceMeshBufferIdx"), 0),
+                    MaximumDistance = maximumDistance.Value,
+                    MinNormalDistance = ReadConstraintFloat(local, "minNormalDistance") ?? float.NegativeInfinity,
+                    MaxNormalDistance = ReadConstraintFloat(local, "maxNormalDistance") ?? float.PositiveInfinity,
+                    Stiffness = ReadConstraintFloat(local, "stiffness")
+                        ?? ReadConstraintFloat(constraint, "stiffness")
+                        ?? 1.0f,
+                    ApplyNormalComponent = ToBool(GetValue(constraint, "applyNormalComponent"))
                 });
             }
         }
+    }
+
+    private void AddPreviewSimulationConfig(ParticlePreviewData preview, int clothIndex)
+    {
+        var config = GetClothRuntimeData(clothIndex).Operators
+            .Where(op => string.Equals(op.ClassName, "hclSimulateOperator", StringComparison.Ordinal))
+            .SelectMany(op => op.SimulateConfigs)
+            .FirstOrDefault();
+        if (config == null)
+        {
+            preview.ConstraintExecution.AddRange(preview.ConstraintSets.Select(set => set.Index));
+            preview.ConstraintExecution.Add(-1);
+            return;
+        }
+
+        preview.ConstraintExecution.AddRange(config.ConstraintExecution);
+        // HKX2 exposes hclSimulateOperator's -1 collision opcode as the array
+        // terminator on some platforms. Keep the runtime sequence explicit for
+        // the preview even when that sentinel is not returned as an element.
+        if (!preview.ConstraintExecution.Contains(-1))
+            preview.ConstraintExecution.Add(-1);
+        preview.SimulationSubSteps = Math.Max(1, (int)config.SubSteps);
+        preview.SimulationSolveIterations = Math.Max(1, (int)config.NumberOfSolveIterations);
+        preview.AdaptConstraintStiffness = config.AdaptConstraintStiffness;
     }
 
     private static void AddPreviewSkeleton(ParticlePreviewData preview, hkRootLevelContainer root, int clothIndex)
@@ -7046,8 +7324,13 @@ public sealed partial class HkclService
             if (GetValue(op, "triangleBonePairs") is not IList pairs)
                 continue;
 
-            foreach (var pair in pairs)
+            var localTransforms = (GetList(GetValue(op, "localBoneTransforms")) ?? Array.Empty<object>())
+                .OfType<Matrix4x4>()
+                .ToArray();
+            var boneAxis = ToInt(GetValue(op, "boneAxis"), 3);
+            for (var pairIndex = 0; pairIndex < pairs.Count; pairIndex++)
             {
+                var pair = pairs[pairIndex];
                 var boneIndex = ToInt(GetValue(pair, "boneOffset"), -1) / 64;
                 var triangleIndex = ToInt(GetValue(pair, "triangleOffset"), -1) / 6;
                 if (boneIndex < 0 || triangleIndex < 0 || triangleIndex >= preview.Triangles.Count)
@@ -7059,10 +7342,129 @@ public sealed partial class HkclService
                     BoneIndex = boneIndex,
                     ParticleA = triangle.ParticleA,
                     ParticleB = triangle.ParticleB,
-                    ParticleC = triangle.ParticleC
+                    ParticleC = triangle.ParticleC,
+                    BoneAxis = boneAxis,
+                    LocalBoneTransform = pairIndex < localTransforms.Length
+                        ? localTransforms[pairIndex]
+                        : Matrix4x4.Identity
                 });
             }
         }
+    }
+
+    private void AddPreviewParticleAttachments(ParticlePreviewData preview, int clothIndex)
+    {
+        var moveOperators = GetClothRuntimeData(clothIndex).Operators
+            .Where(op => string.Equals(op.ClassName, "hclMoveParticlesOperator", StringComparison.Ordinal) &&
+                         op.VertexParticlePairs.Count > 0)
+            .ToArray();
+        var skinsByBuffer = GetSkinOperatorData(clothIndex)
+            .GroupBy(skin => skin.OutputBufferIndex)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(BuildSkinVertexBoneWeights).ToArray());
+        var attachments = new Dictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>>();
+        foreach (var move in moveOperators)
+        {
+            var referenceBuffer = move.ReferenceBufferIndex ?? 0;
+            if (!skinsByBuffer.TryGetValue(referenceBuffer, out var skinMaps))
+                continue;
+
+            foreach (var pair in move.VertexParticlePairs)
+            {
+                if (attachments.ContainsKey(pair.ParticleIndex))
+                    continue;
+                var weights = skinMaps
+                    .Select(map => map.TryGetValue(pair.VertexIndex, out var value) ? value : null)
+                    .FirstOrDefault(value => value is { Count: > 0 });
+                if (weights != null)
+                    attachments.Add(pair.ParticleIndex, weights);
+            }
+        }
+
+        foreach (var (particleIndex, weights) in attachments.OrderBy(entry => entry.Key))
+        {
+            var attachment = new ParticlePreviewAttachment { ParticleIndex = particleIndex };
+            attachment.BoneWeights.AddRange(weights);
+            preview.ParticleAttachments.Add(attachment);
+        }
+
+        foreach (var range in preview.LocalRanges.Where(range => range.ReferenceVertex >= 0))
+        {
+            if (!skinsByBuffer.TryGetValue(range.ReferenceBufferIndex, out var skinMaps))
+                continue;
+            var weights = skinMaps
+                .Select(map => map.TryGetValue(range.ReferenceVertex, out var value) ? value : null)
+                .FirstOrDefault(value => value is { Count: > 0 });
+            if (weights != null)
+                range.ReferenceBoneWeights.AddRange(weights);
+        }
+    }
+
+    private static IReadOnlyDictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>> BuildSkinVertexBoneWeights(
+        SkinOperatorData skin)
+    {
+        var result = new Dictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>>();
+        var positionBlocks = skin.LocalUnpackedPositionBlocks.Count > 0
+            ? skin.LocalUnpackedPositionBlocks
+            : skin.LocalPositionBlocks;
+        var positionBlockIndex = 0;
+
+        foreach (var blendArray in skin.BlendArrays)
+        {
+            foreach (var block in blendArray.Blocks)
+            {
+                var positions = positionBlockIndex < positionBlocks.Count
+                    ? positionBlocks[positionBlockIndex].Positions
+                    : Array.Empty<Vector4>();
+                positionBlockIndex++;
+
+                for (var slot = 0; slot < blendArray.VertexCount && slot < block.VertexIndices.Count; slot++)
+                {
+                    var vertexIndex = block.VertexIndices[slot];
+                    if (vertexIndex == ushort.MaxValue)
+                        continue;
+
+                    var candidates = new List<(int BoneIndex, float Weight)>();
+                    for (var influence = 0; influence < blendArray.BlendCount; influence++)
+                    {
+                        var packedIndex = checked(slot * blendArray.BlendCount + influence);
+                        if (packedIndex >= block.BoneIndices.Count)
+                            continue;
+                        var subsetIndex = block.BoneIndices[packedIndex];
+                        if (subsetIndex >= skin.TransformSubset.Count)
+                            continue;
+
+                        var weight = block.BoneWeights.Count > packedIndex
+                            ? block.BoneWeights[packedIndex] / 255f
+                            : positions.Count > packedIndex && float.IsFinite(positions[packedIndex].W)
+                                ? MathF.Abs(positions[packedIndex].W)
+                                : 1f;
+                        if (weight > 0.000001f)
+                            candidates.Add((skin.TransformSubset[subsetIndex], weight));
+                    }
+
+                    if (candidates.Count == 0)
+                        continue;
+                    var combined = candidates
+                        .GroupBy(candidate => candidate.BoneIndex)
+                        .Select(group => new ParticlePreviewBoneWeight
+                        {
+                            BoneIndex = group.Key,
+                            Weight = group.Sum(candidate => candidate.Weight)
+                        })
+                        .ToArray();
+                    var total = combined.Sum(candidate => candidate.Weight);
+                    if (total <= 0.000001f)
+                        continue;
+                    foreach (var candidate in combined)
+                        candidate.Weight /= total;
+                    result[vertexIndex] = combined;
+                }
+            }
+        }
+
+        return result;
     }
 
     private static void AddNativeBphclPreviewSkeleton(ParticlePreviewData preview, NativeBphclSkeleton? skeleton)
@@ -7118,8 +7520,9 @@ public sealed partial class HkclService
         // same 64-byte bone transform / six-byte triangle record layout.
         foreach (var deformer in cloth.SimpleMeshBoneDeformers)
         {
-            foreach (var pair in deformer.TriangleBonePairs)
+            for (var pairIndex = 0; pairIndex < deformer.TriangleBonePairs.Count; pairIndex++)
             {
+                var pair = deformer.TriangleBonePairs[pairIndex];
                 var boneIndex = pair.BoneOffset / 64;
                 var triangleIndex = pair.TriangleOffset / 6;
                 if (triangleIndex < 0 || triangleIndex >= preview.Triangles.Count)
@@ -7131,7 +7534,11 @@ public sealed partial class HkclService
                     BoneIndex = boneIndex,
                     ParticleA = triangle.ParticleA,
                     ParticleB = triangle.ParticleB,
-                    ParticleC = triangle.ParticleC
+                    ParticleC = triangle.ParticleC,
+                    BoneAxis = checked((int)deformer.BoneAxis),
+                    LocalBoneTransform = pairIndex < deformer.LocalBoneTransforms.Count
+                        ? deformer.LocalBoneTransforms[pairIndex]
+                        : Matrix4x4.Identity
                 });
             }
         }
@@ -8401,10 +8808,3 @@ public sealed partial class HkclService
         }
     }
 }
-
-
-
-
-
-
-
