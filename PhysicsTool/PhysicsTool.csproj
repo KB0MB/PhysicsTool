@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>PhysicsTool</AssemblyName>
+    <Product>PhysicsTool</Product>
+    <Title>PhysicsTool - Nintendo Havok Physics Editor</Title>
+    <ApplicationIcon>Resources\Branding\PhysicsTool.ico</ApplicationIcon>
+    <Description>Editor for Nintendo Havok physics files used by Breath of the Wild and Tears of the Kingdom.</Description>
+    <Company>PhysicsTool</Company>
+    <Authors>PhysicsTool contributors</Authors>
+    <Copyright>Copyright (c) PhysicsTool contributors</Copyright>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Tkmm.BymlLibrary" Version="1.2.3" />
+    <PackageReference Include="MIConvexHull" Version="1.1.19.1019" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+    <PackageReference Include="AssimpNetter" Version="6.0.5" />
+    <PackageReference Include="DirectXTexNet" Version="1.0.7" />
+    <PackageReference Include="Jint" Version="4.16.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="BotW-HKX2" Version="1.0.0" />
+    <PackageReference Include="OpenTK.WinForms" Version="4.0.0-pre.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Syroot.BinaryData"><HintPath>ThirdParty\Toolbox\Syroot.BinaryData.dll</HintPath></Reference>
+    <Reference Include="Syroot.Maths"><HintPath>ThirdParty\Toolbox\Syroot.Maths.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.Bfres"><HintPath>ThirdParty\Toolbox\Syroot.NintenTools.Bfres.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.NSW.Bfres"><HintPath>ThirdParty\Toolbox\Syroot.NintenTools.NSW.Bfres.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.NSW.Bntx"><HintPath>ThirdParty\Toolbox\Syroot.NintenTools.NSW.Bntx.dll</HintPath></Reference>
+    <None Update="ThirdParty\Toolbox\tegra_swizzle_x64.dll" CopyToOutputDirectory="PreserveNewest" TargetPath="tegra_swizzle_x64.dll" />
+    <None Update="ThirdParty\Toolbox\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" TargetPath="Licenses\Toolbox-LICENSE.txt" />
+    <None Update="ThirdParty\Toolbox\SOURCES.txt" CopyToOutputDirectory="PreserveNewest" TargetPath="Licenses\Toolbox-SOURCES.txt" />
+    <None Update="ThirdParty\VCRuntime\*.dll" CopyToOutputDirectory="PreserveNewest" TargetPath="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Languages\*.json" CopyToOutputDirectory="PreserveNewest" TargetPath="Languages\%(Filename)%(Extension)" />
+    <None Include="..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\CHANGELOG.md" Link="CHANGELOG.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\THIRD_PARTY_NOTICES.txt" Link="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="NativeFbx\PhysicsToolFbxBridge.dll" CopyToOutputDirectory="PreserveNewest" TargetPath="PhysicsToolFbxBridge.dll" />
+    <None Update="Resources\VisualModel\*.png" CopyToOutputDirectory="PreserveNewest" TargetPath="Resources\VisualModel\%(Filename)%(Extension)" />
+    <None Update="ThirdParty\*.txt" CopyToOutputDirectory="PreserveNewest" TargetPath="Licenses\%(Filename)%(Extension)" />
+    <None Update="Formats\Collision\IceHail\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" TargetPath="Licenses\Ice-Hail-LICENSE.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Branding\PhysicsTool.ico" />
+    <EmbeddedResource Include="Resources\VisualModel\ToolboxDefaultTexture.png" />
+    <EmbeddedResource Include="Formats\Collision\IceHail\**\*.js" />
+    <EmbeddedResource Include="Formats\Collision\IceHail\compound.json" />
+    <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclTypeCatalog.bin" />
+    <EmbeddedResource Include="Formats\Bphcl\Resources\NativeBphclGameReadyTypeCatalog.bin" />
+  </ItemGroup>
+
+</Project>
+

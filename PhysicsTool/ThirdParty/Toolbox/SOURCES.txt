@@ -1,0 +1,37 @@
+Switch Toolbox actor-viewer integration
+======================================
+
+Source project: https://github.com/KillzXGaming/Switch-Toolbox
+License for Toolbox code: GNU GPL version 3 (LICENSE.txt).
+
+Imported from the user-selected Toolbox source snapshot. That snapshot does
+not contain Git metadata, so no upstream commit identifier is asserted.
+PhysicsTool does not load or invoke an installed copy of Toolbox.
+
+Resources/VisualModel/ToolboxDefaultTexture.png is copied from
+Switch_Toolbox_Library/Resources/DefaultTexture.png in that same snapshot.
+It is the gray UV-test fallback with colored crosses and is embedded for portability.
+
+GX2.cs, GX2TexRegisters.cs and TEX_FORMAT.cs retain Toolbox's GX2 texture
+decoding code. TextureHelper.cs and Utils.cs provide the small helper subset
+required by that decoder. Viewer, scene binding, resource resolution and
+animation adapters live in PhysicsTool/Formats/Actors and are PhysicsTool code.
+
+The Syroot.*.dll assemblies are the readers distributed in Toolbox/Lib.
+The tegra_swizzle_x64.dll binary is the one distributed in Toolbox/Toolbox.
+
+Reader source projects:
+https://gitlab.com/Syroot/BinaryData
+https://gitlab.com/Syroot/Maths
+https://gitlab.com/Syroot/NintenTools.Bfres
+https://github.com/KillzXGaming/LegacySwitchLibraries
+
+Tegra texture decoder source:
+https://github.com/ScanMountGoat/tegra_swizzle
+
+DirectXTexNet 1.0.7 is restored from NuGet, rather than using Toolbox's older
+.NET Framework wrapper. Its license is DirectXTexNet-LICENSE.txt.
+https://github.com/deng0/DirectXTexNet
+
+No game models, textures, animations, executable files or actor packs are
+included in these dependencies or in PhysicsTool's distribution.

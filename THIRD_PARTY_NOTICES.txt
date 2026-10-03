@@ -1,0 +1,122 @@
+Autodesk FBX SDK 2020.3.7
+
+Copyright (c) Autodesk, Inc. All rights reserved.
+
+PhysicsTool's native FBX bridge is developed by the PhysicsTool project and
+statically links Autodesk FBX SDK redistributable components. Use and
+redistribution of Autodesk FBX SDK components are governed by the Autodesk
+license agreement supplied with the SDK.
+
+FBX is a trademark of Autodesk, Inc. PhysicsTool is not affiliated with or
+endorsed by Autodesk.
+
+SDK information and downloads:
+https://aps.autodesk.com/developer/overview/fbx-sdk
+
+-------------------------------------------------------------------------------
+
+Ice-Hail 3.5.0
+
+Copyright (c) 2019 Max Bebök (HailToDodongo)
+
+PhysicsTool includes a modified, embedded copy of Ice-Hail's collision writer.
+Ice-Hail is licensed under the GNU General Public License version 3. PhysicsTool
+is also distributed under GPL-3.0. The complete license is included as
+Licenses/Ice-Hail-LICENSE.txt and the corresponding source is in
+PhysicsTool/Formats/Collision/IceHail.
+
+https://gitlab.com/ice-hail/ice-hail
+
+-------------------------------------------------------------------------------
+
+AssimpNetter 6.0.5 and Open Asset Import Library
+
+PhysicsTool uses AssimpNetter and its packaged Assimp native library to import
+collision meshes. The complete MIT, BSD-3-Clause, and Poly2Tri notices supplied
+by AssimpNetter are included as Licenses/AssimpNetter-LICENSE.txt.
+
+https://github.com/StefanJohnKoch/AssimpNetter
+https://github.com/assimp/assimp
+
+-------------------------------------------------------------------------------
+
+Jint 4.16.1 and Acornima 1.7.0
+
+PhysicsTool uses Jint (BSD-2-Clause) to run the embedded collision writer and
+Acornima (BSD-3-Clause) as Jint's parser. Complete license texts are included as
+Licenses/Jint-LICENSE.txt and Licenses/Acornima-LICENSE.txt.
+
+https://github.com/sebastienros/jint
+https://github.com/adams85/acornima
+
+-------------------------------------------------------------------------------
+
+Switch Toolbox, Syroot format readers and tegra_swizzle
+
+PhysicsTool's read-only BotW actor viewer uses the Wii U and Switch BFRES/BNTX
+readers distributed by Switch Toolbox and its GX2 texture decoder. The Toolbox
+code is licensed under GPL-3.0; its complete license is included as
+Licenses/Toolbox-LICENSE.txt. Source provenance and links to the reader projects
+are recorded in Licenses/Toolbox-SOURCES.txt. Credit to KillzXGaming, Syroot and
+the Switch Toolbox contributors.
+
+The Syroot reader assemblies are MIT-licensed. Their copyright statement and
+permission notice are included as Licenses/Syroot-LICENSE.txt.
+
+The bundled Tegra X1 texture decoder is tegra_swizzle by SMG, under MIT.
+Its complete license is included as Licenses/Tegra-Swizzle-LICENSE.txt.
+
+https://github.com/KillzXGaming/Switch-Toolbox
+https://github.com/ScanMountGoat/tegra_swizzle
+
+-------------------------------------------------------------------------------
+
+DirectXTexNet 1.0.7 and DirectXTex
+
+PhysicsTool uses DirectXTexNet by Dennis Gocke (with contributions from the
+original wrapper by Simon Taylor) and Microsoft's DirectXTex for texture
+format decoding. Complete MIT notices are included as
+Licenses/DirectXTexNet-LICENSE.txt.
+
+https://github.com/deng0/DirectXTexNet
+https://github.com/microsoft/DirectXTex
+
+-------------------------------------------------------------------------------
+
+Microsoft Visual C++ Runtime
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+App-local x64 Visual C++ runtime and OpenMP DLLs are redistributed from the
+Visual Studio 2022 redistributable runtime to support native texture decoding.
+These Microsoft components are not covered by PhysicsTool's GPL license.
+
+https://learn.microsoft.com/visualstudio/releases/2022/redistribution
+
+-------------------------------------------------------------------------------
+
+TotK polytope generation and survey dependencies
+
+MIConvexHull 1.1.19.1019 (MIT), by David Sehnal and Matthew Campbell, is used
+for convex hull generation. License: Licenses/MIConvexHull-LICENSE.txt.
+https://github.com/DesignEngrLab/MIConvexHull
+
+Tkmm.BymlLibrary 1.2.3 (AGPL-3.0-or-later), by TKMM-Team and its upstream
+contributors, is used unmodified for BYML v7 and YAML serialization.
+License: Licenses/BymlLibrary-LICENSE.txt. Its AGPL terms apply to this
+component in addition to PhysicsTool's own GPL license. Corresponding source:
+https://github.com/TKMM-Team/Tkmm.BymlLibrary/tree/6f6ac2d38410d8e797262b7132fde08982938e53
+
+Revrs 1.0.6 (MIT), by ArchLeaders, and VYaml 0.28.1 (MIT), by hadashiA,
+are dependencies of the BYML library. Complete notices are included as
+Licenses/Revrs-LICENSE.txt and Licenses/VYaml-LICENSE.txt.
+https://github.com/ArchLeaders/Revrs
+https://github.com/hadashiA/VYaml
+
+ZstdSharp.Port 0.8.8 (MIT), by Oleg Stepanischev, decompresses local TotK
+actor packs for the diagnostic survey. License: Licenses/ZstdSharp-LICENSE.txt.
+https://github.com/oleg-st/ZstdSharp
+
+The supplied Polytope IO Blender add-on by Qw2 was reviewed as a format
+reference only; its source is not copied or bundled. No game assets or
+compression dictionaries are bundled by this feature.

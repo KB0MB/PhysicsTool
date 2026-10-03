@@ -1,0 +1,102 @@
+{
+  "version": 4,
+  "compound": {
+    "name": "Compound",
+    "actors": [
+    ]
+  },
+  "data": {
+    "type": "hkRootLevelContainer",
+    "name": "hkpPhysicsData",
+    "physicsClass": "hkpPhysicsData",
+    "children": [
+      {
+        "type": "hkpPhysicsData",
+        "children": [
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_0",
+            "children": [
+              {
+                "type": "hkpRigidBody",
+                "name": "Compound_EntityGround_0",
+                "children": [
+                  {
+                    "type": "hkpStaticCompoundShape",
+                    "children": [
+
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_1"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_2"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_3"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_4"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_5"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_6"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_7"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_8"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_9"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_10"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_11"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_12"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_13"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_14"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_15"
+          },
+          {
+            "type": "hkpPhysicsSystem",
+            "name": "Compound_16"
+          }
+        ]
+      }
+    ]
+  }
+}
