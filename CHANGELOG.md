@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Avalonia Migration Preview - 2026-10-03
+
+- Created an independent source repository preserving the current PhysicsTool baseline.
+- Added a .NET 10 portable core and Avalonia desktop solution targeting Windows, Linux, and macOS without a WinForms UI dependency.
+- Added native cloth loading/saving, manual draft editing, undo/redo, wireframe inspection, HKCL simulation, and searchable documentation to the new interface.
+- Added native-format round-trip checks, headless UI/layout checks, and a three-platform CI workflow. Local Windows checks passed; Linux/macOS execution and full feature parity remain pending.
+- Documented migration limitations and retained the original README under `docs/WinForms-README.md`.
+
 ### Cloth Documentation and Button Recovery - 2026-10-03
 
 - Fixed documentation headings losing their formatting during first-open localization, with a regression check before any topic selection. Trimmed redundant checkbox/button implementation commentary from the guide.

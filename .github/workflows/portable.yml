@@ -1,0 +1,21 @@
+name: Portable build and checks
+on: [push, pull_request]
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build src/PhysicsTool.Desktop/PhysicsTool.Desktop.csproj -c Release
+      - run: dotnet run --project tests/PhysicsTool.Checks -c Release -- artifacts/checks
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checks-${{ matrix.os }}
+          path: artifacts/checks/*.png

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PhysicsTool.Core/PhysicsTool.Core.csproj" />
+    <Project Path="src/PhysicsTool.Desktop/PhysicsTool.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PhysicsTool.Checks/PhysicsTool.Checks.csproj" />
+  </Folder>
+</Solution>

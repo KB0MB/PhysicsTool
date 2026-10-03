@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PhysicsTool</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../PhysicsTool/Formats/**/*.cs" Exclude="../../PhysicsTool/Formats/Actors/**/*.cs" LinkBase="Formats" />
+    <Compile Include="../../PhysicsTool/Editor/Models/*.cs" LinkBase="Models" />
+    <Compile Include="../../PhysicsTool/Editor/Simulation/*.cs" LinkBase="Simulation" />
+    <Compile Include="../../PhysicsTool/Editor/Viewport/VisualModelData.cs" Link="Models/VisualModelData.cs" />
+    <EmbeddedResource Include="../../PhysicsTool/Formats/Bphcl/Resources/*.bin" Link="Formats/Bphcl/Resources/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../PhysicsTool/Formats/Collision/IceHail/**/*.js" LinkBase="Formats/Collision/IceHail" />
+    <EmbeddedResource Include="../../PhysicsTool/Formats/Collision/IceHail/compound.json" Link="Formats/Collision/IceHail/compound.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Tkmm.BymlLibrary" Version="1.2.3" />
+    <PackageReference Include="MIConvexHull" Version="1.1.19.1019" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+    <PackageReference Include="AssimpNetter" Version="6.0.5" />
+    <PackageReference Include="Jint" Version="4.16.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="BotW-HKX2" Version="1.0.0" />
+  </ItemGroup>
+</Project>
