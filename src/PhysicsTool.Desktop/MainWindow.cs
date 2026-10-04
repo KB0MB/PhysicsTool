@@ -1,12 +1,14 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Selection;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.Styling;
 using HKCLTool;
 using PhysicsTool.Core;
 using PhysicsTool.Desktop.Rendering;
@@ -26,8 +28,15 @@ public sealed class MainWindow : Window
     private readonly Button _loadModel, _clearModel, _meshes;
     private int _modelRequest;
     private bool _modelLoading;
-    private readonly ListBox _cloths = new(), _items = new() { SelectionMode = SelectionMode.Multiple };
-    private readonly ComboBox _mode = new() { ItemsSource = new[] { "Particles", "Bones", "Colliders" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _cloths = new() { HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
+    private readonly ListBox _items = new() { SelectionMode = SelectionMode.Multiple };
+    private readonly TabStrip _mode = new() { ItemsSource = new[] { "Particles", "Bones", "Colliders" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ContentControl _body = new();
+    private readonly DocumentOverview _overview = new();
+    private readonly Grid _workspace;
+    private readonly Button _navigation;
+    private bool _fitPending = true;
+    public bool IsEditorVisible => ReferenceEquals(_body.Content, _workspace);
     private readonly StackPanel _details = new() { Spacing = 8, Margin = new Thickness(14) };
     private readonly ListBox _relationships = new() { MaxHeight = 160 };
     private readonly WrapPanel _relationshipActions = new();
@@ -46,44 +55,50 @@ public sealed class MainWindow : Window
     public MainWindow(string? file = null, bool graphics = true)
     {
         Title = "PhysicsTool Avalonia"; Width = 1440; Height = 900; MinWidth = 980; MinHeight = 640;
-        Background = new SolidColorBrush(Color.Parse("#303435"));
+        Background = new SolidColorBrush(Color.Parse("#303234"));
+        _mode.Styles.Add(new Style(s => s.OfType<TabStripItem>())
+        {
+            Setters = { new Setter(TemplatedControl.FontSizeProperty, 14d), new Setter(TemplatedControl.PaddingProperty, new Thickness(12, 8)) }
+        });
         _cloths.ItemTemplate = new FuncDataTemplate<string>((text, _) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap });
         _items.ItemTemplate = new FuncDataTemplate<Item>((item, _) => new TextBlock { Text = item?.Label, TextWrapping = TextWrapping.Wrap });
         _relationships.ItemTemplate = new FuncDataTemplate<Relation>((item, _) => new TextBlock { Text = item?.ToString(), TextWrapping = TextWrapping.Wrap });
         var shell = new DockPanel();
-        var toolbar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8) };
+        var topbar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(8, 6) };
+        var toolbar = new WrapPanel { Orientation = Orientation.Horizontal };
         using (var logo = Avalonia.Platform.AssetLoader.Open(new Uri("avares://PhysicsTool.Desktop/Assets/PhysicsTool.png")))
             toolbar.Children.Add(new Image { Source = new Avalonia.Media.Imaging.Bitmap(logo), Width = 32, Height = 32, Margin = new Thickness(6, 3, 14, 3) });
+        toolbar.Children.Add(new TextBlock { Text = "PhysicsTool", FontSize = 15, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
         Add(toolbar, "New", async () => { if (await CanReplace()) await NewDocument(); });
-        Add(toolbar, "Open", async () => await OpenDocument());
+        Add(toolbar, "Open Physics", async () => await OpenDocument());
+        Add(toolbar, "Open Donor", async () => await OpenDonor());
         _save = Add(toolbar, "Save as", async () => await SaveDocument());
-        _undo = Add(toolbar, "Undo", () => { Session.Undo(); Refresh(); });
-        _redo = Add(toolbar, "Redo", () => { Session.Redo(); Refresh(); });
-        _simulate = Add(toolbar, "Run simulation", ToggleSimulation);
-        Add(toolbar, "Documentation", async () => await new DocumentationWindow().ShowDialog(this));
-        Add(toolbar, "Settings", async () => await ShowSettings());
-        DockPanel.SetDock(toolbar, Dock.Top); shell.Children.Add(toolbar);
+        _undo = ViewportTools.Icon("Undo2", "Undo (Ctrl+Z)", () => Try(() => { Session.Undo(); Refresh(); })); toolbar.Children.Add(_undo);
+        _redo = ViewportTools.Icon("Redo2", "Redo", () => Try(() => { Session.Redo(); Refresh(); })); toolbar.Children.Add(_redo);
+        var navigation = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
+        Add(navigation, "Documentation", async () => await new DocumentationWindow().ShowDialog(this));
+        Add(navigation, "Settings", async () => await ShowSettings());
+        _navigation = Add(navigation, "Editor", () => { if (IsEditorVisible) ShowOverview(); else ShowEditor(); }); _navigation.MinWidth = 76;
+        topbar.Children.Add(toolbar); Grid.SetColumn(navigation, 1); topbar.Children.Add(navigation);
+        DockPanel.SetDock(topbar, Dock.Top); shell.Children.Add(topbar);
         DockPanel.SetDock(_status, Dock.Bottom); shell.Children.Add(_status);
-        var workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("210,5,*,5,320") };
-        var left = new DockPanel { Margin = new Thickness(8) };
-        var heading = new TextBlock { Text = "Cloths", FontWeight = FontWeight.SemiBold, Margin = new Thickness(5, 6, 5, 12) };
-        DockPanel.SetDock(heading, Dock.Top); left.Children.Add(heading); left.Children.Add(_cloths); workspace.Children.Add(left);
-        var split = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split, 1); workspace.Children.Add(split);
+        var workspace = _workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("*,5,400") };
+        workspace.ColumnDefinitions[0].MinWidth = 420;
+        workspace.ColumnDefinitions[2].MinWidth = 300;
         var center = new DockPanel();
         var modelbar = new WrapPanel { Margin = new Thickness(5) };
         _loadModel = Add(modelbar, "Load model", async () => await OpenModel());
         _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; _viewport.SetModel(null); UpdateModelActions(); });
         _meshes = Add(modelbar, "Meshes", async () => await ShowMeshes());
         DockPanel.SetDock(modelbar, Dock.Top); center.Children.Add(modelbar);
-        var viewbar = new WrapPanel { Margin = new Thickness(8) };
-        var fit = new Button { Content = "Fit", Padding = new Thickness(12, 5) }; fit.Click += (_, _) => _viewport.Fit(); viewbar.Children.Add(fit);
-        var bones = new CheckBox { Content = "Bones", IsChecked = true }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
-        var colliders = new CheckBox { Content = "Colliders", IsChecked = true }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
-        var physics = new CheckBox { Content = "Physics", IsChecked = true, Margin = new Thickness(8, 0) };
-        physics.IsCheckedChanged += (_, _) => { _viewport.ShowPhysics = physics.IsChecked == true; _viewport.InvalidateVisual(); };
-        viewbar.Children.Add(physics);
-        viewbar.Children.Add(_wind); DockPanel.SetDock(viewbar, Dock.Top); center.Children.Add(viewbar);
-        foreach (var control in viewbar.Children) control.Margin = new Thickness(4, 3);
+        var viewbar = new WrapPanel { Margin = new Thickness(5) };
+        _simulate = Add(viewbar, "Run simulation", ToggleSimulation);
+        _wind.Margin = new Thickness(10, 4); viewbar.Children.Add(_wind);
+        var hide = new CheckBox { Content = "Hide cloth", Margin = new Thickness(10, 4) };
+        hide.IsCheckedChanged += (_, _) => { _viewport.ShowPhysics = hide.IsChecked != true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(hide);
+        var bones = new CheckBox { Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
+        var colliders = new CheckBox { Content = "Colliders", IsChecked = true, Margin = new Thickness(10, 4) }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
+        DockPanel.SetDock(viewbar, Dock.Bottom); center.Children.Add(viewbar);
         var scene = new Grid();
         if (graphics)
         {
@@ -91,15 +106,20 @@ public sealed class MainWindow : Window
             ModelSurface.RenderFailed += message => _status.Text = "GPU preview unavailable; using wireframe. " + message;
             scene.Children.Add(ModelSurface);
         }
-        scene.Children.Add(_viewport); center.Children.Add(scene); Grid.SetColumn(center, 2); workspace.Children.Add(center);
-        var split2 = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split2, 3); workspace.Children.Add(split2);
-        var right = new Grid { RowDefinitions = new RowDefinitions("Auto,180,Auto,*"), Margin = new Thickness(8) };
-        right.Children.Add(_mode); Grid.SetRow(_items, 1); right.Children.Add(_items);
+        scene.Children.Add(_viewport); scene.Children.Add(ViewportTools.CameraToolbar(_viewport)); scene.Children.Add(new ViewportAxes(_viewport));
+        center.Children.Add(scene); workspace.Children.Add(center);
+        var split2 = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split2, 1); workspace.Children.Add(split2);
+        var right = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,160,Auto,*"), Margin = new Thickness(8) };
+        right.Children.Add(_cloths); Grid.SetRow(_mode, 1); right.Children.Add(_mode); Grid.SetRow(_items, 2); right.Children.Add(_items);
         var actions = new WrapPanel();
         _add = Add(actions, "Add", AddItem); _delete = Add(actions, "Delete", async () => await DeleteItems());
-        Grid.SetRow(actions, 2); right.Children.Add(actions);
-        var scroller = new ScrollViewer { Content = _details }; Grid.SetRow(scroller, 3); right.Children.Add(scroller); Grid.SetColumn(right, 4); workspace.Children.Add(right);
-        shell.Children.Add(workspace); Content = shell;
+        Grid.SetRow(actions, 3); right.Children.Add(actions);
+        var scroller = new ScrollViewer { Content = _details }; Grid.SetRow(scroller, 4); right.Children.Add(scroller); Grid.SetColumn(right, 2); workspace.Children.Add(right);
+        _body.Content = _overview; shell.Children.Add(_body); Content = shell;
+        _overview.OpenRequested += async () => { try { await OpenDocument(); } catch (Exception ex) { _status.Text = ex.Message; } };
+        _overview.DonorRequested += async () => { try { await OpenDonor(); } catch (Exception ex) { _status.Text = ex.Message; } };
+        _overview.ClothSelected += index => { Session.ClothIndex = index; Refresh(true); };
+        _overview.EditRequested += ShowEditor;
         _constraint = new Button { Content = "Add constraint" }; _constraint.Click += async (_, _) => await AddConstraint();
         _removeConstraint = new Button { Content = "Remove constraint" }; _removeConstraint.Click += async (_, _) => await RemoveConstraint();
         _relationshipActions.Children.Add(_constraint); _relationshipActions.Children.Add(_removeConstraint);
@@ -108,12 +128,19 @@ public sealed class MainWindow : Window
         _mode.SelectionChanged += (_, _) => { if (!_refreshing) Refresh(); };
         _items.SelectionChanged += (_, _) => { if (_refreshing) return; ShowDetails(); SelectViewport(); UpdateActions(); };
         _relationships.SelectionChanged += (_, _) => UpdateActions();
-        _viewport.ParticlePicked += (index, additive) =>
+        _viewport.SelectionRequested += (indices, operation) =>
         {
             if (_timer.IsEnabled || _mode.SelectedIndex != 0) return;
-            var item = _items.Items.Cast<Item>().FirstOrDefault(i => i.Index == index); if (item == null) return;
-            if (!additive) _items.SelectedItems?.Clear();
-            if (_items.SelectedItems?.Contains(item) == true) _items.SelectedItems.Remove(item); else _items.SelectedItems?.Add(item);
+            _refreshing = true;
+            try
+            {
+                if (operation == SelectionOperation.Replace) _items.SelectedItems?.Clear();
+                foreach (var item in _items.Items.Cast<Item>().Where(i => indices.Contains(i.Index)))
+                    if (_items.SelectedItems?.Contains(item) == true) { if (operation == SelectionOperation.Toggle) _items.SelectedItems.Remove(item); }
+                    else _items.SelectedItems?.Add(item);
+            }
+            finally { _refreshing = false; }
+            ShowDetails(); SelectViewport(); UpdateActions();
         };
         _timer.Tick += (_, _) =>
         {
@@ -123,7 +150,8 @@ public sealed class MainWindow : Window
         };
         KeyDown += async (_, e) =>
         {
-            if (e.Source is TextBox or NumericUpDown) return;
+            if (e.Handled || e.Source is TextBox or NumericUpDown) return;
+            if (!IsEditorVisible) return;
             if (e.Key == Key.Space && _viewport.IsFocused) { ToggleSimulation(); e.Handled = true; }
             else if (!_timer.IsEnabled && e.Key == Key.F && _mode.SelectedIndex == 0) { await AddConstraint(); e.Handled = true; }
             else if (!_timer.IsEnabled && e.Key == Key.Delete && _items.IsFocused) { await DeleteItems(); e.Handled = true; }
@@ -145,6 +173,23 @@ public sealed class MainWindow : Window
         button.Click += async (_, _) => { try { await action(); } catch (Exception ex) { _status.Text = ex.Message; } }; panel.Children.Add(button); return button;
     }
     private void Try(Action action) { try { action(); } catch (Exception ex) { _status.Text = ex.Message; } }
+    public void ShowEditor()
+    {
+        if (IsEditorVisible) return;
+        _body.Content = _workspace; _navigation.Content = "Back";
+        Dispatcher.UIThread.Post(() => { if (!IsEditorVisible) return; if (_fitPending) { _viewport.Fit(); _fitPending = false; } _viewport.Focus(); }, DispatcherPriority.Loaded);
+    }
+    public void ShowOverview()
+    {
+        StopSimulation(); _overview.Update(Session); _body.Content = _overview; _navigation.Content = "Editor";
+    }
+    public void LoadDonorPath(string path) { _overview.LoadDonor(path); ShowOverview(); _overview.ShowDonorBones(); _status.Text = "Donor: " + System.IO.Path.GetFileName(path); }
+    private async Task OpenDonor()
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Open donor physics", AllowMultiple = false,
+            FileTypeFilter = new[] { new FilePickerFileType("Cloth physics") { Patterns = new[] { "*.hkcl", "*.bphcl" } } } });
+        if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) LoadDonorPath(path);
+    }
     public void LoadPath(string path) { StopSimulation(); Session.Load(path); Refresh(true); _status.Text = $"Opened {System.IO.Path.GetFileName(path)}"; }
     public void Refresh(bool fit = false)
     {
@@ -169,7 +214,10 @@ public sealed class MainWindow : Window
             Title = $"PhysicsTool Avalonia - {(Session.Path == null ? "Untitled" : System.IO.Path.GetFileName(Session.Path))}{(Session.IsDirty ? " *" : "")}";
         }
         finally { _refreshing = false; }
-        ShowDetails(); SelectViewport(); if (fit) _viewport.Fit(); _viewport.InvalidateVisual(); UpdateActions();
+        ShowDetails(); SelectViewport();
+        if (fit) { if (IsEditorVisible) _viewport.Fit(); else _fitPending = true; }
+        if (!IsEditorVisible) _overview.Update(Session);
+        _viewport.InvalidateVisual(); UpdateActions();
     }
     private void SelectViewport()
     {
@@ -233,6 +281,7 @@ public sealed class MainWindow : Window
         _constraint.IsEnabled = editing && Session.Document.GetParticleRows(Session.ClothIndex).Count >= 2;
         _removeConstraint.IsEnabled = editing && _relationships.SelectedItem is Relation r && Session.Document.CanDeleteParticleRelationship(Session.ClothIndex, r.Data);
         _simulate.IsEnabled = _timer.IsEnabled || ready && Session.CanSimulate; _simulate.Content = _timer.IsEnabled ? "Stop simulation" : "Run simulation";
+        _viewport.CanSelect = editing && _mode.SelectedIndex == 0;
     }
     private void AddItem() => Edit((doc, cloth) => { if (_mode.SelectedIndex == 0) doc.AddParticle(cloth); else if (_mode.SelectedIndex == 1) doc.AddBone(cloth); else doc.AddCollider(cloth); });
     private async Task DeleteItems()
@@ -267,7 +316,7 @@ public sealed class MainWindow : Window
     private async Task NewDocument()
     {
         var result = await Dialogs.NewCloth(this); if (result == null) return;
-        StopSimulation(); Session.New(result.Value.Name, result.Value.Format); Refresh(true); _status.Text = "New unbound cloth draft.";
+        StopSimulation(); Session.New(result.Value.Name, result.Value.Format); Refresh(true); ShowEditor(); _status.Text = "New unbound cloth draft.";
     }
     private async Task OpenDocument()
     {
@@ -301,6 +350,7 @@ public sealed class MainWindow : Window
         {
             var model = await Task.Run(() => PortableModelImporter.Load(path));
             if (request != _modelRequest) return;
+            ShowEditor();
             _viewport.SetModel(model);
             _status.Text = $"{System.IO.Path.GetFileName(path)}: {model.Meshes.Count} meshes, {model.TriangleCount:N0} triangles, {model.EmbeddedTextureCount + model.ExternalTextureCount} textures."
                 + (model.Warnings.Count == 0 ? "" : " " + string.Join(" ", model.Warnings.Take(3)));

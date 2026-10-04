@@ -7,6 +7,11 @@ https://github.com/AvaloniaUI/Avalonia
 https://github.com/mono/SkiaSharp
 https://github.com/dotnet/Silk.NET
 
+Lucide.Avalonia 0.2.20 (MIT) supplies the viewport tool icons, based on Lucide
+(ISC). Upstream license information:
+https://github.com/dme-compunet/Lucide.Avalonia
+https://github.com/lucide-icons/lucide
+
 AssimpNetter is also used for reference-model import in the Avalonia app.
 The Autodesk FBX bridge and DirectXTex mentioned below belong to the preserved
 WinForms implementation and are not used by the Avalonia model importer.

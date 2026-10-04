@@ -9,6 +9,8 @@ The new .NET 10 solution separates portable document/solver logic from the deskt
 - Portable compilation of format readers/writers, editor models, and HKCL solver.
 - Transactional editor session, bounded undo/redo, dirty tracking, and save/load.
 - Avalonia native file dialogs, resizable editor layout, particle/bone/collider inspector, basic topology commands, and searchable documentation.
+- Original-style startup overview with current and donor cloth lists, bone inspection, and explicit Editor/Back navigation. Donor inspection does not yet include swap/merge commands.
+- Large left viewport and right inspector tabs, original middle/Shift-middle camera gestures, cursor-anchored zoom, clickable axis views, frame/reset controls, and additive/toggle particle box selection.
 - DrawingContext-based wireframe viewport and HKCL simulation preview.
 - Avalonia-hosted OpenGL/OpenGL ES model rendering with the original material GLSL, UV/tangent builder, and complete-model depth prepass.
 - Assimp-based static FBX/DAE/OBJ/glTF/GLB import, hierarchy transforms, FBX meter conversion, Skia image decoding, missing-texture fallback, and mesh visibility.
@@ -20,7 +22,7 @@ The new .NET 10 solution separates portable document/solver logic from the deskt
 1. Connect skinning and animation updates to the new GPU renderer. The current model overlay is a static reference pose and is not driven by cloth output.
 2. Replace BFRES-specific DirectXTex and tiled-texture decoding dependencies. General model imports no longer use the Windows Autodesk bridge.
 3. Port BFRES import and actor services, then animation playback and the timeline. Actor services are currently excluded from the portable core. Restore material presets and game shader-family/packed-texture assignment.
-4. Port helper/ragdoll editors, attachment workflows, multi-selection gizmos, full relationship inspectors, and collision-generation controls.
+4. Port overview swap/merge commands, helper/ragdoll editors, attachment workflows, collider box selection and multi-selection gizmos, full relationship inspectors, and collision-generation controls.
 5. Restore localization, persistent settings, and feature-specific keyboard/layout parity.
 6. Validate on actual Linux and macOS desktops, then package per-platform distributions with dependency/license manifests.
 
@@ -33,6 +35,8 @@ Native serializers retain their supported-layout restrictions. A UI migration do
 Local checks were run on Windows with .NET SDK 10.0.401 and Avalonia 12.1.3. They include generated Wii U HKCL, Switch HKCL, and BPHCL drafts, two existing native cloth files, solver sanity checks, and Avalonia screenshots at 1440x900 and 980x640. Headless screenshots verify rendering/layout, not native window-manager interaction or GPU model rendering.
 
 The second migration pass also checks generated OBJ/DAE/FBX/GLB imports, embedded/external texture orientation, hierarchy and units, failed-import recovery, and model/physics isolation. Native Windows GPU checks pass with a generated texture fixture and a local Armor FBX, including orbit, mesh hiding, compact resize, and clear/reload. Captures are ignored build artifacts, not shipped game assets.
+
+The navigation pass adds startup/overview snapshots, actual middle-button orbit and Shift-pan input, anchored zoom, box-selection/cancellation checks, and preservation of camera/model/selection across Back. Native GPU checks cover top/bottom view lighting and graphics-context recreation on returning to the editor.
 
 The CI workflow defines Windows, Ubuntu, and macOS jobs. It has not yet been executed on a remote repository. Cross-platform architecture is in place; platform certification and feature parity are still pending. On backends without a supported OpenGL context, models remain available as a reduced wireframe preview.
 

@@ -64,7 +64,9 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         gl.Enable(EnableCap.DepthTest); gl.Disable(EnableCap.CullFace); gl.Disable(EnableCap.Blend);
         gl.UseProgram(_program); M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
         V("uViewDirection", direction);
-        var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, direction)); var up = Vector3.Cross(direction, right);
+        var right = Vector3.Cross(Vector3.UnitY, direction);
+        right = right.LengthSquared() > 1e-8f ? Vector3.Normalize(right) : Vector3.UnitX;
+        var up = Vector3.Cross(direction, right);
         V("uKeyLight", Vector3.Normalize(Vector3.Normalize(new(.35f, .8f, .45f)) * .28f + Vector3.Normalize(direction * .62f + right * .34f + up * .7f) * .72f));
         V("uFillLight", Vector3.Normalize(direction * .45f - right * .72f + up * .22f));
         // Match the original complete-model depth prepass to avoid hair/cloth shell artifacts.

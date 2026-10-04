@@ -34,7 +34,11 @@ Use `PhysicsTool.Avalonia.slnx`, not the preserved Windows-only `PhysicsTool.sln
 - Run the existing HKCL solver with wind. BPHCL simulation remains unavailable.
 - Read the searchable offline cloth guide. Settings currently provide session-local theme and HKCL save-platform choices.
 
-Right-drag orbits, middle-drag pans, and the wheel zooms. Ctrl-click adds particles to the selection. F opens relationship creation for two particles or creates a triangle for three. Numeric inspector edits use Apply; Fixed commits immediately.
+The application starts on the current-file/donor overview, with the bone list on the right. Open a physics file, select a cloth, then choose **Editor** or double-click the cloth. **Back** returns to the overview without discarding edits, the reference model, or the camera position; it stops a running preview. Donor loading is currently inspection-only; swap/merge commands still need migration.
+
+The editor keeps the large viewport on the left and the cloth selector plus particle/bone/collider tabs on the right. Middle-drag orbits, Shift+middle-drag pans, and the wheel zooms around the pointer. Alt+left-drag and Alt+Shift+left-drag provide alternatives without a middle button. Left-click selects; left-drag box-selects particles. Shift adds and Ctrl/Command toggles selection. Escape cancels a selection drag.
+
+The viewport has frame/reset/zoom buttons and clickable axis views. Home frames all, period frames selected particles, and numpad 1/3/7 selects front/right/top (Ctrl selects the opposite side). Right-click opens camera commands. F opens relationship creation for two particles or creates a triangle for three. Numeric inspector edits use Apply; Fixed commits immediately.
 
 Blank drafts are not automatically game-ready: model bindings and actor registration still need authoring. Unsupported native layouts retain the existing explicit safety restrictions.
 
@@ -65,7 +69,7 @@ These checks have passed locally on Windows, including two native cloth fixtures
 ## Repository Layout
 
 - `src/PhysicsTool.Core`: portable core and editor session.
-- `src/PhysicsTool.Desktop`: Avalonia interface and wireframe viewport.
+- `src/PhysicsTool.Desktop`: Avalonia interface, GPU model viewport, and physics overlays.
 - `tests/PhysicsTool.Checks`: generated-format and headless UI checks.
 - `PhysicsTool`: preserved original source and shared implementations.
 - `docs/WinForms-README.md`: original application documentation.

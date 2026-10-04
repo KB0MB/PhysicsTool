@@ -38,7 +38,7 @@ internal sealed class GpuChecks : Application
                 using var image = SKImage.FromBitmap(bitmap); using var png = image.Encode(SKEncodedImageFormat.Png, 100);
                 File.WriteAllBytes(Path.Combine(Output, $"gpu-{stage}.png"), png.ToArray());
                 var colors = Enumerable.Range(0, pixels.Length / 4).Select(i => BitConverter.ToUInt32(pixels, i * 4)).Distinct().Take(32).Count();
-                if (stage is not 2 and not 4 && colors < 8) throw new Exception("GPU model is blank.");
+                if (stage is not 2 and not 4 and not 6 and not 7 && colors < 8) throw new Exception("GPU model is blank.");
                 if (stage == 0) { original = SHA256.HashData(pixels); window.Viewport.Orbit(.8f, .2f); }
                 if (stage == 1)
                 {
@@ -57,7 +57,13 @@ internal sealed class GpuChecks : Application
                     if (colors != 1) throw new Exception("Cleared model still renders.");
                     window.Viewport.SetModel(loaded);
                 }
-                if (stage == 5) { Result = 0; Console.WriteLine("PASS: real GPU shader, texture/model pixels, camera orbit, mesh hiding, compact resize, and clear/reload."); Finish(null); return; }
+                if (stage == 5) window.Viewport.SetView(CameraView.Top);
+                if (stage == 6) window.Viewport.SetView(CameraView.Bottom);
+                if (stage == 7)
+                {
+                    window.Viewport.ResetView(); window.ShowOverview(); window.ShowEditor();
+                }
+                if (stage == 8) { Result = 0; Console.WriteLine("PASS: real GPU shader, texture/model pixels, orbit, mesh hiding, compact resize, clear/reload, axis views, and overview/editor context recreation."); Finish(null); return; }
                 stage++; Dispatcher.UIThread.Post(Request, DispatcherPriority.Background);
             }
             catch (Exception ex) { Finish(ex.ToString()); }

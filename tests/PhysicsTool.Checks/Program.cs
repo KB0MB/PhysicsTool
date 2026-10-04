@@ -70,7 +70,19 @@ internal static class Program
                 Console.WriteLine("PASS: native fixture " + Path.GetFileName(file));
             }
             AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
-            var window = new MainWindow(graphics: false); window.Show(); window.LoadPath(Path.Combine(output, "manual-0.hkcl"));
+            var window = new MainWindow(graphics: false); window.Show(); Dispatcher.UIThread.RunJobs();
+            Require(!window.IsEditorVisible && !window.GetVisualDescendants().OfType<PhysicsViewport>().Any(), "Startup opens viewport");
+            foreach (var size in new[] { new Size(1440, 900), new Size(980, 640) })
+            {
+                window.Width = size.Width; window.Height = size.Height; Dispatcher.UIThread.RunJobs();
+                using var startup = window.CaptureRenderedFrame()!; startup.Save(Path.Combine(output, $"startup-{size.Width}.png"));
+            }
+            window.LoadPath(Path.Combine(output, "manual-0.hkcl"));
+            Require(!window.IsEditorVisible, "Opening physics bypassed overview");
+            window.LoadDonorPath(Path.Combine(output, "manual-1.hkcl")); Dispatcher.UIThread.RunJobs();
+            using (var overview = window.CaptureRenderedFrame()!) overview.Save(Path.Combine(output, "overview-980.png"));
+            window.ShowEditor(); Dispatcher.UIThread.RunJobs();
+            NavigationChecks.Run(window);
             for (int cycle = 0; cycle < 3; cycle++)
             {
                 window.ToggleSimulation(); Dispatcher.UIThread.RunJobs();
@@ -93,6 +105,14 @@ internal static class Program
             Require(window.Viewport.Model?.Meshes.Count == 2, "Model UI import");
             Require(window.Session.Document.CaptureState() == savedState && !window.Session.IsDirty, "Model changed physics document");
             var oldModel = window.Viewport.Model;
+            window.Viewport.Pan(50, 30); window.Viewport.Orbit(.3f, .1f);
+            var camera = window.Viewport.CameraState;
+            var selected = window.Viewport.Selected.ToArray();
+            window.ToggleSimulation(); window.ShowOverview();
+            Require(!window.IsEditorVisible && window.Viewport.Simulated == null, "Back did not stop simulation");
+            window.ShowEditor(); Dispatcher.UIThread.RunJobs();
+            Require(camera == window.Viewport.CameraState && ReferenceEquals(oldModel, window.Viewport.Model), "Back reset model/camera");
+            Require(selected.SequenceEqual(window.Viewport.Selected), "Back reset selection");
             var badLoad = window.LoadModelPathAsync(Path.Combine(output, "missing.obj"));
             while (!badLoad.IsCompleted) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
             try { badLoad.GetAwaiter().GetResult(); throw new Exception("Missing model accepted"); } catch (FileNotFoundException) { }

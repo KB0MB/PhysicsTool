@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Familiar Avalonia Navigation and Viewport - 2026-10-03
+
+- Restored a current-file/donor overview as the startup screen instead of opening directly into the viewport. Added Editor/Back navigation and bone inspection for both file lists.
+- Reorganized the editor around a large left viewport and right-side cloth selector and particle/bone/collider tabs. Model tools sit above the viewport; simulation and visibility controls sit below it.
+- Restored middle-drag orbit and Shift+middle-drag pan. Added cursor-anchored zoom, frame/reset controls, clickable axes, six camera views, and camera context-menu commands.
+- Added left-drag particle box selection with Shift-add, Ctrl/Command-toggle, and Escape cancellation. Model, edits, selection, and camera survive a trip through the overview; simulation stops on Back.
+- Added startup/compact-layout, pointer-navigation, selection, and GPU context-recreation regressions. This remains a migration preview, not full WinForms feature parity.
+
 ### Avalonia Model Viewport - 2026-10-03
 
 - Added asynchronous static FBX/DAE/OBJ/glTF/GLB model import through the cross-platform Assimp runtimes, preserving hierarchy transforms and converting FBX declared units to meters.
