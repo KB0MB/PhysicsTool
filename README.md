@@ -28,7 +28,9 @@ Use `PhysicsTool.Avalonia.slnx`, not the preserved Windows-only `PhysicsTool.sln
 - Open and save Wii U/Switch HKCL and TotK BPHCL through the existing native format logic.
 - Create blank cloth drafts, edit particles, bone positions/scales, and supported collider fields.
 - Add/remove supported particles, relationships, and triangles, with atomic edits and undo/redo.
-- Inspect cloth in a wireframe 3D viewport, with orbit, pan, zoom, and fit controls.
+- Load static FBX, DAE, OBJ, glTF, and GLB reference models, including supported embedded/external textures. FBX declared units are converted to meters.
+- Render models through an Avalonia-hosted OpenGL/OpenGL ES surface using the original material shaders and tangent generation. Missing textures use the Toolbox fallback.
+- Inspect cloth overlays alongside models, with orbit, pan, zoom, fit, physics visibility, and a Meshes visibility window. A bounded wireframe fallback is available without GPU rendering.
 - Run the existing HKCL solver with wind. BPHCL simulation remains unavailable.
 - Read the searchable offline cloth guide. Settings currently provide session-local theme and HKCL save-platform choices.
 
@@ -38,9 +40,9 @@ Blank drafts are not automatically game-ready: model bindings and actor registra
 
 ## Remaining Migration
 
-Textured FBX/BFRES rendering, actor browsing, animation/timeline, helper and ragdoll editing UI, materials, collision-generation UI, attachment tools, full gizmos/box selection, relationship-value inspection, and localization are not yet ported. The preserved guide describes the full tool; some workflows are not available in this preview.
+BFRES import/texture decoding, actor browsing, animation/timeline, helper and ragdoll editing UI, material presets/editing, collision-generation UI, attachment tools, full gizmos/box selection, relationship-value inspection, and localization are not yet ported. Imported models currently show a static reference pose; cloth simulation does not deform their meshes. The preserved guide describes the full tool; some workflows are not available in this preview.
 
-The Windows FBX/texture bridges are not used by the new app. Portable replacements and native dependency packaging need validation before exposing those workflows. See [migration status](docs/AVALONIA_MIGRATION.md).
+The Windows Autodesk FBX/DirectXTex bridges are not used by the new app. General model imports use AssimpNetter's platform-native runtimes; image textures use Skia. BFRES-specific decoding still needs migration. Albedo and normal slots load from imported materials; game-specific presets, packed SPM interpretation, and shader-family assignment are not yet restored. Model visibility is session-local and never changes a physics save. See [migration status](docs/AVALONIA_MIGRATION.md).
 
 ## Verification
 
@@ -48,9 +50,17 @@ The Windows FBX/texture bridges are not used by the new app. Portable replacemen
 dotnet run --project tests/PhysicsTool.Checks -c Release -- artifacts/checks
 ```
 
+Real graphics-context checks (requires a desktop/display and supported GPU backend):
+
+```sh
+dotnet run --project tests/PhysicsTool.Checks -c Release -- --gpu artifacts/checks/gpu
+```
+
+An optional final model path runs the GPU checks on a local model. These checks open a short-lived test window, capture framebuffer pixels, verify orbit/visibility/resize/clear/reload, and close automatically. The ordinary suite also checks generated model imports, hierarchy, handedness, units, embedded textures, UV orientation, missing textures, and physics-document isolation.
+
 Optional additional arguments are local cloth fixtures. Tests save copies in the output directory and verify that fixture sources remain unchanged. Generated checks cover all three draft formats, topology/save/reload, undo/redo, atomic failures, finite HKCL solver output, simulation button recovery, documentation, and rendered Avalonia layouts at two sizes.
 
-These checks have passed locally on Windows, including two native cloth fixtures. A Windows/Linux/macOS CI matrix is included but has not yet run remotely. Linux/macOS runtime behavior is not yet verified. The inherited core still produces nullable warnings.
+These checks have passed locally on Windows, including two native cloth fixtures, generated model fixtures, and a real Armor FBX GPU preview. A Windows/Linux/macOS CI matrix is included but has not yet run remotely; its ordinary suite does not certify GPU behavior. Linux/macOS runtime behavior is not yet verified. The inherited core still produces nullable warnings.
 
 ## Repository Layout
 

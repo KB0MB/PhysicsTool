@@ -1,3 +1,18 @@
+Avalonia migration additions
+
+The Avalonia application uses Avalonia (MIT), SkiaSharp (MIT and bundled native
+Skia notices), and Silk.NET 2.23.0 (MIT/X11). Their upstream source and license
+information are available at:
+https://github.com/AvaloniaUI/Avalonia
+https://github.com/mono/SkiaSharp
+https://github.com/dotnet/Silk.NET
+
+AssimpNetter is also used for reference-model import in the Avalonia app.
+The Autodesk FBX bridge and DirectXTex mentioned below belong to the preserved
+WinForms implementation and are not used by the Avalonia model importer.
+
+-------------------------------------------------------------------------------
+
 Autodesk FBX SDK 2020.3.7
 
 Copyright (c) Autodesk, Inc. All rights reserved.

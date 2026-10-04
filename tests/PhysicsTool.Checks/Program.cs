@@ -18,7 +18,15 @@ internal static class Program
     {
         try
         {
+            if (args.FirstOrDefault() == "--gpu")
+            {
+                GpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(GpuChecks.Output);
+                GpuChecks.ModelPath = args.Length > 2 ? Path.GetFullPath(args[2]) : ModelChecks.Run(GpuChecks.Output);
+                AppBuilder.Configure<GpuChecks>().UsePlatformDetect().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return GpuChecks.Result;
+            }
             var output = Path.GetFullPath(args.FirstOrDefault() ?? "artifacts/checks"); Directory.CreateDirectory(output);
+            var modelPath = ModelChecks.Run(output);
             for (int format = 0; format < 3; format++)
             {
                 var session = new EditorSession(); session.New("PortableCloth", format);
@@ -62,7 +70,7 @@ internal static class Program
                 Console.WriteLine("PASS: native fixture " + Path.GetFileName(file));
             }
             AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
-            var window = new MainWindow(); window.Show(); window.LoadPath(Path.Combine(output, "manual-0.hkcl"));
+            var window = new MainWindow(graphics: false); window.Show(); window.LoadPath(Path.Combine(output, "manual-0.hkcl"));
             for (int cycle = 0; cycle < 3; cycle++)
             {
                 window.ToggleSimulation(); Dispatcher.UIThread.RunJobs();
@@ -78,6 +86,20 @@ internal static class Program
                 using var pixels = frame.Lock(); var bytes = new byte[pixels.RowBytes * pixels.Size.Height]; Marshal.Copy(pixels.Address, bytes, 0, bytes.Length);
                 Require(Enumerable.Range(0, bytes.Length / 4).Select(i => BitConverter.ToUInt32(bytes, i * 4)).Distinct().Take(20).Count() >= 20, "Blank rendered editor");
             }
+            var savedState = window.Session.Document.CaptureState();
+            var load = window.LoadModelPathAsync(modelPath);
+            while (!load.IsCompleted) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
+            load.GetAwaiter().GetResult(); Dispatcher.UIThread.RunJobs();
+            Require(window.Viewport.Model?.Meshes.Count == 2, "Model UI import");
+            Require(window.Session.Document.CaptureState() == savedState && !window.Session.IsDirty, "Model changed physics document");
+            var oldModel = window.Viewport.Model;
+            var badLoad = window.LoadModelPathAsync(Path.Combine(output, "missing.obj"));
+            while (!badLoad.IsCompleted) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
+            try { badLoad.GetAwaiter().GetResult(); throw new Exception("Missing model accepted"); } catch (FileNotFoundException) { }
+            Require(ReferenceEquals(oldModel, window.Viewport.Model), "Failed import lost previous model");
+            Require(window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Load model")).IsEnabled, "Import failure left button disabled");
+            window.Viewport.SetMeshVisible(0, false); Require(window.Viewport.HiddenMeshes.Contains(0), "Hide mesh");
+            using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "model-wireframe-980.png"));
             var docs = new DocumentationWindow(); docs.Show(); Dispatcher.UIThread.RunJobs();
             using (var frame = docs.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "documentation.png"));
             docs.Close(); window.Close();

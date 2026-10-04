@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Avalonia Model Viewport - 2026-10-03
+
+- Added asynchronous static FBX/DAE/OBJ/glTF/GLB model import through the cross-platform Assimp runtimes, preserving hierarchy transforms and converting FBX declared units to meters.
+- Added embedded/external image texture loading through Skia, UV-slot selection, and the existing Toolbox missing-texture fallback without System.Drawing or the Autodesk FBX bridge.
+- Ported the existing material GLSL and seam-aware tangent builder into an Avalonia OpenGL/OpenGL ES renderer, including the complete-model depth prepass and GPU resource cleanup.
+- Added Load model, Clear model, Meshes visibility, and physics overlay visibility. Failed imports preserve the current model; model viewing never mutates the physics document.
+- Added model import/unit/handedness/texture regressions and real-GPU orbit/hide/resize/clear/reload checks. Windows checks pass with generated fixtures and a real Armor FBX. Linux/macOS validation, BFRES, actor loading, material presets, and animated/skinned cloth binding remain pending.
+
 ### Avalonia Migration Preview - 2026-10-03
 
 - Created an independent source repository preserving the current PhysicsTool baseline.

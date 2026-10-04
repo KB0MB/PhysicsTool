@@ -9,6 +9,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using HKCLTool;
 using PhysicsTool.Core;
+using PhysicsTool.Desktop.Rendering;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
@@ -20,6 +21,11 @@ public sealed class MainWindow : Window
 {
     public EditorSession Session { get; } = new();
     private readonly PhysicsViewport _viewport = new();
+    public PhysicsViewport Viewport => _viewport;
+    public ModelGlControl? ModelSurface { get; }
+    private readonly Button _loadModel, _clearModel, _meshes;
+    private int _modelRequest;
+    private bool _modelLoading;
     private readonly ListBox _cloths = new(), _items = new() { SelectionMode = SelectionMode.Multiple };
     private readonly ComboBox _mode = new() { ItemsSource = new[] { "Particles", "Bones", "Colliders" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly StackPanel _details = new() { Spacing = 8, Margin = new Thickness(14) };
@@ -37,7 +43,7 @@ public sealed class MainWindow : Window
     private sealed record Item(int Index, string Label, object Data) { public override string ToString() => Label; }
     private sealed record Relation(ParticleRelationshipRow Data) { public override string ToString() => $"{Data.Name}  {Data.Particles}"; }
 
-    public MainWindow(string? file = null)
+    public MainWindow(string? file = null, bool graphics = true)
     {
         Title = "PhysicsTool Avalonia"; Width = 1440; Height = 900; MinWidth = 980; MinHeight = 640;
         Background = new SolidColorBrush(Color.Parse("#303435"));
@@ -64,11 +70,28 @@ public sealed class MainWindow : Window
         DockPanel.SetDock(heading, Dock.Top); left.Children.Add(heading); left.Children.Add(_cloths); workspace.Children.Add(left);
         var split = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split, 1); workspace.Children.Add(split);
         var center = new DockPanel();
-        var viewbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(8) };
+        var modelbar = new WrapPanel { Margin = new Thickness(5) };
+        _loadModel = Add(modelbar, "Load model", async () => await OpenModel());
+        _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; _viewport.SetModel(null); UpdateModelActions(); });
+        _meshes = Add(modelbar, "Meshes", async () => await ShowMeshes());
+        DockPanel.SetDock(modelbar, Dock.Top); center.Children.Add(modelbar);
+        var viewbar = new WrapPanel { Margin = new Thickness(8) };
         var fit = new Button { Content = "Fit", Padding = new Thickness(12, 5) }; fit.Click += (_, _) => _viewport.Fit(); viewbar.Children.Add(fit);
         var bones = new CheckBox { Content = "Bones", IsChecked = true }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
         var colliders = new CheckBox { Content = "Colliders", IsChecked = true }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
-        viewbar.Children.Add(_wind); DockPanel.SetDock(viewbar, Dock.Top); center.Children.Add(viewbar); center.Children.Add(_viewport); Grid.SetColumn(center, 2); workspace.Children.Add(center);
+        var physics = new CheckBox { Content = "Physics", IsChecked = true, Margin = new Thickness(8, 0) };
+        physics.IsCheckedChanged += (_, _) => { _viewport.ShowPhysics = physics.IsChecked == true; _viewport.InvalidateVisual(); };
+        viewbar.Children.Add(physics);
+        viewbar.Children.Add(_wind); DockPanel.SetDock(viewbar, Dock.Top); center.Children.Add(viewbar);
+        foreach (var control in viewbar.Children) control.Margin = new Thickness(4, 3);
+        var scene = new Grid();
+        if (graphics)
+        {
+            ModelSurface = new ModelGlControl(_viewport);
+            ModelSurface.RenderFailed += message => _status.Text = "GPU preview unavailable; using wireframe. " + message;
+            scene.Children.Add(ModelSurface);
+        }
+        scene.Children.Add(_viewport); center.Children.Add(scene); Grid.SetColumn(center, 2); workspace.Children.Add(center);
         var split2 = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split2, 3); workspace.Children.Add(split2);
         var right = new Grid { RowDefinitions = new RowDefinitions("Auto,180,Auto,*"), Margin = new Thickness(8) };
         right.Children.Add(_mode); Grid.SetRow(_items, 1); right.Children.Add(_items);
@@ -107,9 +130,9 @@ public sealed class MainWindow : Window
             else if (!_timer.IsEnabled && e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.Z) { Session.Undo(); Refresh(); e.Handled = true; }
         };
         Closing += async (_, e) => { if (_closingApproved) return; if (Session.IsDirty) { e.Cancel = true; if (await CanReplace()) { _closingApproved = true; Close(); } } else StopSimulation(); };
-        Closed += (_, _) => StopSimulation();
+        Closed += (_, _) => { _modelRequest++; StopSimulation(); };
         Opened += (_, _) => { if (file != null) Try(() => LoadPath(file)); };
-        Refresh();
+        Refresh(); UpdateModelActions();
     }
     private Button Add(Panel panel, string text, Action action)
     {
@@ -268,5 +291,44 @@ public sealed class MainWindow : Window
         format.SelectionChanged += (_, _) => Session.Platform = format.SelectedIndex == 0 ? HkclPlatform.WiiU : HkclPlatform.Switch;
         var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) }; panel.Children.Add(dark); panel.Children.Add(new TextBlock { Text = "HKCL save platform" }); panel.Children.Add(format);
         await Dialogs.Show(this, "Settings", panel);
+    }
+
+    public async Task LoadModelPathAsync(string path)
+    {
+        var request = ++_modelRequest; _modelLoading = true; UpdateModelActions();
+        _status.Text = "Loading " + System.IO.Path.GetFileName(path) + "...";
+        try
+        {
+            var model = await Task.Run(() => PortableModelImporter.Load(path));
+            if (request != _modelRequest) return;
+            _viewport.SetModel(model);
+            _status.Text = $"{System.IO.Path.GetFileName(path)}: {model.Meshes.Count} meshes, {model.TriangleCount:N0} triangles, {model.EmbeddedTextureCount + model.ExternalTextureCount} textures."
+                + (model.Warnings.Count == 0 ? "" : " " + string.Join(" ", model.Warnings.Take(3)));
+        }
+        finally { if (request == _modelRequest) { _modelLoading = false; UpdateModelActions(); } }
+    }
+    private void UpdateModelActions()
+    {
+        _loadModel.IsEnabled = !_modelLoading; _clearModel.IsEnabled = !_modelLoading && _viewport.Model != null;
+        _meshes.IsEnabled = !_modelLoading && _viewport.Model != null;
+    }
+    private async Task OpenModel()
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Load model", AllowMultiple = false,
+            FileTypeFilter = new[] { new FilePickerFileType("Models") { Patterns = PortableModelImporter.Extensions.Select(e => "*" + e).ToArray() } } });
+        if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) await LoadModelPathAsync(path);
+    }
+    private async Task ShowMeshes()
+    {
+        if (_viewport.Model is not { } model) return;
+        var panel = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
+        for (int i = 0; i < model.Meshes.Count; i++)
+        {
+            var index = i;
+            var check = new CheckBox { Content = new TextBlock { Text = model.Meshes[i].Name, TextWrapping = TextWrapping.Wrap }, IsChecked = !_viewport.HiddenMeshes.Contains(i) };
+            check.IsCheckedChanged += (_, _) => _viewport.SetMeshVisible(index, check.IsChecked == true); panel.Children.Add(check);
+        }
+        var content = new StackPanel(); content.Children.Add(new ScrollViewer { Content = panel, MaxHeight = 500 });
+        await Dialogs.Show(this, "Meshes", content);
     }
 }

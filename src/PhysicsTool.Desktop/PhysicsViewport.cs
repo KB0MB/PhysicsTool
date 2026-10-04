@@ -9,6 +9,32 @@ namespace PhysicsTool.Desktop;
 
 public sealed class PhysicsViewport : Control
 {
+    public VisualModelData? Model { get; private set; }
+    public HashSet<int> HiddenMeshes { get; } = new();
+    public bool GpuReady { get; set; }
+    public bool ShowPhysics { get; set; } = true;
+    public event Action? CameraChanged;
+    public void SetModel(VisualModelData? model) { Model = model; HiddenMeshes.Clear(); Fit(); }
+    public void SetMeshVisible(int index, bool visible)
+    {
+        if (Model == null || index < 0 || index >= Model.Meshes.Count) return;
+        if (visible) HiddenMeshes.Remove(index); else HiddenMeshes.Add(index);
+        Changed();
+    }
+    public Matrix4x4 CameraMatrix
+    {
+        get
+        {
+            var w = Math.Max(1, Bounds.Width); var h = Math.Max(1, Bounds.Height);
+            var scale = Math.Min(w, h) * .78 / _extent * _zoom;
+            return Matrix4x4.CreateTranslation(-_center) * Rotation * Matrix4x4.CreateScale((float)(2 * scale / w), (float)(2 * scale / h), -1 / (_extent * 100))
+                * Matrix4x4.CreateTranslation((float)(2 * _pan.X / w), (float)(-2 * _pan.Y / h), 0);
+        }
+    }
+    private Matrix4x4 Rotation => Matrix4x4.CreateRotationY(_yaw) * Matrix4x4.CreateRotationX(_pitch);
+    public Vector3 ViewDirection => Vector3.TransformNormal(Vector3.UnitZ, Matrix4x4.Transpose(Rotation));
+    public void Orbit(float yaw, float pitch) { _yaw += yaw; _pitch = Math.Clamp(_pitch + pitch, -1.5f, 1.5f); Changed(); }
+    private void Changed() { InvalidateVisual(); CameraChanged?.Invoke(); }
     public ParticlePreviewData Data { get; set; } = new();
     public IReadOnlyDictionary<int, Vector3>? Simulated { get; set; }
     public HashSet<int> Selected { get; } = new();
@@ -26,13 +52,14 @@ public sealed class PhysicsViewport : Control
     {
         var points = Data.Particles.Select(p => p.Position).Concat(Data.Bones.Select(b => b.Position))
             .Concat(Data.Colliders.SelectMany(c => new[] { c.Start - new Vector3(c.Radius), c.End + new Vector3(c.Radius) })).ToArray();
+        if (Model != null) points = points.Concat(new[] { Model.BoundsMinimum, Model.BoundsMaximum }).ToArray();
         if (points.Length == 0) { _center = Vector3.Zero; _extent = 1; }
         else
         {
             var min = points.Aggregate(Vector3.Min); var max = points.Aggregate(Vector3.Max);
             _center = (min + max) / 2; _extent = Math.Max(.1f, (max - min).Length());
         }
-        _zoom = 1; _pan = default; InvalidateVisual();
+        _zoom = 1; _pan = default; Changed();
     }
     private Point Project(Vector3 p)
     {
@@ -43,14 +70,29 @@ public sealed class PhysicsViewport : Control
     private Vector3 Position(ParticlePreviewPoint p) => Simulated?.GetValueOrDefault(p.Index, p.Position) ?? p.Position;
     public override void Render(DrawingContext context)
     {
-        context.FillRectangle(new SolidColorBrush(Color.Parse("#242829")), Bounds.WithX(0).WithY(0));
+        if (Model == null || !GpuReady) context.FillRectangle(new SolidColorBrush(Color.Parse("#242829")), Bounds.WithX(0).WithY(0));
+        else context.FillRectangle(Brushes.Transparent, Bounds.WithX(0).WithY(0));
         var grid = new Pen(new SolidColorBrush(Color.Parse("#3B4142")), 1);
         var step = MathF.Pow(10, MathF.Floor(MathF.Log10(_extent))) / 5;
-        for (var i = -10; i <= 10; i++)
+        for (var i = -10; i <= 10 && (Model == null || !GpuReady); i++)
         {
             context.DrawLine(grid, Project(_center + new Vector3(i * step, -_extent / 2, -10 * step)), Project(_center + new Vector3(i * step, -_extent / 2, 10 * step)));
             context.DrawLine(grid, Project(_center + new Vector3(-10 * step, -_extent / 2, i * step)), Project(_center + new Vector3(10 * step, -_extent / 2, i * step)));
         }
+        if (Model != null && !GpuReady)
+        {
+            var wire = new Pen(new SolidColorBrush(Color.Parse("#8CADA6")), .7);
+            var stride = Math.Max(1, (int)Math.Ceiling(Model.TriangleCount / 30000d)) * 3;
+            for (int index = 0; index < Model.Meshes.Count; index++)
+            {
+                if (HiddenMeshes.Contains(index)) continue;
+                var mesh = Model.Meshes[index];
+                Point Vertex(uint i) { var offset = checked((int)i * 8); return Project(new(mesh.Vertices[offset], mesh.Vertices[offset + 1], mesh.Vertices[offset + 2])); }
+                for (int i = 0; i + 2 < mesh.Indices.Length; i += stride)
+                { var a = Vertex(mesh.Indices[i]); var b = Vertex(mesh.Indices[i + 1]); var c = Vertex(mesh.Indices[i + 2]); context.DrawLine(wire, a, b); context.DrawLine(wire, b, c); context.DrawLine(wire, c, a); }
+            }
+        }
+        if (!ShowPhysics) return;
         var points = Data.Particles.ToDictionary(p => p.Index, Position);
         void Edge(int a, int b, IPen pen) { if (points.TryGetValue(a, out var x) && points.TryGetValue(b, out var y)) context.DrawLine(pen, Project(x), Project(y)); }
         var face = new Pen(new SolidColorBrush(Color.Parse("#59656A")), 1);
@@ -100,6 +142,7 @@ public sealed class PhysicsViewport : Control
         if (_orbit || _panning) e.Pointer.Capture(this);
         else if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
         {
+            if (!ShowPhysics) return;
             var hit = Data.Particles.Select(p => { var delta = Project(Position(p)) - _last; return (p.Index, Distance: Math.Sqrt(delta.X * delta.X + delta.Y * delta.Y)); }).OrderBy(p => p.Distance).FirstOrDefault();
             if (Data.Particles.Count > 0 && hit.Distance < 12) ParticlePicked?.Invoke(hit.Index, e.KeyModifiers.HasFlag(KeyModifiers.Control));
         }
@@ -109,9 +152,9 @@ public sealed class PhysicsViewport : Control
     {
         if (!_orbit && !_panning) return;
         var p = e.GetPosition(this); var delta = p - _last; _last = p;
-        if (_panning) { _pan += delta; InvalidateVisual(); return; }
-        _yaw += (float)delta.X * .008f; _pitch = Math.Clamp(_pitch + (float)delta.Y * .008f, -1.5f, 1.5f); InvalidateVisual();
+        if (_panning) { _pan += delta; Changed(); return; }
+        Orbit((float)delta.X * .008f, (float)delta.Y * .008f);
     }
     protected override void OnPointerReleased(PointerReleasedEventArgs e) { _orbit = _panning = false; e.Pointer.Capture(null); }
-    protected override void OnPointerWheelChanged(PointerWheelEventArgs e) { _zoom = Math.Clamp(_zoom * Math.Pow(1.15, e.Delta.Y), .02, 100); InvalidateVisual(); e.Handled = true; }
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e) { _zoom = Math.Clamp(_zoom * Math.Pow(1.15, e.Delta.Y), .02, 100); Changed(); e.Handled = true; }
 }
