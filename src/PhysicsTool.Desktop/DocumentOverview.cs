@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
+using Avalonia.Input;
 using Avalonia.Media;
 using HKCLTool;
 using PhysicsTool.Core;
@@ -13,14 +14,18 @@ public sealed class DocumentOverview : UserControl
     private readonly ListBox _current = new(), _donorList = new(), _bones = new();
     private readonly TextBlock _currentFile = FileLabel(), _donorFile = FileLabel(), _bonesTitle = Heading("Bones");
     private readonly TextBlock _currentEmpty = Empty("No physics file loaded"), _donorEmpty = Empty("No donor file loaded"), _bonesEmpty = Empty("No bones selected");
-    private readonly Button _edit = new() { Content = "Edit selected" };
+    private readonly Button _remove = new() { Content = "Remove selected" }, _duplicate = new() { Content = "Duplicate selected" }, _merge = new() { Content = "Merge selected (M)" }, _clear = new() { Content = "Clear donor" };
+    private readonly MenuItem _renameMenu = new() { Header = "Rename" }, _duplicateMenu = new() { Header = "Duplicate" }, _removeMenu = new() { Header = "Remove" };
     private EditorSession? _session;
-    private HkclService? _donor;
+    private EditorSession? _donorSession;
     private bool _refreshing;
     public event Action<int>? ClothSelected;
     public event Action? EditRequested;
-    public event Action? OpenRequested;
-    public event Action? DonorRequested;
+    public event Action? RemoveRequested;
+    public event Action? DuplicateRequested;
+    public event Action? RenameRequested;
+    public event Action? MergeRequested;
+    public event Action? ClearDonorRequested;
 
     public DocumentOverview()
     {
@@ -28,14 +33,16 @@ public sealed class DocumentOverview : UserControl
         layout.ColumnDefinitions[0].MinWidth = 340;
         layout.ColumnDefinitions[2].MinWidth = 260;
         var files = new Grid { RowDefinitions = new RowDefinitions("*,5,*") };
-        var currentActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var open = new Button { Content = "Open Physics" }; open.Click += (_, _) => OpenRequested?.Invoke(); currentActions.Children.Add(open);
-        _edit.Click += (_, _) => EditRequested?.Invoke(); currentActions.Children.Add(_edit);
+        var currentActions = new WrapPanel();
+        _remove.Margin = _duplicate.Margin = new Thickness(0, 0, 8, 4);
+        _remove.Click += (_, _) => RemoveRequested?.Invoke(); currentActions.Children.Add(_remove);
+        _duplicate.Click += (_, _) => DuplicateRequested?.Invoke(); currentActions.Children.Add(_duplicate);
         files.Children.Add(Section("Current file", _currentFile, _current, _currentEmpty, currentActions));
         var rowSplit = new GridSplitter { ResizeDirection = GridResizeDirection.Rows, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetRow(rowSplit, 1); files.Children.Add(rowSplit);
-        var donorActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var donorOpen = new Button { Content = "Open Donor" }; donorOpen.Click += (_, _) => DonorRequested?.Invoke(); donorActions.Children.Add(donorOpen);
-        var donorClear = new Button { Content = "Clear donor" }; donorClear.Click += (_, _) => { _donor = null; _donorFile.Text = "No file"; _donorList.ItemsSource = Array.Empty<string>(); _donorEmpty.IsVisible = true; ShowCurrentBones(); }; donorActions.Children.Add(donorClear);
+        var donorActions = new WrapPanel();
+        _merge.Margin = _clear.Margin = new Thickness(0, 0, 8, 4);
+        _merge.Click += (_, _) => MergeRequested?.Invoke(); donorActions.Children.Add(_merge);
+        _clear.Click += (_, _) => ClearDonorRequested?.Invoke(); donorActions.Children.Add(_clear);
         var donor = Section("Donor file", _donorFile, _donorList, _donorEmpty, donorActions); Grid.SetRow(donor, 2); files.Children.Add(donor);
         layout.Children.Add(files);
         var split = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split, 1); layout.Children.Add(split);
@@ -58,24 +65,47 @@ public sealed class DocumentOverview : UserControl
         });
         _current.SelectionChanged += (_, _) => { if (!_refreshing && _current.SelectedIndex >= 0) { ClothSelected?.Invoke(_current.SelectedIndex); ShowCurrentBones(); } };
         _current.DoubleTapped += (_, _) => { if (_current.SelectedIndex >= 0) EditRequested?.Invoke(); };
-        _donorList.SelectionChanged += (_, _) => ShowDonorBones();
+        _current.GotFocus += (_, _) => ShowCurrentBones();
+        _donorList.GotFocus += (_, _) => ShowDonorBones();
+        _donorList.SelectionChanged += (_, _) =>
+        {
+            if (_refreshing || _donorSession == null) return;
+            _donorSession.ClothIndex = Math.Max(0, _donorList.SelectedIndex); ShowDonorBones(); UpdateActions();
+        };
+        var editMenu = new MenuItem { Header = "Editor" }; editMenu.Click += (_, _) => EditRequested?.Invoke();
+        _renameMenu.Click += (_, _) => RenameRequested?.Invoke(); _duplicateMenu.Click += (_, _) => DuplicateRequested?.Invoke(); _removeMenu.Click += (_, _) => RemoveRequested?.Invoke();
+        _current.ContextMenu = new ContextMenu { ItemsSource = new object[] { editMenu, _renameMenu, _duplicateMenu, _removeMenu } };
+        _current.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Delete && _remove.IsEnabled) { RemoveRequested?.Invoke(); e.Handled = true; }
+            else if (e.Key == Key.F2 && _renameMenu.IsEnabled) { RenameRequested?.Invoke(); e.Handled = true; }
+            else if (e.Key == Key.Enter && _current.SelectedIndex >= 0) { EditRequested?.Invoke(); e.Handled = true; }
+        };
+        _donorList.KeyDown += (_, e) => { if (e.Key == Key.M && _merge.IsEnabled) { MergeRequested?.Invoke(); e.Handled = true; } };
     }
-    public void Update(EditorSession session)
+    public void Update(EditorSession session, EditorSession donor)
     {
-        _session = session; _refreshing = true;
+        _session = session; _donorSession = donor; _refreshing = true;
         try
         {
-            _currentFile.Text = session.Document.HasDocument ? (session.Path == null ? "Untitled" : System.IO.Path.GetFileName(session.Path)) : "No file";
+            _currentFile.Text = FileName(session);
             var rows = session.Document.GetClothSummaries(); _current.ItemsSource = rows; _current.SelectedIndex = rows.Count > 0 ? session.ClothIndex : -1;
-            _currentEmpty.IsVisible = rows.Count == 0; _edit.IsEnabled = rows.Count > 0;
+            _currentEmpty.IsVisible = rows.Count == 0;
+            _donorFile.Text = FileName(donor);
+            var donorRows = donor.Document.GetClothSummaries(); _donorList.ItemsSource = donorRows; _donorList.SelectedIndex = donorRows.Count > 0 ? donor.ClothIndex : -1;
+            _donorEmpty.IsVisible = donorRows.Count == 0; UpdateActions();
             ShowCurrentBones();
         }
         finally { _refreshing = false; }
     }
-    public void LoadDonor(string path)
+    private static string FileName(EditorSession session) => !session.Document.HasDocument ? "No file" :
+        (session.Path == null ? "Untitled" : System.IO.Path.GetFileName(session.Path)) + (session.IsDirty ? " *" : "");
+    private void UpdateActions()
     {
-        var donor = new HkclService(); donor.Load(path); var rows = donor.GetClothSummaries();
-        _donor = donor; _donorFile.Text = System.IO.Path.GetFileName(path); _donorList.ItemsSource = rows; _donorList.SelectedIndex = rows.Count > 0 ? 0 : -1; _donorEmpty.IsVisible = rows.Count == 0;
+        _remove.IsEnabled = _removeMenu.IsEnabled = _session?.CanRemoveEntry == true;
+        _duplicate.IsEnabled = _duplicateMenu.IsEnabled = _renameMenu.IsEnabled = _session?.CanManageCloth == true;
+        _merge.IsEnabled = _session?.Document.HasDocument == true && _donorSession?.HasSelectedEntry == true && !_session.Document.IsHkrg && !_donorSession.Document.IsHkrg;
+        _clear.IsEnabled = _donorSession?.Document.HasDocument == true;
     }
     private void ShowCurrentBones()
     {
@@ -84,7 +114,7 @@ public sealed class DocumentOverview : UserControl
     }
     public void ShowDonorBones()
     {
-        if (_donor != null && _donorList.SelectedIndex >= 0) ShowBones(_donor, _donorList.SelectedIndex, "Donor bones");
+        if (_donorSession?.HasSelectedEntry == true) ShowBones(_donorSession.Document, _donorSession.ClothIndex, "Donor bones");
     }
     private void ShowBones(HkclService document, int cloth, string title)
     { var rows = document.GetBoneRows(cloth); _bones.ItemsSource = rows; _bonesEmpty.IsVisible = rows.Count == 0; _bonesTitle.Text = title; }

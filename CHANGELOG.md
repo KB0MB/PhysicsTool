@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Avalonia Overview and Inspector Parity - 2026-10-03
+
+- Restored Remove selected, Duplicate selected, Rename, Merge selected (M), and Swap files. Merge uses the existing BPHCL TYPE/name guards and BPHCL-to-HKCL template preflight rather than bypassing native restrictions.
+- Kept dirty state, platform, selected cloth, and undo/redo with each file during swaps. Added dirty-donor replacement/clear/close protection and selection-aware transactional undo for topology commands.
+- Restored Save versus Save as, plus JSON and Wii U/Switch HKCL export copies that leave the current session unchanged. Empty HKCL containers can still be saved after removing the last cloth.
+- Added helper-sidecar overview loading, group removal/merge, and saving; preserved HKRG platform detection. Detailed helper and ragdoll editing is still pending.
+- Matched the original inspector's side-by-side item/value layout and separate resizable relationships panel. Moved Add Particle/Bone/Collider above the viewport and Particles follow bones above the tabs.
+- Added native document-management, helper-file, dialog cancellation, dirty-donor, compact-layout, and GPU regressions.
+
 ### Familiar Avalonia Navigation and Viewport - 2026-10-03
 
 - Restored a current-file/donor overview as the startup screen instead of opening directly into the viewport. Added Editor/Back navigation and bone inspection for both file lists.

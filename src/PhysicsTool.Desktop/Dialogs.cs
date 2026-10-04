@@ -23,11 +23,26 @@ internal static class Dialogs
     public static async Task<bool> Confirm(Window owner, string title, string question)
     {
         var panel = new StackPanel { Margin = new Thickness(24), Spacing = 18 };
-        panel.Children.Add(new TextBlock { Text = question, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new ScrollViewer { MaxHeight = 420, Content = new TextBlock { Text = question, TextWrapping = TextWrapping.Wrap } });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-        var window = Window(title, panel); var cancel = new Button { Content = "Cancel" }; var yes = new Button { Content = "Confirm" };
+        var window = Window(title, panel); var cancel = new Button { Content = "Cancel", IsCancel = true }; var yes = new Button { Content = "Confirm", IsDefault = true };
         cancel.Click += (_, _) => window.Close(false); yes.Click += (_, _) => window.Close(true);
         buttons.Children.Add(cancel); buttons.Children.Add(yes); panel.Children.Add(buttons); return await window.ShowDialog<bool>(owner);
+    }
+    public static async Task<string?> Prompt(Window owner, string title, string label, string value)
+    {
+        var panel = new StackPanel { Margin = new Thickness(24), Spacing = 14 };
+        var input = new TextBox { Text = value };
+        panel.Children.Add(new TextBlock { Text = label }); panel.Children.Add(input);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        var accept = new Button { Content = "Rename", IsDefault = true };
+        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        actions.Children.Add(cancel); actions.Children.Add(accept); panel.Children.Add(actions);
+        var window = Window(title, panel);
+        input.TextChanged += (_, _) => accept.IsEnabled = !string.IsNullOrWhiteSpace(input.Text);
+        accept.Click += (_, _) => window.Close(input.Text!.Trim()); cancel.Click += (_, _) => window.Close();
+        window.Opened += (_, _) => { input.Focus(); input.SelectAll(); };
+        return await window.ShowDialog<string?>(owner);
     }
     public static async Task<(string Name, int Format)?> NewCloth(Window owner)
     {

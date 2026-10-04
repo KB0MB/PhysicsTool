@@ -57,19 +57,28 @@ internal static class Program
                 else Require(!reload.CanSimulate, "BPHCL simulation guard");
             }
             Console.WriteLine("PASS: Wii U/Switch HKCL and BPHCL drafts, topology, save/reload, atomic edits, undo/redo, solver.");
+            DocumentChecks.Run(output);
             foreach (var file in args.Skip(1))
             {
-                var hash = SHA256.HashData(File.ReadAllBytes(file)); var document = new HkclService(); document.Load(file);
+                var hash = SHA256.HashData(File.ReadAllBytes(file)); var fixture = new EditorSession(); fixture.Load(file); var document = fixture.Document;
                 for (int cloth = 0; cloth < document.GetClothSummaries().Count; cloth++)
                 {
                     var preview = document.GetParticlePreview(cloth); Require(preview.Particles.All(p => float.IsFinite(p.Position.X)), "Fixture positions");
-                    document.GetParticleRows(cloth); document.GetBoneRows(cloth); document.GetColliderRows(cloth);
+                    document.GetParticleRows(cloth); document.GetBoneRows(cloth);
+                    if (!document.IsHelperBoneSidecar) document.GetColliderRows(cloth);
                 }
-                document.SaveHkcl(Path.Combine(output, "fixture-" + Path.GetFileName(file)), document.IsBphcl ? HkclPlatform.Switch : HkclService.DetectHkclPlatform(file));
+                if (document.IsHelperBoneSidecar) DocumentChecks.CheckHelper(file, output);
+                document.SaveHkcl(Path.Combine(output, "fixture-" + Path.GetFileName(file)), fixture.Platform);
                 Require(hash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(file))), "Source fixture changed");
                 Console.WriteLine("PASS: native fixture " + Path.GetFileName(file));
             }
             AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+            foreach (var helper in args.Skip(1).Where(p => Path.GetExtension(p) is ".bphyssb" or ".bphhb"))
+            {
+                var helperWindow = new MainWindow(graphics: false); helperWindow.Show(); helperWindow.LoadPath(helper);
+                helperWindow.ShowEditor(); Dispatcher.UIThread.RunJobs(); helperWindow.ShowOverview();
+                Require(!helperWindow.Session.IsDirty, "Helper inspection changed data"); helperWindow.Close();
+            }
             var window = new MainWindow(graphics: false); window.Show(); Dispatcher.UIThread.RunJobs();
             Require(!window.IsEditorVisible && !window.GetVisualDescendants().OfType<PhysicsViewport>().Any(), "Startup opens viewport");
             foreach (var size in new[] { new Size(1440, 900), new Size(980, 640) })
@@ -81,7 +90,16 @@ internal static class Program
             Require(!window.IsEditorVisible, "Opening physics bypassed overview");
             window.LoadDonorPath(Path.Combine(output, "manual-1.hkcl")); Dispatcher.UIThread.RunJobs();
             using (var overview = window.CaptureRenderedFrame()!) overview.Save(Path.Combine(output, "overview-980.png"));
+            OverviewChecks.Run(window);
+            var duplicate = window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Duplicate selected"));
+            Require(duplicate.IsEnabled, "Overview duplicate disabled");
+            duplicate.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+            Require(window.Session.Document.GetClothSummaries().Count == 2, "Overview duplicate not wired");
+            window.Session.Undo(); window.Refresh();
+            var currentPath = window.Session.Path; window.SwapFiles();
+            Require(window.DonorSession.Path == currentPath, "UI swap not wired"); window.SwapFiles();
             window.ShowEditor(); Dispatcher.UIThread.RunJobs();
+            Require(!window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Swap files")).IsEnabled, "Swap available inside editor");
             NavigationChecks.Run(window);
             for (int cycle = 0; cycle < 3; cycle++)
             {

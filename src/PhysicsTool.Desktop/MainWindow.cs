@@ -19,9 +19,11 @@ using System.Reflection;
 
 namespace PhysicsTool.Desktop;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     public EditorSession Session { get; } = new();
+    public EditorSession DonorSession { get; } = new();
+    private readonly Button _swap, _export;
     private readonly PhysicsViewport _viewport = new();
     public PhysicsViewport Viewport => _viewport;
     public ModelGlControl? ModelSurface { get; }
@@ -38,7 +40,10 @@ public sealed class MainWindow : Window
     private bool _fitPending = true;
     public bool IsEditorVisible => ReferenceEquals(_body.Content, _workspace);
     private readonly StackPanel _details = new() { Spacing = 8, Margin = new Thickness(14) };
-    private readonly ListBox _relationships = new() { MaxHeight = 160 };
+    private readonly ListBox _relationships = new();
+    private readonly Grid _inspector;
+    private readonly DockPanel _relationshipPane;
+    private readonly GridSplitter _relationshipSplit;
     private readonly WrapPanel _relationshipActions = new();
     private readonly TextBlock _status = new() { Margin = new Thickness(12, 7), Text = "Ready", TextWrapping = TextWrapping.Wrap };
     private readonly Button _simulate, _save, _undo, _redo, _add, _delete, _constraint, _removeConstraint;
@@ -72,7 +77,10 @@ public sealed class MainWindow : Window
         Add(toolbar, "New", async () => { if (await CanReplace()) await NewDocument(); });
         Add(toolbar, "Open Physics", async () => await OpenDocument());
         Add(toolbar, "Open Donor", async () => await OpenDonor());
-        _save = Add(toolbar, "Save as", async () => await SaveDocument());
+        _swap = Add(toolbar, "Swap files", SwapFiles);
+        _export = Add(toolbar, "Export", () => OpenExportMenu());
+        _save = Add(toolbar, "Save", async () => await SaveDocument());
+        _save.ContextMenu = new ContextMenu { ItemsSource = new[] { MenuCommand("Save as...", () => SaveDocument(true)) } };
         _undo = ViewportTools.Icon("Undo2", "Undo (Ctrl+Z)", () => Try(() => { Session.Undo(); Refresh(); })); toolbar.Children.Add(_undo);
         _redo = ViewportTools.Icon("Redo2", "Redo", () => Try(() => { Session.Redo(); Refresh(); })); toolbar.Children.Add(_redo);
         var navigation = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
@@ -82,11 +90,12 @@ public sealed class MainWindow : Window
         topbar.Children.Add(toolbar); Grid.SetColumn(navigation, 1); topbar.Children.Add(navigation);
         DockPanel.SetDock(topbar, Dock.Top); shell.Children.Add(topbar);
         DockPanel.SetDock(_status, Dock.Bottom); shell.Children.Add(_status);
-        var workspace = _workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("*,5,400") };
+        var workspace = _workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("*,5,490") };
         workspace.ColumnDefinitions[0].MinWidth = 420;
         workspace.ColumnDefinitions[2].MinWidth = 300;
         var center = new DockPanel();
         var modelbar = new WrapPanel { Margin = new Thickness(5) };
+        _add = Add(modelbar, "Add Particle", AddItem);
         _loadModel = Add(modelbar, "Load model", async () => await OpenModel());
         _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; _viewport.SetModel(null); UpdateModelActions(); });
         _meshes = Add(modelbar, "Meshes", async () => await ShowMeshes());
@@ -109,20 +118,41 @@ public sealed class MainWindow : Window
         scene.Children.Add(_viewport); scene.Children.Add(ViewportTools.CameraToolbar(_viewport)); scene.Children.Add(new ViewportAxes(_viewport));
         center.Children.Add(scene); workspace.Children.Add(center);
         var split2 = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split2, 1); workspace.Children.Add(split2);
-        var right = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,160,Auto,*"), Margin = new Thickness(8) };
-        right.Children.Add(_cloths); Grid.SetRow(_mode, 1); right.Children.Add(_mode); Grid.SetRow(_items, 2); right.Children.Add(_items);
-        var actions = new WrapPanel();
-        _add = Add(actions, "Add", AddItem); _delete = Add(actions, "Delete", async () => await DeleteItems());
-        Grid.SetRow(actions, 3); right.Children.Add(actions);
-        var scroller = new ScrollViewer { Content = _details }; Grid.SetRow(scroller, 4); right.Children.Add(scroller); Grid.SetColumn(right, 2); workspace.Children.Add(right);
+        var right = _inspector = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,5,200"), Margin = new Thickness(8) };
+        right.RowDefinitions[3].MinHeight = 120;
+        right.Children.Add(_cloths);
+        _follow.HorizontalAlignment = HorizontalAlignment.Right; _follow.Margin = new Thickness(0, 0, 0, 4);
+        Grid.SetRow(_follow, 1); right.Children.Add(_follow);
+        Grid.SetRow(_mode, 2); right.Children.Add(_mode);
+        var values = new Grid { ColumnDefinitions = new ColumnDefinitions("120,5,*") };
+        values.ColumnDefinitions[0].MinWidth = 90; values.ColumnDefinitions[2].MinWidth = 160;
+        var itemHost = new DockPanel();
+        var actions = new WrapPanel(); _delete = Add(actions, "Delete", async () => await DeleteItems());
+        DockPanel.SetDock(actions, Dock.Bottom); itemHost.Children.Add(actions); itemHost.Children.Add(_items); values.Children.Add(itemHost);
+        var valueSplit = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetColumn(valueSplit, 1); values.Children.Add(valueSplit);
+        var scroller = new ScrollViewer { Content = _details }; Grid.SetColumn(scroller, 2); values.Children.Add(scroller);
+        Grid.SetRow(values, 3); right.Children.Add(values);
+        _relationshipSplit = new GridSplitter { ResizeDirection = GridResizeDirection.Rows, HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetRow(_relationshipSplit, 4); right.Children.Add(_relationshipSplit);
+        _relationshipPane = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var relationshipTitle = new TextBlock { Text = "Selected particle relationships", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 8) };
+        DockPanel.SetDock(relationshipTitle, Dock.Top); _relationshipPane.Children.Add(relationshipTitle);
+        DockPanel.SetDock(_relationshipActions, Dock.Bottom); _relationshipPane.Children.Add(_relationshipActions); _relationshipPane.Children.Add(_relationships);
+        Grid.SetRow(_relationshipPane, 5); right.Children.Add(_relationshipPane);
+        Grid.SetColumn(right, 2); workspace.Children.Add(right);
         _body.Content = _overview; shell.Children.Add(_body); Content = shell;
-        _overview.OpenRequested += async () => { try { await OpenDocument(); } catch (Exception ex) { _status.Text = ex.Message; } };
-        _overview.DonorRequested += async () => { try { await OpenDonor(); } catch (Exception ex) { _status.Text = ex.Message; } };
+        _overview.RemoveRequested += async () => await RunCommand(RemoveCloth);
+        _overview.DuplicateRequested += () => Try(() => { Session.DuplicateSelected(); Refresh(true); _status.Text = "Duplicated cloth."; });
+        _overview.RenameRequested += async () => await RunCommand(RenameCloth);
+        _overview.MergeRequested += async () => await RunCommand(MergeDonor);
+        _overview.ClearDonorRequested += async () => await RunCommand(ClearDonor);
         _overview.ClothSelected += index => { Session.ClothIndex = index; Refresh(true); };
         _overview.EditRequested += ShowEditor;
         _constraint = new Button { Content = "Add constraint" }; _constraint.Click += async (_, _) => await AddConstraint();
         _removeConstraint = new Button { Content = "Remove constraint" }; _removeConstraint.Click += async (_, _) => await RemoveConstraint();
         _relationshipActions.Children.Add(_constraint); _relationshipActions.Children.Add(_removeConstraint);
+        _constraint.Margin = new Thickness(0, 4, 6, 0); _removeConstraint.Margin = new Thickness(0, 4, 0, 0);
         _editControls.AddRange(new Control[] { _cloths, _mode, _items, _details, _save, _undo, _redo, _add, _delete });
         _cloths.SelectionChanged += (_, _) => { if (_refreshing || _cloths.SelectedIndex < 0) return; StopSimulation(); Session.ClothIndex = _cloths.SelectedIndex; Refresh(true); };
         _mode.SelectionChanged += (_, _) => { if (!_refreshing) Refresh(); };
@@ -150,14 +180,23 @@ public sealed class MainWindow : Window
         };
         KeyDown += async (_, e) =>
         {
+            var command = e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+            if (!e.Handled && command && e.Key == Key.S && _save.IsEnabled)
+            { await RunCommand(() => SaveDocument(e.KeyModifiers.HasFlag(KeyModifiers.Shift))); e.Handled = true; return; }
             if (e.Handled || e.Source is TextBox or NumericUpDown) return;
-            if (!IsEditorVisible) return;
+            if (command && e.Key == Key.Z && !_timer.IsEnabled)
+            { if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) Session.Redo(); else Session.Undo(); Refresh(true); e.Handled = true; return; }
+            if (command && e.Key == Key.Y && !_timer.IsEnabled) { Session.Redo(); Refresh(true); e.Handled = true; return; }
+            if (!IsEditorVisible)
+            {
+                if (e.Key == Key.M && !command && DonorSession.HasSelectedEntry) { await RunCommand(MergeDonor); e.Handled = true; }
+                return;
+            }
             if (e.Key == Key.Space && _viewport.IsFocused) { ToggleSimulation(); e.Handled = true; }
             else if (!_timer.IsEnabled && e.Key == Key.F && _mode.SelectedIndex == 0) { await AddConstraint(); e.Handled = true; }
             else if (!_timer.IsEnabled && e.Key == Key.Delete && _items.IsFocused) { await DeleteItems(); e.Handled = true; }
-            else if (!_timer.IsEnabled && e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.Z) { Session.Undo(); Refresh(); e.Handled = true; }
         };
-        Closing += async (_, e) => { if (_closingApproved) return; if (Session.IsDirty) { e.Cancel = true; if (await CanReplace()) { _closingApproved = true; Close(); } } else StopSimulation(); };
+        Closing += async (_, e) => { if (_closingApproved) return; if (Session.IsDirty || DonorSession.IsDirty) { e.Cancel = true; if (await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in the current and donor files and close?")) { _closingApproved = true; Close(); } } else StopSimulation(); };
         Closed += (_, _) => { _modelRequest++; StopSimulation(); };
         Opened += (_, _) => { if (file != null) Try(() => LoadPath(file)); };
         Refresh(); UpdateModelActions();
@@ -176,18 +215,19 @@ public sealed class MainWindow : Window
     public void ShowEditor()
     {
         if (IsEditorVisible) return;
-        _body.Content = _workspace; _navigation.Content = "Back";
+        _body.Content = _workspace; _navigation.Content = "Back"; UpdateActions();
         Dispatcher.UIThread.Post(() => { if (!IsEditorVisible) return; if (_fitPending) { _viewport.Fit(); _fitPending = false; } _viewport.Focus(); }, DispatcherPriority.Loaded);
     }
     public void ShowOverview()
     {
-        StopSimulation(); _overview.Update(Session); _body.Content = _overview; _navigation.Content = "Editor";
+        StopSimulation(); _overview.Update(Session, DonorSession); _body.Content = _overview; _navigation.Content = "Editor"; UpdateActions();
     }
-    public void LoadDonorPath(string path) { _overview.LoadDonor(path); ShowOverview(); _overview.ShowDonorBones(); _status.Text = "Donor: " + System.IO.Path.GetFileName(path); }
+    public void LoadDonorPath(string path) { DonorSession.Load(path); ShowOverview(); _overview.ShowDonorBones(); _status.Text = "Donor: " + System.IO.Path.GetFileName(path); }
     private async Task OpenDonor()
     {
+        if (!await CanReplace(DonorSession)) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Open donor physics", AllowMultiple = false,
-            FileTypeFilter = new[] { new FilePickerFileType("Cloth physics") { Patterns = new[] { "*.hkcl", "*.bphcl" } } } });
+            FileTypeFilter = PhysicsFileTypes });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) LoadDonorPath(path);
     }
     public void LoadPath(string path) { StopSimulation(); Session.Load(path); Refresh(true); _status.Text = $"Opened {System.IO.Path.GetFileName(path)}"; }
@@ -198,6 +238,7 @@ public sealed class MainWindow : Window
         try
         {
             _cloths.ItemsSource = Enumerable.Range(0, Session.Document.GetClothSummaries().Count).Select(Session.Document.GetClothName).ToArray(); _cloths.SelectedIndex = Session.ClothIndex;
+            if (Session.Document.IsHelperBoneSidecar) _mode.SelectedIndex = 1;
             _items.ItemsSource = Array.Empty<Item>(); _viewport.Data = new();
             if (Session.Document.HasDocument && _cloths.SelectedIndex >= 0)
             {
@@ -216,7 +257,7 @@ public sealed class MainWindow : Window
         finally { _refreshing = false; }
         ShowDetails(); SelectViewport();
         if (fit) { if (IsEditorVisible) _viewport.Fit(); else _fitPending = true; }
-        if (!IsEditorVisible) _overview.Update(Session);
+        if (!IsEditorVisible) _overview.Update(Session, DonorSession);
         _viewport.InvalidateVisual(); UpdateActions();
     }
     private void SelectViewport()
@@ -226,7 +267,8 @@ public sealed class MainWindow : Window
     }
     private void ShowDetails()
     {
-        _details.Children.Clear(); if (_items.SelectedItem is not Item item) return;
+        _details.Children.Clear(); _relationships.ItemsSource = Array.Empty<Relation>();
+        if (_items.SelectedItem is not Item item) return;
         _details.Children.Add(new TextBlock { Text = item.Label, FontSize = 16, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap });
         if (Session.Document.IsHelperBoneSidecar || Session.Document.IsHkrg) { _details.Children.Add(new TextBlock { Text = "Editing this format has not been ported yet.", TextWrapping = TextWrapping.Wrap }); return; }
         if (item.Data is ParticleEditRow particle)
@@ -244,7 +286,6 @@ public sealed class MainWindow : Window
             var number = new NumericUpDown { Value = Convert.ToDecimal(property.GetValue(item.Data), CultureInfo.InvariantCulture), Increment = .01m, FormatString = "0.######", Minimum = name is "Mass" or "Radius" or "Friction" ? 0 : -1000000, Maximum = 1000000 };
             Grid.SetColumn(number, 1); grid.Children.Add(number); _details.Children.Add(grid); inputs.Add(property, number);
         }
-        if (item.Data is BoneEditRow) _details.Children.Add(_follow);
         var apply = new Button { Content = "Apply", HorizontalAlignment = HorizontalAlignment.Stretch };
         apply.Click += (_, _) => Try(() => Edit((doc, cloth) =>
         {
@@ -258,10 +299,7 @@ public sealed class MainWindow : Window
         })); _details.Children.Add(apply);
         if (item.Data is ParticleEditRow)
         {
-            _details.Children.Add(new TextBlock { Text = "Constraints", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 12, 0, 0) });
             _relationships.ItemsSource = Session.Document.GetParticleRelationships(Session.ClothIndex, item.Index).Select(r => new Relation(r)).ToArray();
-            _details.Children.Add(_relationships);
-            _details.Children.Add(_relationshipActions);
         }
     }
     private void Edit(Action<HkclService, int> action)
@@ -275,8 +313,21 @@ public sealed class MainWindow : Window
         var ready = Session.Document.HasDocument && _cloths.SelectedIndex >= 0;
         var editing = ready && !_timer.IsEnabled && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
         foreach (var c in _editControls) c.IsEnabled = !_timer.IsEnabled;
-        _save.IsEnabled = ready && !_timer.IsEnabled; _undo.IsEnabled = editing && Session.CanUndo; _redo.IsEnabled = editing && Session.CanRedo;
+        _mode.IsEnabled = !_timer.IsEnabled && !Session.Document.IsHelperBoneSidecar;
+        _save.IsEnabled = Session.Document.HasDocument && !_timer.IsEnabled;
+        _export.IsEnabled = _save.IsEnabled;
+        _swap.IsEnabled = !IsEditorVisible && Session.Document.HasDocument && DonorSession.Document.HasDocument;
+        _undo.IsEnabled = !_timer.IsEnabled && Session.CanUndo; _redo.IsEnabled = !_timer.IsEnabled && Session.CanRedo;
         _add.IsEnabled = editing && (_mode.SelectedIndex == 0 || !Session.Document.IsBphcl);
+        _add.Content = _mode.SelectedIndex switch { 1 => "Add Bone", 2 => "Add Collider", _ => "Add Particle" };
+        _follow.IsEnabled = editing;
+        var relationshipsVisible = _mode.SelectedIndex == 0 && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
+        if (_relationshipPane.IsVisible != relationshipsVisible)
+        {
+            _relationshipPane.IsVisible = _relationshipSplit.IsVisible = relationshipsVisible;
+            _inspector.RowDefinitions[4].Height = new GridLength(relationshipsVisible ? 5 : 0);
+            _inspector.RowDefinitions[5].Height = new GridLength(relationshipsVisible ? 200 : 0);
+        }
         _delete.IsEnabled = editing && _items.SelectedItem != null && (_mode.SelectedIndex != 1 || !Session.Document.IsBphcl);
         _constraint.IsEnabled = editing && Session.Document.GetParticleRows(Session.ClothIndex).Count >= 2;
         _removeConstraint.IsEnabled = editing && _relationships.SelectedItem is Relation r && Session.Document.CanDeleteParticleRelationship(Session.ClothIndex, r.Data);
@@ -312,7 +363,8 @@ public sealed class MainWindow : Window
         _clock.Restart(); _lastTick = 0; _timer.Start(); UpdateActions();
     }
     public void StopSimulation() { _timer.Stop(); _solver = null; _viewport.Simulated = null; _viewport.InvalidateVisual(); UpdateActions(); }
-    private async Task<bool> CanReplace() => !Session.IsDirty || await Dialogs.Confirm(this, "Unsaved changes", "Discard the current unsaved changes?");
+    private Task<bool> CanReplace() => CanReplace(Session);
+    private async Task<bool> CanReplace(EditorSession session) => !session.IsDirty || await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in " + (System.IO.Path.GetFileName(session.Path) ?? "Untitled") + "?");
     private async Task NewDocument()
     {
         var result = await Dialogs.NewCloth(this); if (result == null) return;
@@ -322,11 +374,13 @@ public sealed class MainWindow : Window
     {
         if (!await CanReplace()) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Open physics", AllowMultiple = false,
-            FileTypeFilter = new[] { new FilePickerFileType("Cloth physics") { Patterns = new[] { "*.hkcl", "*.bphcl" } } } });
+            FileTypeFilter = PhysicsFileTypes });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) Try(() => LoadPath(path));
     }
-    private async Task SaveDocument()
+    private async Task SaveDocument(bool saveAs = false)
     {
+        if (!_save.IsEnabled) return;
+        if (!saveAs && Session.Path is { } existing) { Session.Save(existing); Refresh(); _status.Text = $"Saved {System.IO.Path.GetFileName(existing)}"; return; }
         var extension = Session.Document.CurrentExtension;
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = "Save physics", SuggestedFileName = System.IO.Path.GetFileName(Session.Path) ?? "NewCloth" + extension,
             DefaultExtension = extension.TrimStart('.'), ShowOverwritePrompt = true, FileTypeChoices = new[] { new FilePickerFileType("Physics") { Patterns = new[] { "*" + extension } } } });

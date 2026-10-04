@@ -26,6 +26,8 @@ Use `PhysicsTool.Avalonia.slnx`, not the preserved Windows-only `PhysicsTool.sln
 ## Available in This Preview
 
 - Open and save Wii U/Switch HKCL and TotK BPHCL through the existing native format logic.
+- Rename, duplicate, and remove cloths; merge complete donor cloth packages with native preflight checks; swap current/donor files without losing either file's dirty state or undo history.
+- Open helper sidecars for overview inspection, supported group removal/merge, and native saving. HKRG files can be inspected and saved without changing their detected platform.
 - Create blank cloth drafts, edit particles, bone positions/scales, and supported collider fields.
 - Add/remove supported particles, relationships, and triangles, with atomic edits and undo/redo.
 - Load static FBX, DAE, OBJ, glTF, and GLB reference models, including supported embedded/external textures. FBX declared units are converted to meters.
@@ -34,9 +36,11 @@ Use `PhysicsTool.Avalonia.slnx`, not the preserved Windows-only `PhysicsTool.sln
 - Run the existing HKCL solver with wind. BPHCL simulation remains unavailable.
 - Read the searchable offline cloth guide. Settings currently provide session-local theme and HKCL save-platform choices.
 
-The application starts on the current-file/donor overview, with the bone list on the right. Open a physics file, select a cloth, then choose **Editor** or double-click the cloth. **Back** returns to the overview without discarding edits, the reference model, or the camera position; it stops a running preview. Donor loading is currently inspection-only; swap/merge commands still need migration.
+The application starts on the current-file/donor overview, with the bone list on the right. Open a physics file, select a cloth, then choose **Editor** or double-click the cloth. **Back** returns to the overview without discarding edits, the reference model, or the camera position; it stops a running preview. Remove/Duplicate are below the current list; Rename is in its context menu (F2). Merge is below the donor list (M). Unsupported merges display the native preflight reason without changing either document. Swapped donor edits are protected by unsaved-change prompts.
 
-The editor keeps the large viewport on the left and the cloth selector plus particle/bone/collider tabs on the right. Middle-drag orbits, Shift+middle-drag pans, and the wheel zooms around the pointer. Alt+left-drag and Alt+Shift+left-drag provide alternatives without a middle button. Left-click selects; left-drag box-selects particles. Shift adds and Ctrl/Command toggles selection. Escape cancels a selection drag.
+**Save** writes the current file, prompting for a path on a new draft. **Export** offers Save as, JSON, and Wii U/Switch HKCL copies. Export copies do not replace the open document or mark its edits saved. Ctrl/Command+S saves; Shift adds Save as. Ctrl/Command+Z undoes, and Ctrl/Command+Shift+Z or Ctrl/Command+Y redoes.
+
+The editor keeps the large viewport on the left and the cloth selector plus particle/bone/collider tabs on the right. The item list sits beside its values, with a resizable relationships panel below. Add Particle/Bone/Collider sits above the viewport; Particles follow bones sits above the tabs. Middle-drag orbits, Shift+middle-drag pans, and the wheel zooms around the pointer. Alt+left-drag and Alt+Shift+left-drag provide alternatives without a middle button. Left-click selects; left-drag box-selects particles. Shift adds and Ctrl/Command toggles selection. Escape cancels a selection drag.
 
 The viewport has frame/reset/zoom buttons and clickable axis views. Home frames all, period frames selected particles, and numpad 1/3/7 selects front/right/top (Ctrl selects the opposite side). Right-click opens camera commands. F opens relationship creation for two particles or creates a triangle for three. Numeric inspector edits use Apply; Fixed commits immediately.
 
