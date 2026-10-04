@@ -17,6 +17,8 @@ public sealed class EditorSession
     public bool HasSelectedEntry => Document.HasDocument && ClothIndex >= 0 && ClothIndex < Document.GetClothSummaries().Count;
     public bool CanManageCloth => HasSelectedEntry && !Document.IsHelperBoneSidecar && !Document.IsHkrg;
     public bool CanRemoveEntry => HasSelectedEntry && !Document.IsHkrg;
+    public bool CanEditClothSettings => HasSelectedEntry && !Document.IsReadOnlyExternal;
+    public bool CanScaleMass => CanManageCloth && Document.CanEditParticleValues;
     public bool CanSimulate => HasSelectedEntry && !Document.IsReadOnlyExternal && Document.GetParticleRows(ClothIndex).Any(p => !p.Fixed);
 
     public void New(string name, int format)
@@ -113,6 +115,29 @@ public sealed class EditorSession
         var copy = new HkclService(); copy.RestoreState(Document.CaptureState());
         if (System.IO.Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase)) copy.ExportReadableJson(path);
         else copy.SaveHkcl(path, platform ?? Platform);
+    }
+    public int ScaleParticleMass(float scale, IReadOnlyCollection<int> selection)
+    {
+        if (!CanScaleMass) throw new InvalidOperationException("Particle mass editing is unavailable for this document.");
+        if (!float.IsFinite(scale) || scale <= 0) throw new ArgumentOutOfRangeException(nameof(scale), "Mass scale must be finite and positive.");
+        var rows = Document.GetParticleRows(ClothIndex);
+        if (selection.Any(index => !rows.Any(row => row.Index == index))) throw new ArgumentOutOfRangeException(nameof(selection));
+        var targets = rows.Where(row => !row.Fixed && (selection.Count == 0 || selection.Contains(row.Index))).ToArray();
+        if (targets.Length == 0) throw new InvalidOperationException("Select at least one dynamic particle before scaling its mass.");
+        foreach (var row in targets)
+        {
+            row.Mass *= scale;
+            row.InverseMass = 1f / row.Mass;
+            if (!float.IsFinite(row.Mass) || row.Mass <= float.Epsilon || !float.IsFinite(row.InverseMass) || row.InverseMass <= 0)
+                throw new InvalidOperationException("The selected scale produces an invalid mass or inverse mass.");
+        }
+        Edit((document, cloth) => ParticleEdits.Apply(document, cloth, targets));
+        return targets.Length;
+    }
+    public void UpdateClothSettings(ClothSimulationSettings settings)
+    {
+        if (!CanEditClothSettings) throw new InvalidOperationException("Cloth settings editing is currently available for HKCL only.");
+        Edit((document, cloth) => document.UpdateSimulationSettings(cloth, settings));
     }
     public void Edit(Action<HkclService, int> action)
     {

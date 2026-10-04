@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Avalonia Cloth Tuning and Preview Options - 2026-10-03
+
+- Restored the editor footer with Undo/Redo, Mass scale, and Cloth settings. Mass scaling targets selected dynamic particles or all dynamic particles when selection is empty, updates inverse mass, preserves fixed particles, and supports undo for HKCL/BPHCL.
+- Added HKCL gravity, damping, collision tolerance, and motion-transfer editing using the existing native validation and writer. Invalid ranges remain in the dialog without partial writes; BPHCL cloth settings remain unavailable.
+- Added live preview Options beside Wind: direction, strength, gustiness, gravity scale, playback speed, and solver passes, with sliders, numeric values, and reset. Close retains options; Cancel/title-bar close restores them. Preview options never dirty the native document.
+- Added fixed 60 Hz preview scheduling so accelerated playback is not truncated by the solver's per-call time cap. Catch-up work is bounded after a stalled UI.
+- Fixed partial particle commits in the Avalonia inspector: changing one particle no longer discards other fixed anchors or corrupts aggregate mass/radius. Position edits also synchronize HKCL constraint rest lengths and animation references before saving.
+- Added tuning round-trip, mass/inverse-mass, timing, dialog cancellation, selection-retention, and simulation-control recovery tests.
+
 ### Avalonia Overview and Inspector Parity - 2026-10-03
 
 - Restored Remove selected, Duplicate selected, Rename, Merge selected (M), and Swap files. Merge uses the existing BPHCL TYPE/name guards and BPHCL-to-HKCL template preflight rather than bypassing native restrictions.

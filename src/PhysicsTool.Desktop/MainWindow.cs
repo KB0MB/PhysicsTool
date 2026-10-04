@@ -51,6 +51,9 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1d / 60) };
     private readonly Stopwatch _clock = new();
     private HkclPreviewSimulator? _solver;
+    private readonly PreviewStepClock _previewStepClock = new();
+    public PreviewOptions SimulationOptions { get; private set; } = new();
+    private readonly Button _massScale, _clothSettings, _options, _editorUndo, _editorRedo;
     private double _lastTick;
     private bool _refreshing, _closingApproved;
     private readonly CheckBox _wind = new() { Content = "Wind" }, _follow = new() { Content = "Particles follow bones", IsChecked = true };
@@ -90,7 +93,7 @@ public sealed partial class MainWindow : Window
         topbar.Children.Add(toolbar); Grid.SetColumn(navigation, 1); topbar.Children.Add(navigation);
         DockPanel.SetDock(topbar, Dock.Top); shell.Children.Add(topbar);
         DockPanel.SetDock(_status, Dock.Bottom); shell.Children.Add(_status);
-        var workspace = _workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("*,5,490") };
+        var workspace = _workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("*,5,490"), RowDefinitions = new RowDefinitions("*,Auto") };
         workspace.ColumnDefinitions[0].MinWidth = 420;
         workspace.ColumnDefinitions[2].MinWidth = 300;
         var center = new DockPanel();
@@ -103,6 +106,7 @@ public sealed partial class MainWindow : Window
         var viewbar = new WrapPanel { Margin = new Thickness(5) };
         _simulate = Add(viewbar, "Run simulation", ToggleSimulation);
         _wind.Margin = new Thickness(10, 4); viewbar.Children.Add(_wind);
+        _options = Add(viewbar, "Options", async () => await ShowPreviewOptions());
         var hide = new CheckBox { Content = "Hide cloth", Margin = new Thickness(10, 4) };
         hide.IsCheckedChanged += (_, _) => { _viewport.ShowPhysics = hide.IsChecked != true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(hide);
         var bones = new CheckBox { Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
@@ -141,6 +145,12 @@ public sealed partial class MainWindow : Window
         DockPanel.SetDock(_relationshipActions, Dock.Bottom); _relationshipPane.Children.Add(_relationshipActions); _relationshipPane.Children.Add(_relationships);
         Grid.SetRow(_relationshipPane, 5); right.Children.Add(_relationshipPane);
         Grid.SetColumn(right, 2); workspace.Children.Add(right);
+        var editorActions = new WrapPanel { Margin = new Thickness(5, 0, 5, 5) };
+        _editorUndo = ViewportTools.Icon("Undo2", "Undo (Ctrl+Z)", () => Try(() => { Session.Undo(); Refresh(); })); editorActions.Children.Add(_editorUndo);
+        _editorRedo = ViewportTools.Icon("Redo2", "Redo", () => Try(() => { Session.Redo(); Refresh(); })); editorActions.Children.Add(_editorRedo);
+        _massScale = Add(editorActions, "Mass scale", async () => await ShowMassScale());
+        _clothSettings = Add(editorActions, "Cloth settings", async () => await ShowClothSettings());
+        Grid.SetRow(editorActions, 1); Grid.SetColumnSpan(editorActions, 3); workspace.Children.Add(editorActions);
         _body.Content = _overview; shell.Children.Add(_body); Content = shell;
         _overview.RemoveRequested += async () => await RunCommand(RemoveCloth);
         _overview.DuplicateRequested += () => Try(() => { Session.DuplicateSelected(); Refresh(true); _status.Text = "Duplicated cloth."; });
@@ -175,7 +185,13 @@ public sealed partial class MainWindow : Window
         _timer.Tick += (_, _) =>
         {
             if (_solver == null) return;
-            try { var now = _clock.Elapsed.TotalSeconds; _solver.WindEnabled = _wind.IsChecked == true; _solver.Step((float)Math.Clamp(now - _lastTick, 0, .05)); _lastTick = now; _viewport.Simulated = _solver.GetPositions(); _viewport.InvalidateVisual(); }
+            try
+            {
+                var now = _clock.Elapsed.TotalSeconds; _solver.WindEnabled = _wind.IsChecked == true;
+                var steps = _previewStepClock.Advance(now - _lastTick, SimulationOptions.PlaybackSpeed); _lastTick = now;
+                for (var step = 0; step < steps; step++) _solver.Step((float)PreviewStepClock.FixedStep);
+                _viewport.Simulated = _solver.GetPositions(); _viewport.InvalidateVisual();
+            }
             catch (Exception ex) { StopSimulation(); _status.Text = ex.Message; }
         };
         KeyDown += async (_, e) =>
@@ -274,7 +290,7 @@ public sealed partial class MainWindow : Window
         if (item.Data is ParticleEditRow particle)
         {
             var fixedBox = new CheckBox { Content = "Fixed", IsChecked = particle.Fixed };
-            fixedBox.IsCheckedChanged += (_, _) => Try(() => Edit((doc, cloth) => { var row = doc.GetParticleRows(cloth).Single(p => p.Index == item.Index); row.Fixed = fixedBox.IsChecked == true; doc.UpdateParticleRows(cloth, new[] { row }); })); _details.Children.Add(fixedBox);
+            fixedBox.IsCheckedChanged += (_, _) => Try(() => Edit((doc, cloth) => { var row = doc.GetParticleRows(cloth).Single(p => p.Index == item.Index); row.Fixed = fixedBox.IsChecked == true; ParticleEdits.Apply(doc, cloth, new[] { row }); })); _details.Children.Add(fixedBox);
         }
         var fields = item.Data switch { ParticleEditRow => new[] { "X", "Y", "Z", "Mass", "Radius", "Friction" }, BoneEditRow => new[] { "X", "Y", "Z", "ScaleX", "ScaleY", "ScaleZ" }, _ => new[] { "StartX", "StartY", "StartZ", "EndX", "EndY", "EndZ", "Radius" } };
         var inputs = new Dictionary<PropertyInfo, NumericUpDown>();
@@ -283,7 +299,7 @@ public sealed partial class MainWindow : Window
             var property = item.Data.GetType().GetProperty(name)!;
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("90,*") };
             grid.Children.Add(new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center });
-            var number = new NumericUpDown { Value = Convert.ToDecimal(property.GetValue(item.Data), CultureInfo.InvariantCulture), Increment = .01m, FormatString = "0.######", Minimum = name is "Mass" or "Radius" or "Friction" ? 0 : -1000000, Maximum = 1000000 };
+            var number = new NumericUpDown { Name = "Editor" + name, Value = Convert.ToDecimal(property.GetValue(item.Data), CultureInfo.InvariantCulture), Increment = .01m, FormatString = "0.######", Minimum = name is "Mass" or "Radius" or "Friction" ? 0 : -1000000, Maximum = 1000000 };
             Grid.SetColumn(number, 1); grid.Children.Add(number); _details.Children.Add(grid); inputs.Add(property, number);
         }
         var apply = new Button { Content = "Apply", HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -292,7 +308,7 @@ public sealed partial class MainWindow : Window
             foreach (var (property, input) in inputs) property.SetValue(item.Data, Convert.ToSingle(input.Value ?? 0));
             switch (item.Data)
             {
-                case ParticleEditRow p: p.InverseMass = p.Fixed || p.Mass <= 0 ? 0 : 1 / p.Mass; doc.UpdateParticleRows(cloth, new[] { p }); break;
+                case ParticleEditRow p: p.InverseMass = p.Fixed || p.Mass <= 0 ? 0 : 1 / p.Mass; ParticleEdits.Apply(doc, cloth, new[] { p }); break;
                 case BoneEditRow b: doc.UpdateBoneRows(cloth, new[] { b }, _follow.IsChecked == true); break;
                 case ColliderEditRow c: doc.UpdateColliderRows(new[] { c }); break;
             }
@@ -318,6 +334,16 @@ public sealed partial class MainWindow : Window
         _export.IsEnabled = _save.IsEnabled;
         _swap.IsEnabled = !IsEditorVisible && Session.Document.HasDocument && DonorSession.Document.HasDocument;
         _undo.IsEnabled = !_timer.IsEnabled && Session.CanUndo; _redo.IsEnabled = !_timer.IsEnabled && Session.CanRedo;
+        _editorUndo.IsEnabled = _undo.IsEnabled; _editorRedo.IsEnabled = _redo.IsEnabled;
+        _editorUndo.IsVisible = _editorRedo.IsVisible = IsEditorVisible;
+        _undo.IsVisible = _redo.IsVisible = !IsEditorVisible;
+        _massScale.IsEnabled = editing && _mode.SelectedIndex == 0 && Session.CanScaleMass;
+        _clothSettings.IsEnabled = !_timer.IsEnabled && Session.CanEditClothSettings;
+        _options.IsEnabled = Session.CanEditClothSettings;
+        _wind.IsEnabled = Session.CanEditClothSettings;
+        ToolTip.SetTip(_massScale, "Scale selected dynamic particles, or all dynamic particles when none are selected. Fixed particles are unchanged.");
+        ToolTip.SetTip(_clothSettings, Session.Document.IsBphcl ? "Native BPHCL cloth settings are currently read-only." : "Edit saved gravity, damping, collision tolerance, and motion transfer.");
+        ToolTip.SetTip(_options, "Preview-only wind, gravity, playback speed, and solver passes.");
         _add.IsEnabled = editing && (_mode.SelectedIndex == 0 || !Session.Document.IsBphcl);
         _add.Content = _mode.SelectedIndex switch { 1 => "Add Bone", 2 => "Add Collider", _ => "Add Particle" };
         _follow.IsEnabled = editing;
@@ -360,9 +386,10 @@ public sealed partial class MainWindow : Window
         if (_timer.IsEnabled) { StopSimulation(); return; }
         if (!Session.Document.HasDocument || !Session.CanSimulate) return;
         _solver = new HkclPreviewSimulator(Session.Document.GetParticlePreview(Session.ClothIndex));
+        SimulationOptions.ApplyTo(_solver); _previewStepClock.Reset();
         _clock.Restart(); _lastTick = 0; _timer.Start(); UpdateActions();
     }
-    public void StopSimulation() { _timer.Stop(); _solver = null; _viewport.Simulated = null; _viewport.InvalidateVisual(); UpdateActions(); }
+    public void StopSimulation() { _timer.Stop(); _previewStepClock.Reset(); _solver = null; _viewport.Simulated = null; _viewport.InvalidateVisual(); UpdateActions(); }
     private Task<bool> CanReplace() => CanReplace(Session);
     private async Task<bool> CanReplace(EditorSession session) => !session.IsDirty || await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in " + (System.IO.Path.GetFileName(session.Path) ?? "Untitled") + "?");
     private async Task NewDocument()

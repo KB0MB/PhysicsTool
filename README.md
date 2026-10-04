@@ -34,6 +34,9 @@ Use `PhysicsTool.Avalonia.slnx`, not the preserved Windows-only `PhysicsTool.sln
 - Render models through an Avalonia-hosted OpenGL/OpenGL ES surface using the original material shaders and tangent generation. Missing textures use the Toolbox fallback.
 - Inspect cloth overlays alongside models, with orbit, pan, zoom, fit, physics visibility, and a Meshes visibility window. A bounded wireframe fallback is available without GPU rendering.
 - Run the existing HKCL solver with wind. BPHCL simulation remains unavailable.
+- Scale selected or all dynamic particle masses with matching inverse-mass updates and undo. Fixed particles are unchanged; BPHCL uses its existing native particle writer.
+- Edit HKCL gravity, damping, collision tolerance, and translation/rotation motion-transfer values through Cloth settings. BPHCL cloth settings remain read-only.
+- Adjust preview wind direction/strength/gustiness, gravity multiplier, speed, and solver passes through Options. These values are session-local and never written into the cloth file. Close retains them; Cancel or the title-bar close restores the previous options, not the already-simulated pose.
 - Read the searchable offline cloth guide. Settings currently provide session-local theme and HKCL save-platform choices.
 
 The application starts on the current-file/donor overview, with the bone list on the right. Open a physics file, select a cloth, then choose **Editor** or double-click the cloth. **Back** returns to the overview without discarding edits, the reference model, or the camera position; it stops a running preview. Remove/Duplicate are below the current list; Rename is in its context menu (F2). Merge is below the donor list (M). Unsupported merges display the native preflight reason without changing either document. Swapped donor edits are protected by unsaved-change prompts.
@@ -43,6 +46,8 @@ The application starts on the current-file/donor overview, with the bone list on
 The editor keeps the large viewport on the left and the cloth selector plus particle/bone/collider tabs on the right. The item list sits beside its values, with a resizable relationships panel below. Add Particle/Bone/Collider sits above the viewport; Particles follow bones sits above the tabs. Middle-drag orbits, Shift+middle-drag pans, and the wheel zooms around the pointer. Alt+left-drag and Alt+Shift+left-drag provide alternatives without a middle button. Left-click selects; left-drag box-selects particles. Shift adds and Ctrl/Command toggles selection. Escape cancels a selection drag.
 
 The viewport has frame/reset/zoom buttons and clickable axis views. Home frames all, period frames selected particles, and numpad 1/3/7 selects front/right/top (Ctrl selects the opposite side). Right-click opens camera commands. F opens relationship creation for two particles or creates a triangle for three. Numeric inspector edits use Apply; Fixed commits immediately.
+
+Undo/Redo, Mass scale, and Cloth settings sit in the editor footer, as in the original layout. Select dynamic particles to limit mass scaling, or clear the selection to scale all dynamic particles. Native edits are disabled during simulation; preview Options remain live. Preview speed uses fixed 60 Hz solver steps, with bounded catch-up after a UI stall.
 
 Blank drafts are not automatically game-ready: model bindings and actor registration still need authoring. Unsupported native layouts retain the existing explicit safety restrictions.
 

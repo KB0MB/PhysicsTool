@@ -58,6 +58,7 @@ internal static class Program
             }
             Console.WriteLine("PASS: Wii U/Switch HKCL and BPHCL drafts, topology, save/reload, atomic edits, undo/redo, solver.");
             DocumentChecks.Run(output);
+            ClothTuningChecks.Run(output);
             foreach (var file in args.Skip(1))
             {
                 var hash = SHA256.HashData(File.ReadAllBytes(file)); var fixture = new EditorSession(); fixture.Load(file); var document = fixture.Document;
@@ -101,6 +102,7 @@ internal static class Program
             window.ShowEditor(); Dispatcher.UIThread.RunJobs();
             Require(!window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Swap files")).IsEnabled, "Swap available inside editor");
             NavigationChecks.Run(window);
+            TuningWindowChecks.Run(window, output);
             for (int cycle = 0; cycle < 3; cycle++)
             {
                 window.ToggleSimulation(); Dispatcher.UIThread.RunJobs();
