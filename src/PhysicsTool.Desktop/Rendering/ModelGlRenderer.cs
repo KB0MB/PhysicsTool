@@ -10,6 +10,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
 {
     private readonly GL _gl;
     private readonly uint _program;
+    private readonly GridGlRenderer _grid;
     private readonly Dictionary<string, int> _locations = new();
     private readonly Dictionary<VisualModelTexture, uint> _textures = new();
     private readonly List<GpuMesh> _meshes = new();
@@ -30,6 +31,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             if (linked == 0) { var log = gl.GetProgramInfoLog(_program); gl.DeleteProgram(_program); throw new InvalidOperationException("Model shader link failed: " + log); }
         }
         finally { gl.DeleteShader(vs); if (fs != 0) gl.DeleteShader(fs); }
+        _grid = new GridGlRenderer(gl, es);
     }
     private static string Source(string name, bool es)
     {
@@ -53,13 +55,19 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     private void V(string name, Vector3 value) => _gl.Uniform3(Location(name), value.X, value.Y, value.Z);
     private void M(string name, Matrix4x4 value) => _gl.UniformMatrix4(Location(name), 1, false, (float*)&value);
 
-    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height)
+    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null)
     {
         var gl = _gl;
         gl.Viewport(0, 0, (uint)width, (uint)height); gl.Disable(EnableCap.ScissorTest);
         gl.ColorMask(true, true, true, true); gl.DepthMask(true);
         gl.ClearColor(36 / 255f, 40 / 255f, 41 / 255f, 1); gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-        if (!ReferenceEquals(_model, model)) { ReleaseMeshes(); _model = model; if (model != null) Upload(model); }
+        if (grid != null) _grid.Draw(grid, camera);
+        if (!ReferenceEquals(_model, model))
+        {
+            if (model != null && CanUpdatePose(model)) UpdatePose(model);
+            else { ReleaseMeshes(); if (model != null) Upload(model); }
+            _model = model;
+        }
         if (model == null) return;
         gl.Enable(EnableCap.DepthTest); gl.Disable(EnableCap.CullFace); gl.Disable(EnableCap.Blend);
         gl.UseProgram(_program); M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
@@ -85,7 +93,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                 var gpu = _meshes[index]; var m = gpu.Source.Material;
                 string[] sampler = ["uTexture", "uSpecularTexture", "uNormalTexture", "uAmbientOcclusionTexture", "uAuxiliaryTexture", "uEyeGlintTexture"];
                 string[] uses = ["uUseTexture", "uUseSpecularTexture", "uUseNormalTexture", "uUseAmbientOcclusionTexture", "uUseAuxiliaryTexture", "uUseEyeGlintTexture"];
-                bool[] enabled = [m.UseAlbedo, m.UseSpm, m.UseNormal, m.UseAmbientOcclusion, m.UseAuxiliary, m.UseEyeGlint];
+                bool[] enabled = [m.UseAlbedo || gpu.Source.Texture == null && gpu.Source.UseMissingTextureFallback, m.UseSpm, m.UseNormal, m.UseAmbientOcclusion, m.UseAuxiliary, m.UseEyeGlint];
                 for (int t = 0; t < 6; t++) { gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + t)); gl.BindTexture(TextureTarget.Texture2D, gpu.Textures[t]); I(sampler[t], t); I(uses[t], enabled[t] && gpu.Textures[t] != 0 ? 1 : 0); }
                 gl.Uniform4(Location("uColor"), m.Tint.X, m.Tint.Y, m.Tint.Z, m.Tint.W);
                 I("uAlphaMode", (int)(gpu.Source.Texture?.AlphaMode ?? VisualModelAlphaMode.Opaque));
@@ -97,6 +105,23 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         }
     }
 
+    private bool CanUpdatePose(VisualModelData model) => _meshes.Count == model.Meshes.Count &&
+        _meshes.Select((gpu, i) => (gpu.Source, Next: model.Meshes[i])).All(pair =>
+            ReferenceEquals(pair.Source.Indices, pair.Next.Indices) && ReferenceEquals(pair.Source.Material, pair.Next.Material) &&
+            ReferenceEquals(pair.Source.Texture, pair.Next.Texture) && ReferenceEquals(pair.Source.SpecularTexture, pair.Next.SpecularTexture) &&
+            ReferenceEquals(pair.Source.NormalTexture, pair.Next.NormalTexture) && ReferenceEquals(pair.Source.AmbientOcclusionTexture, pair.Next.AmbientOcclusionTexture) &&
+            ReferenceEquals(pair.Source.AuxiliaryTexture, pair.Next.AuxiliaryTexture) && ReferenceEquals(pair.Source.EyeGlintTexture, pair.Next.EyeGlintTexture));
+    private void UpdatePose(VisualModelData model)
+    {
+        for (int i = 0; i < _meshes.Count; i++)
+        {
+            var gpu = _meshes[i]; var source = model.Meshes[i];
+            var vertices = ModelVertices.Build(source);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.Vbo);
+            fixed (float* v = vertices) _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.DynamicDraw);
+            _meshes[i] = gpu with { Source = source };
+        }
+    }
     private void Upload(VisualModelData model)
     {
         foreach (var source in model.Meshes)
@@ -132,5 +157,5 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         foreach (var t in _textures.Values) _gl.DeleteTexture(t);
         _meshes.Clear(); _textures.Clear();
     }
-    public void Dispose() { ReleaseMeshes(); _gl.DeleteProgram(_program); }
+    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _gl.DeleteProgram(_program); }
 }

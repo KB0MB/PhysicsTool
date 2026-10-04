@@ -20,12 +20,16 @@ The new .NET 10 solution separates portable document/solver logic from the deskt
 - Assimp-based static FBX/DAE/OBJ/glTF/GLB import, hierarchy transforms, FBX meter conversion, Skia image decoding, missing-texture fallback, and mesh visibility.
 - Real GPU checks covering textures, orbit, hiding, resizing, and resource clear/reload; asynchronous import failure preserves the previous model and physics data.
 - Generated native format round-trips, source-preserving fixture checks, and headless rendered UI checks.
+- World-anchored ground grid shared by CPU and GPU previews, with model depth occlusion and adaptive world-unit spacing.
+- Wii U/Switch BFRES/SBFRES loading with adjacent Tex1/Tex companions. GX2 and Tegra addressing plus BCn decoding are managed; unsupported signed or uncommon texture formats produce warnings instead of invoking a Windows decoder.
+- Searchable cloth/helper actor catalog with remembered resource folders and TitleBG discovery. Actors use the same viewport in read-only mode, with original skeletal animation, support evaluation, cloth-to-model binding, and loop rebasing.
+- Actor animation timeline, play/pause, Loop, mesh visibility, and 30/60 speed settings. GPU pose updates reuse texture and buffer resources.
 
 ## Next Stages
 
-1. Connect skinning and animation updates to the new GPU renderer. The current model overlay is a static reference pose and is not driven by cloth output.
-2. Replace BFRES-specific DirectXTex and tiled-texture decoding dependencies. General model imports no longer use the Windows Autodesk bridge.
-3. Port BFRES import and actor services, then animation playback and the timeline. Actor services are currently excluded from the portable core. Restore material presets and game shader-family/packed-texture assignment.
+1. Connect standalone reference-model skinning and animation to edited cloth output. Actor mode already has animated/cloth-driven model deformation; separately imported editor references remain static.
+2. Expand portable texture-format coverage and validate texture decoding on Linux/macOS.
+3. Restore material presets/editing and remaining actor workflow details such as animation hover previews.
 4. Port standalone conversion dialogs, helper/ragdoll detail editors, mirror/attachment workflows, collider box selection and multi-selection gizmos, full relationship inspectors, and collision-generation controls.
 5. Restore localization, persistent settings, and feature-specific keyboard/layout parity.
 6. Validate on actual Linux and macOS desktops, then package per-platform distributions with dependency/license manifests.
@@ -45,6 +49,8 @@ The navigation pass adds startup/overview snapshots, actual middle-button orbit 
 The overview parity pass checks rename/duplicate/remove/merge and save/reload for generated Wii U HKCL, Switch HKCL, and BPHCL; rejected merges and canceled dialogs; lossless swaps; export isolation; and helper-group removal/undo/merge/save with local BPHYSSB and BPHHB fixtures. Original fixture files are hash-checked and never replaced by the test outputs. Editor layouts use the original side-by-side item/value arrangement and separate relationships panel.
 
 The tuning pass covers fixed/selected/all mass scaling, invalid values, inverse-mass consistency, undo/redo, native cloth-settings round-trips, unsupported BPHCL settings, live preview rollback, dialog validation and selection retention. Clock tests verify 0.5x/1x/2x/4x playback, timer jitter, and bounded catch-up. These are preview controls, not new claims of game-accurate Havok behavior.
+
+The actor pass tests Wii U/Switch Armor_005_Head (eight cloths and one helper group each), Switch Zelda (three cloths, twelve helper groups, 254 animations), BFRES texture/GPU loading, timeline sampling, live playback/simulation, and read-only editor-state isolation. The Switch catalog scan found 999 cloth/helper actors including an embedded archive actor, with no scan warnings. Grid tests check world-plane anchoring and matching CPU/GPU projection during camera movement. Game resources are read-only fixtures, not included in the repository or release.
 
 The CI workflow defines Windows, Ubuntu, and macOS jobs. It has not yet been executed on a remote repository. Cross-platform architecture is in place; platform certification and feature parity are still pending. On backends without a supported OpenGL context, models remain available as a reduced wireframe preview.
 

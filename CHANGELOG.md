@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Avalonia Actor Viewer and World Grid - 2026-10-04
+
+- Fixed the camera-relative grid. Ground lines now stay on the world XZ plane, share the model/physics camera transform, and remain visible with GPU models. Adaptive world-unit spacing keeps navigation readable.
+- Added Wii U/Switch BFRES and SBFRES model loading, including adjacent Tex1/Tex companions and packaged eye glint. Managed GX2, Tegra surface addressing, and BCn decoding replace the Windows-only texture bridge.
+- Added the Actor catalog with search, remembered resource folders, cloth/helper filtering, and TitleBG archive discovery. Selected actors open in the main viewport, not another viewer window.
+- Actor mode reuses original resource resolution, skeletal animation, helper evaluation, cloth binding, and loop-rebase logic. Editing controls are hidden, model bones start hidden, mesh visibility remains available, and Back preserves the separate editor document.
+- Added actor play/pause, timeline scrubbing, Loop, and 30/60 playback settings. Animated GPU poses reuse textures and buffers.
+- Added world-grid projection checks, real Wii U/Switch actor tests, catalog/TitleBG checks, and live animated GPU regression checks. Linux/macOS runtime verification remains pending.
+
 ### Avalonia Cloth Tuning and Preview Options - 2026-10-03
 
 - Restored the editor footer with Undo/Redo, Mass scale, and Cloth settings. Mass scaling targets selected dynamic particles or all dynamic particles when selection is empty, updates inverse mass, preserves fixed particles, and supports undo for HKCL/BPHCL.

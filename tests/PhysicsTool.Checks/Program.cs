@@ -18,6 +18,28 @@ internal static class Program
     {
         try
         {
+            if (args.FirstOrDefault() == "--gpu-actor")
+            {
+                ActorGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(ActorGpuChecks.Output);
+                ActorGpuChecks.PathToActor = args[2];
+                AppBuilder.Configure<ActorGpuChecks>().UsePlatformDetect().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return ActorGpuChecks.Result;
+            }
+            if (args.FirstOrDefault() == "--catalog")
+            {
+                Directory.CreateDirectory(args[1]);
+                var catalog = new BotwActorCatalog(Path.Combine(args[1], "catalog-test.json"));
+                var result = catalog.Scan(args.Skip(2), null, CancellationToken.None);
+                Require(result.Actors.Count > 0 && result.Actors.All(a => a.HasCloth || a.HasSupport), "Catalog filter failed");
+                var embedded = result.Actors.Where(a => a.ArchiveEntry != null).ToArray();
+                Require(embedded.Length > 0, "TitleBG actors missing");
+                Console.WriteLine($"PASS: {result.Actors.Count} cloth/helper actors, {embedded.Length} archive actors, {result.Warnings.Count} warnings.");
+                return 0;
+            }
+            if (args.FirstOrDefault() == "--actors")
+            {
+                ActorChecks.Run(Path.GetFullPath(args[1]), args.Skip(2).ToArray()); return 0;
+            }
             if (args.FirstOrDefault() == "--gpu")
             {
                 GpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(GpuChecks.Output);

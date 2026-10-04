@@ -31,6 +31,8 @@ Use `PhysicsTool.Avalonia.slnx`, not the preserved Windows-only `PhysicsTool.sln
 - Create blank cloth drafts, edit particles, bone positions/scales, and supported collider fields.
 - Add/remove supported particles, relationships, and triangles, with atomic edits and undo/redo.
 - Load static FBX, DAE, OBJ, glTF, and GLB reference models, including supported embedded/external textures. FBX declared units are converted to meters.
+- Load Wii U/Switch BFRES and SBFRES reference models, including adjacent Tex1/Tex texture resources.
+- Browse cloth/helper actors with Actor, choose a game resource folder, and open a read-only animated actor in the main viewport. TitleBG resources, helper bones, cloth simulation, timeline scrubbing, play/pause and Loop are supported.
 - Render models through an Avalonia-hosted OpenGL/OpenGL ES surface using the original material shaders and tangent generation. Missing textures use the Toolbox fallback.
 - Inspect cloth overlays alongside models, with orbit, pan, zoom, fit, physics visibility, and a Meshes visibility window. A bounded wireframe fallback is available without GPU rendering.
 - Run the existing HKCL solver with wind. BPHCL simulation remains unavailable.
@@ -53,9 +55,9 @@ Blank drafts are not automatically game-ready: model bindings and actor registra
 
 ## Remaining Migration
 
-BFRES import/texture decoding, actor browsing, animation/timeline, helper and ragdoll editing UI, material presets/editing, collision-generation UI, attachment tools, full gizmos/box selection, relationship-value inspection, and localization are not yet ported. Imported models currently show a static reference pose; cloth simulation does not deform their meshes. The preserved guide describes the full tool; some workflows are not available in this preview.
+Helper and ragdoll editing UI, material presets/editing, collision-generation UI, attachment tools, full gizmos/box selection, relationship-value inspection, and localization are not yet ported. Separately imported editor models remain static references; actor mode has animation and cloth-driven model deformation. The preserved guide describes the full tool; some workflows are not available in this preview.
 
-The Windows Autodesk FBX/DirectXTex bridges are not used by the new app. General model imports use AssimpNetter's platform-native runtimes; image textures use Skia. BFRES-specific decoding still needs migration. Albedo and normal slots load from imported materials; game-specific presets, packed SPM interpretation, and shader-family assignment are not yet restored. Model visibility is session-local and never changes a physics save. See [migration status](docs/AVALONIA_MIGRATION.md).
+The Windows Autodesk FBX/DirectXTex bridges are not used by the new app. General model imports use AssimpNetter's platform-native runtimes; image textures use Skia. BFRES texture decoding uses managed GX2/Tegra addressing and BCnEncoder; unsupported texture formats are reported. BFRES material slots use the original actor loader's shader-family/packed-texture assignments; material preset editing is still pending. Model visibility is session-local and never changes a physics save. See [migration status](docs/AVALONIA_MIGRATION.md).
 
 ## Verification
 

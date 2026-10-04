@@ -40,6 +40,10 @@ internal sealed class BotwActorScene : IDisposable
     private bool _previousSimulating;
 
     private BotwActorScene(BotwActorResources resources) { Resources = resources; }
+    public void ConfigureSimulation(Action<HkclPreviewSimulator> configure)
+    {
+        foreach (var layer in _layers) configure(layer.Solver);
+    }
     public static BotwActorScene Load(string path, IEnumerable<string>? roots = null, IProgress<string>? progress = null, CancellationToken cancellation = default, string? actorEntry = null)
     {
         var scene = new BotwActorScene(new BotwActorResources(path, roots, actorEntry));

@@ -6,7 +6,10 @@
     <RootNamespace>PhysicsTool</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../PhysicsTool/Formats/**/*.cs" Exclude="../../PhysicsTool/Formats/Actors/**/*.cs" LinkBase="Formats" />
+    <Compile Include="../../PhysicsTool/Formats/**/*.cs" Exclude="../../PhysicsTool/Formats/Actors/ToolboxActorTexture.cs" LinkBase="Formats" />
+    <Compile Include="../../PhysicsTool/Editor/Viewport/BfresModelPose.cs" Link="Models/BfresModelPose.cs" />
+    <Compile Include="../../PhysicsTool/UI/UserFacingExceptionFormatter.cs" Link="UserFacingExceptionFormatter.cs" />
+    <Compile Include="../../PhysicsTool/ThirdParty/Toolbox/*.cs" LinkBase="ThirdParty/Toolbox" />
     <Compile Include="../../PhysicsTool/Editor/Models/*.cs" LinkBase="Models" />
     <Compile Include="../../PhysicsTool/Editor/Simulation/*.cs" LinkBase="Simulation" />
     <Compile Include="../../PhysicsTool/Editor/Viewport/VisualModelData.cs" Link="Models/VisualModelData.cs" />
@@ -22,5 +25,13 @@
     <PackageReference Include="Jint" Version="4.16.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="BotW-HKX2" Version="1.0.0" />
+    <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
+    <Reference Include="Syroot.BinaryData"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.BinaryData.dll</HintPath></Reference>
+    <Reference Include="Syroot.Maths"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.Maths.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.Bfres.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.NSW.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bfres.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.NSW.Bntx"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bntx.dll</HintPath></Reference>
+    <InternalsVisibleTo Include="PhysicsTool.Desktop" />
+    <InternalsVisibleTo Include="PhysicsTool.Checks" />
   </ItemGroup>
 </Project>

@@ -20,5 +20,8 @@
     <None Include="../../LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../THIRD_PARTY_NOTICES.txt" Link="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../PhysicsTool/ThirdParty/AssimpNetter-LICENSE.txt" Link="Licenses/AssimpNetter-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../PhysicsTool/ThirdParty/BCnEncoder-LICENSE.txt" Link="Licenses/BCnEncoder-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../PhysicsTool/ThirdParty/Toolbox/LICENSE.txt" Link="Licenses/Toolbox-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../PhysicsTool/ThirdParty/Toolbox/SOURCES.txt" Link="Licenses/Toolbox-SOURCES.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

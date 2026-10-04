@@ -6,12 +6,17 @@ namespace PhysicsTool.Desktop.Rendering;
 
 public static class PortableModelImporter
 {
-    public static readonly string[] Extensions = [".fbx", ".dae", ".obj", ".gltf", ".glb"];
+    public static readonly string[] Extensions = [".fbx", ".dae", ".obj", ".gltf", ".glb", ".bfres", ".sbfres"];
+    private static readonly Lazy<VisualModelTexture> EyeGlint = new(() => ModelTextures.Resource("EyeGlint.png"));
+    internal static void ConfigureBfres() => HKCLTool.VisualModelImporter.EyeGlint = () => EyeGlint.Value;
     public static VisualModelData Load(string path)
     {
         path = Path.GetFullPath(path);
         if (!Extensions.Contains(Path.GetExtension(path).ToLowerInvariant()))
-            throw new NotSupportedException("This preview accepts FBX, DAE, OBJ, glTF, and GLB models. BFRES import is not ported yet.");
+            throw new NotSupportedException("Select a BFRES, SBFRES, FBX, DAE, OBJ, glTF, or GLB model.");
+        if (Path.GetExtension(path).Equals(".bfres", StringComparison.OrdinalIgnoreCase) ||
+            Path.GetExtension(path).Equals(".sbfres", StringComparison.OrdinalIgnoreCase))
+        { ConfigureBfres(); return new BfresModelPose(path).Sample(null, null); }
         using var context = new AssimpContext();
         var scene = context.ImportFile(path, PostProcessSteps.Triangulate | PostProcessSteps.GenerateSmoothNormals |
             PostProcessSteps.SortByPrimitiveType | PostProcessSteps.ValidateDataStructure);

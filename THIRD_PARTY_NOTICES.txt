@@ -16,6 +16,18 @@ AssimpNetter is also used for reference-model import in the Avalonia app.
 The Autodesk FBX bridge and DirectXTex mentioned below belong to the preserved
 WinForms implementation and are not used by the Avalonia model importer.
 
+BFRES import uses the bundled Syroot readers and managed Toolbox GX2 source
+described below. BCnEncoder.Net 2.3.0 (MIT OR Unlicense, MIT selected) provides
+managed block texture decoding. Its MIT license is shipped in
+Licenses/BCnEncoder-LICENSE.txt.
+https://github.com/Nominom/BCnEncoder.NET
+Package source commit: 74eda8a330759d81e6307f19aefc547e40687825
+
+The managed Tegra address mapping follows the Tegra X1 TRM block-linear
+GOB layout documented by tegra_swizzle; the Avalonia app does not load the
+preserved Windows tegra_swizzle DLL.
+https://github.com/ScanMountGoat/tegra_swizzle/blob/main/tiling.md
+
 -------------------------------------------------------------------------------
 
 Autodesk FBX SDK 2020.3.7

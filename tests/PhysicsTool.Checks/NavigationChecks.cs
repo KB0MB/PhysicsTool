@@ -11,6 +11,19 @@ internal static class NavigationChecks
     {
         void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
         var view = window.Viewport;
+        view.Pan(60, 40); view.ZoomAt(2, new(100, 150));
+        Require(view.GridLines.All(line => line.Start.Y == 0 && line.End.Y == 0), "Grid moved off the world ground plane");
+        foreach (var line in view.GridLines.Take(4))
+        {
+            var cpu = view.Project(line.Start);
+            var clip = Vector3.Transform(line.Start, view.CameraMatrix);
+            var gpu = new Point((clip.X + 1) * view.Bounds.Width / 2, (1 - clip.Y) * view.Bounds.Height / 2);
+            Require(Math.Abs(cpu.X - gpu.X) + Math.Abs(cpu.Y - gpu.Y) < .01, "Grid and GPU model use different camera transforms");
+        }
+        var ground = view.Project(Vector3.Zero); view.Pan(30, 20);
+        var movedGround = view.Project(Vector3.Zero);
+        Require(Math.Abs(movedGround.X - ground.X - 30) + Math.Abs(movedGround.Y - ground.Y - 20) < .01, "Grid origin stayed attached to the camera");
+        view.ResetView();
         var origin = view.TranslatePoint(default, window)!.Value;
         var p = origin + new Point(view.Bounds.Width * .45, view.Bounds.Height * .55);
         var initial = view.CameraState;

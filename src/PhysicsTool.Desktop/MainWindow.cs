@@ -36,6 +36,9 @@ public sealed partial class MainWindow : Window
     private readonly ContentControl _body = new();
     private readonly DocumentOverview _overview = new();
     private readonly Grid _workspace;
+    private readonly GridSplitter _workspaceSplit;
+    private readonly WrapPanel _editorActions;
+    private readonly CheckBox _bonesToggle;
     private readonly Button _navigation;
     private bool _fitPending = true;
     public bool IsEditorVisible => ReferenceEquals(_body.Content, _workspace);
@@ -79,6 +82,7 @@ public sealed partial class MainWindow : Window
         toolbar.Children.Add(new TextBlock { Text = "PhysicsTool", FontSize = 15, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
         Add(toolbar, "New", async () => { if (await CanReplace()) await NewDocument(); });
         Add(toolbar, "Open Physics", async () => await OpenDocument());
+        Add(toolbar, "Actor", async () => await OpenActorBrowser());
         Add(toolbar, "Open Donor", async () => await OpenDonor());
         _swap = Add(toolbar, "Swap files", SwapFiles);
         _export = Add(toolbar, "Export", () => OpenExportMenu());
@@ -100,7 +104,7 @@ public sealed partial class MainWindow : Window
         var modelbar = new WrapPanel { Margin = new Thickness(5) };
         _add = Add(modelbar, "Add Particle", AddItem);
         _loadModel = Add(modelbar, "Load model", async () => await OpenModel());
-        _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; _viewport.SetModel(null); UpdateModelActions(); });
+        _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; ExitActor(); _viewport.SetModel(null); UpdateModelActions(); });
         _meshes = Add(modelbar, "Meshes", async () => await ShowMeshes());
         DockPanel.SetDock(modelbar, Dock.Top); center.Children.Add(modelbar);
         var viewbar = new WrapPanel { Margin = new Thickness(5) };
@@ -109,9 +113,10 @@ public sealed partial class MainWindow : Window
         _options = Add(viewbar, "Options", async () => await ShowPreviewOptions());
         var hide = new CheckBox { Content = "Hide cloth", Margin = new Thickness(10, 4) };
         hide.IsCheckedChanged += (_, _) => { _viewport.ShowPhysics = hide.IsChecked != true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(hide);
-        var bones = new CheckBox { Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
+        var bones = _bonesToggle = new CheckBox { Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
         var colliders = new CheckBox { Content = "Colliders", IsChecked = true, Margin = new Thickness(10, 4) }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
         DockPanel.SetDock(viewbar, Dock.Bottom); center.Children.Add(viewbar);
+        ConfigureActorBar(center);
         var scene = new Grid();
         if (graphics)
         {
@@ -121,7 +126,7 @@ public sealed partial class MainWindow : Window
         }
         scene.Children.Add(_viewport); scene.Children.Add(ViewportTools.CameraToolbar(_viewport)); scene.Children.Add(new ViewportAxes(_viewport));
         center.Children.Add(scene); workspace.Children.Add(center);
-        var split2 = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split2, 1); workspace.Children.Add(split2);
+        var split2 = _workspaceSplit = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split2, 1); workspace.Children.Add(split2);
         var right = _inspector = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,5,200"), Margin = new Thickness(8) };
         right.RowDefinitions[3].MinHeight = 120;
         right.Children.Add(_cloths);
@@ -145,7 +150,7 @@ public sealed partial class MainWindow : Window
         DockPanel.SetDock(_relationshipActions, Dock.Bottom); _relationshipPane.Children.Add(_relationshipActions); _relationshipPane.Children.Add(_relationships);
         Grid.SetRow(_relationshipPane, 5); right.Children.Add(_relationshipPane);
         Grid.SetColumn(right, 2); workspace.Children.Add(right);
-        var editorActions = new WrapPanel { Margin = new Thickness(5, 0, 5, 5) };
+        var editorActions = _editorActions = new WrapPanel { Margin = new Thickness(5, 0, 5, 5) };
         _editorUndo = ViewportTools.Icon("Undo2", "Undo (Ctrl+Z)", () => Try(() => { Session.Undo(); Refresh(); })); editorActions.Children.Add(_editorUndo);
         _editorRedo = ViewportTools.Icon("Redo2", "Redo", () => Try(() => { Session.Redo(); Refresh(); })); editorActions.Children.Add(_editorRedo);
         _massScale = Add(editorActions, "Mass scale", async () => await ShowMassScale());
@@ -200,6 +205,11 @@ public sealed partial class MainWindow : Window
             if (!e.Handled && command && e.Key == Key.S && _save.IsEnabled)
             { await RunCommand(() => SaveDocument(e.KeyModifiers.HasFlag(KeyModifiers.Shift))); e.Handled = true; return; }
             if (e.Handled || e.Source is TextBox or NumericUpDown) return;
+            if (IsActorMode)
+            {
+                if (e.Key == Key.Space && _viewport.IsFocused) { ToggleActorPlayback(); e.Handled = true; }
+                return;
+            }
             if (command && e.Key == Key.Z && !_timer.IsEnabled)
             { if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) Session.Redo(); else Session.Undo(); Refresh(true); e.Handled = true; return; }
             if (command && e.Key == Key.Y && !_timer.IsEnabled) { Session.Redo(); Refresh(true); e.Handled = true; return; }
@@ -213,7 +223,7 @@ public sealed partial class MainWindow : Window
             else if (!_timer.IsEnabled && e.Key == Key.Delete && _items.IsFocused) { await DeleteItems(); e.Handled = true; }
         };
         Closing += async (_, e) => { if (_closingApproved) return; if (Session.IsDirty || DonorSession.IsDirty) { e.Cancel = true; if (await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in the current and donor files and close?")) { _closingApproved = true; Close(); } } else StopSimulation(); };
-        Closed += (_, _) => { _modelRequest++; StopSimulation(); };
+        Closed += (_, _) => { _modelRequest++; _actorLoad?.Cancel(); _actorTimer.Stop(); _actorScene?.Dispose(); _actorScene = null; StopSimulation(); };
         Opened += (_, _) => { if (file != null) Try(() => LoadPath(file)); };
         Refresh(); UpdateModelActions();
     }
@@ -236,7 +246,7 @@ public sealed partial class MainWindow : Window
     }
     public void ShowOverview()
     {
-        StopSimulation(); _overview.Update(Session, DonorSession); _body.Content = _overview; _navigation.Content = "Editor"; UpdateActions();
+        StopSimulation(); ExitActor(); _overview.Update(Session, DonorSession); _body.Content = _overview; _navigation.Content = "Editor"; UpdateActions();
     }
     public void LoadDonorPath(string path) { DonorSession.Load(path); ShowOverview(); _overview.ShowDonorBones(); _status.Text = "Donor: " + System.IO.Path.GetFileName(path); }
     private async Task OpenDonor()
@@ -246,9 +256,10 @@ public sealed partial class MainWindow : Window
             FileTypeFilter = PhysicsFileTypes });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) LoadDonorPath(path);
     }
-    public void LoadPath(string path) { StopSimulation(); Session.Load(path); Refresh(true); _status.Text = $"Opened {System.IO.Path.GetFileName(path)}"; }
+    public void LoadPath(string path) { Session.Load(path); StopSimulation(); ExitActor(); Refresh(true); _status.Text = $"Opened {System.IO.Path.GetFileName(path)}"; }
     public void Refresh(bool fit = false)
     {
+        if (IsActorMode) { UpdateActions(); return; }
         var selected = (_items.SelectedItem as Item)?.Index ?? 0;
         _refreshing = true;
         try
@@ -320,6 +331,7 @@ public sealed partial class MainWindow : Window
     }
     private void Edit(Action<HkclService, int> action)
     {
+        if (IsActorMode) throw new InvalidOperationException("Actor view is read-only.");
         if (_timer.IsEnabled) throw new InvalidOperationException("Stop simulation before editing.");
         try { Session.Edit(action); } finally { Refresh(); }
         _status.Text = "Updated document.";
@@ -359,6 +371,17 @@ public sealed partial class MainWindow : Window
         _removeConstraint.IsEnabled = editing && _relationships.SelectedItem is Relation r && Session.Document.CanDeleteParticleRelationship(Session.ClothIndex, r.Data);
         _simulate.IsEnabled = _timer.IsEnabled || ready && Session.CanSimulate; _simulate.Content = _timer.IsEnabled ? "Stop simulation" : "Run simulation";
         _viewport.CanSelect = editing && _mode.SelectedIndex == 0;
+        _add.IsVisible = !IsActorMode;
+        _loadModel.IsVisible = _clearModel.IsVisible = !IsActorMode;
+        if (IsActorMode)
+        {
+            _save.IsEnabled = _export.IsEnabled = _undo.IsEnabled = _redo.IsEnabled = false;
+            _add.IsEnabled = _delete.IsEnabled = _constraint.IsEnabled = _removeConstraint.IsEnabled = false;
+            _viewport.CanSelect = false;
+            _simulate.IsEnabled = _actorScene!.HasCloth;
+            _simulate.Content = _actorSimulating ? "Stop simulation" : "Run simulation";
+            _wind.IsEnabled = _options.IsEnabled = _actorScene.HasCloth;
+        }
     }
     private void AddItem() => Edit((doc, cloth) => { if (_mode.SelectedIndex == 0) doc.AddParticle(cloth); else if (_mode.SelectedIndex == 1) doc.AddBone(cloth); else doc.AddCollider(cloth); });
     private async Task DeleteItems()
@@ -383,19 +406,24 @@ public sealed partial class MainWindow : Window
     }
     public void ToggleSimulation()
     {
+        if (_actorScene != null)
+        {
+            if (!_actorScene.HasCloth) return;
+            _actorSimulating = !_actorSimulating; PoseActor(true, 0); UpdateActorPlayback(); UpdateActions(); return;
+        }
         if (_timer.IsEnabled) { StopSimulation(); return; }
         if (!Session.Document.HasDocument || !Session.CanSimulate) return;
         _solver = new HkclPreviewSimulator(Session.Document.GetParticlePreview(Session.ClothIndex));
         SimulationOptions.ApplyTo(_solver); _previewStepClock.Reset();
         _clock.Restart(); _lastTick = 0; _timer.Start(); UpdateActions();
     }
-    public void StopSimulation() { _timer.Stop(); _previewStepClock.Reset(); _solver = null; _viewport.Simulated = null; _viewport.InvalidateVisual(); UpdateActions(); }
+    public void StopSimulation() { _actorSimulating = false; if (_actorScene != null) { PoseActor(true, 0); UpdateActorPlayback(); } _timer.Stop(); _previewStepClock.Reset(); _solver = null; _viewport.Simulated = null; _viewport.InvalidateVisual(); UpdateActions(); }
     private Task<bool> CanReplace() => CanReplace(Session);
     private async Task<bool> CanReplace(EditorSession session) => !session.IsDirty || await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in " + (System.IO.Path.GetFileName(session.Path) ?? "Untitled") + "?");
     private async Task NewDocument()
     {
         var result = await Dialogs.NewCloth(this); if (result == null) return;
-        StopSimulation(); Session.New(result.Value.Name, result.Value.Format); Refresh(true); ShowEditor(); _status.Text = "New unbound cloth draft.";
+        StopSimulation(); ExitActor(); Session.New(result.Value.Name, result.Value.Format); Refresh(true); ShowEditor(); _status.Text = "New unbound cloth draft.";
     }
     private async Task OpenDocument()
     {
@@ -420,6 +448,9 @@ public sealed partial class MainWindow : Window
         var format = new ComboBox { ItemsSource = new[] { "Wii U HKCL", "Switch HKCL" }, SelectedIndex = Session.Platform == HkclPlatform.WiiU ? 0 : 1, IsEnabled = !Session.Document.IsBphcl };
         format.SelectionChanged += (_, _) => Session.Platform = format.SelectedIndex == 0 ? HkclPlatform.WiiU : HkclPlatform.Switch;
         var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) }; panel.Children.Add(dark); panel.Children.Add(new TextBlock { Text = "HKCL save platform" }); panel.Children.Add(format);
+        var fps = new ComboBox { ItemsSource = new[] { "30 fps (half speed)", "60 fps (normal speed)" }, SelectedIndex = _animationFps == 30 ? 0 : 1 };
+        fps.SelectionChanged += (_, _) => _animationFps = fps.SelectedIndex == 0 ? 30 : 60;
+        panel.Children.Add(new TextBlock { Text = "Animation playback" }); panel.Children.Add(fps);
         await Dialogs.Show(this, "Settings", panel);
     }
 
@@ -431,6 +462,7 @@ public sealed partial class MainWindow : Window
         {
             var model = await Task.Run(() => PortableModelImporter.Load(path));
             if (request != _modelRequest) return;
+            ExitActor();
             ShowEditor();
             _viewport.SetModel(model);
             _status.Text = $"{System.IO.Path.GetFileName(path)}: {model.Meshes.Count} meshes, {model.TriangleCount:N0} triangles, {model.EmbeddedTextureCount + model.ExternalTextureCount} textures."

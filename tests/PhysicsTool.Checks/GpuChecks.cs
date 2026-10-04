@@ -47,14 +47,14 @@ internal sealed class GpuChecks : Application
                 }
                 if (stage == 2)
                 {
-                    if (colors > 1) throw new Exception("Hidden meshes still render.");
+                    if (colors is < 2 or > 4) throw new Exception("Hidden meshes should leave only the world grid.");
                     for (int i = 0; i < window.Viewport.Model!.Meshes.Count; i++) window.Viewport.SetMeshVisible(i, true);
                     window.Width = 980; window.Height = 640;
                 }
                 if (stage == 3) window.Viewport.SetModel(null);
                 if (stage == 4)
                 {
-                    if (colors != 1) throw new Exception("Cleared model still renders.");
+                    if (colors is < 2 or > 4) throw new Exception("Cleared model should leave only the world grid.");
                     window.Viewport.SetModel(loaded);
                 }
                 if (stage == 5) window.Viewport.SetView(CameraView.Top);

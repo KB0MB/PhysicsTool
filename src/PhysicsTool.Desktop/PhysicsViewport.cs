@@ -15,6 +15,7 @@ public sealed partial class PhysicsViewport : Control
     public bool ShowPhysics { get; set; } = true;
     public event Action? CameraChanged;
     public void SetModel(VisualModelData? model) { Model = model; HiddenMeshes.Clear(); Fit(); }
+    public void SetModelPose(VisualModelData model) { Model = model; Changed(); }
     public void SetMeshVisible(int index, bool visible)
     {
         if (Model == null || index < 0 || index >= Model.Meshes.Count) return;
@@ -65,12 +66,11 @@ public sealed partial class PhysicsViewport : Control
     {
         if (Model == null || !GpuReady) context.FillRectangle(new SolidColorBrush(Color.Parse("#242829")), Bounds.WithX(0).WithY(0));
         else context.FillRectangle(Brushes.Transparent, Bounds.WithX(0).WithY(0));
-        var grid = new Pen(new SolidColorBrush(Color.Parse("#3B4142")), 1);
-        var step = MathF.Pow(10, MathF.Floor(MathF.Log10(_extent))) / 5;
-        for (var i = -10; i <= 10 && (Model == null || !GpuReady); i++)
+        if (Model == null || !GpuReady)
+        foreach (var line in GridLines)
         {
-            context.DrawLine(grid, Project(_center + new Vector3(i * step, -_extent / 2, -10 * step)), Project(_center + new Vector3(i * step, -_extent / 2, 10 * step)));
-            context.DrawLine(grid, Project(_center + new Vector3(-10 * step, -_extent / 2, i * step)), Project(_center + new Vector3(10 * step, -_extent / 2, i * step)));
+            var color = Color.FromRgb((byte)(line.Color.X * 255), (byte)(line.Color.Y * 255), (byte)(line.Color.Z * 255));
+            context.DrawLine(new Pen(new SolidColorBrush(color), 1), Project(line.Start), Project(line.End));
         }
         if (Model != null && !GpuReady)
         {
