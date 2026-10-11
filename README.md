@@ -36,7 +36,6 @@ Build, test and native-dependency details are in the [build guide](docs/RELEASIN
 - [Switch Toolbox](https://github.com/KillzXGaming/Switch-Toolbox), KillzXGaming, Syroot and its contributors for model, texture and material support.
 - [Max Bebok (HailToDodongo) / Ice-Hail](https://gitlab.com/ice-hail/ice-hail) for the collision-generation foundation.
 - [HKX2](https://github.com/krenyy/HKX2) and [Json.NET](https://www.newtonsoft.com/json) for supporting libraries.
-- [Autodesk FBX SDK](https://aps.autodesk.com/developer/overview/fbx-sdk) for FBX support in the original WinForms version.
 
 Thanks to the other open-source projects behind PhysicsTool, including Avalonia. Full dependency credits and licenses are in [third-party notices](THIRD_PARTY_NOTICES.txt).
 
