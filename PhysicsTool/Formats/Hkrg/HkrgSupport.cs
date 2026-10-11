@@ -1121,14 +1121,17 @@ public sealed partial class HkclService
     // Re-centers capsule bodies after their endpoints change. Havok stores the
     // local center of mass separately from the visible capsule geometry.
     // Existing Link/Mipha files show it at the exact midpoint of vertexA/B.
-    public int RebuildHkrgCapsuleCentersOfMass()
+    public int RebuildHkrgCapsuleCentersOfMass(IReadOnlySet<int>? bodyIndices = null)
     {
         if (!IsHkrg)
             return 0;
 
         var updated = 0;
-        foreach (var body in GetHkrgRigidBodies())
+        var bodies = GetHkrgRigidBodies();
+        for (var index = 0; index < bodies.Count; index++)
         {
+            if (bodyIndices != null && !bodyIndices.Contains(index)) continue;
+            var body = bodies[index];
             var shape = GetValue(GetValue(body, "collidable"), "shape");
             var motionState = GetValue(GetValue(body, "motion"), "motionState");
             if (shape == null || motionState == null ||
@@ -1151,13 +1154,16 @@ public sealed partial class HkclService
     // hkpMotionState stores the body center of mass separately from the
     // visible body transform. Retargeting transform alone leaves Havok with
     // stale Link positions/orientations to integrate toward at runtime.
-    public void RebuildHkrgMotionSweepsFromTransforms()
+    public void RebuildHkrgMotionSweepsFromTransforms(IReadOnlySet<int>? bodyIndices = null)
     {
         if (!IsHkrg)
             return;
 
-        foreach (var body in GetHkrgRigidBodies())
+        var bodies = GetHkrgRigidBodies();
+        for (var index = 0; index < bodies.Count; index++)
         {
+            if (bodyIndices != null && !bodyIndices.Contains(index)) continue;
+            var body = bodies[index];
             var motionState = GetValue(GetValue(body, "motion"), "motionState");
             if (motionState == null)
                 continue;

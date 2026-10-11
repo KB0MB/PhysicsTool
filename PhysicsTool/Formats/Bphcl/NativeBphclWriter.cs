@@ -859,13 +859,17 @@ public static class NativeBphclWriter
                     dataStart,
                     cloth,
                     deformer,
-                    targetSkeleton))
+                    targetSkeleton, sourceCloth,
+                    sourceCloth?.SimpleMeshBoneDeformers.FirstOrDefault(d => d.OperatorIndex == deformer.OperatorIndex),
+                    sourceSkeleton))
             {
                 continue;
             }
 
             // Retain the legacy fallback for unusual layouts where the
             // deformer is not backed by the primary simulation triangle mesh.
+            if (sourceDocument != null)
+                throw new InvalidOperationException("The native cloth deformer cannot be rebased safely for mirroring. No data was changed.");
             var item = document.GetItem(deformer.ItemIndex);
             MirrorMatrixArray(document, bytes, dataStart, checked(item.DataOffset + 96), reflection);
         }
@@ -893,12 +897,14 @@ public static class NativeBphclWriter
         // Do not flip hidden secondary instances whose particles were not
         // mirrored by the editor.
         var simulation = cloth.SimCloths.FirstOrDefault();
+        var mirroredTriangleItems = new HashSet<int>();
         if (simulation != null)
         {
             if (simulation.TriangleIndices.Count >= 3 &&
                 document.TryGetReferencedItem(simulation.DataOffset + 352, out var triangleItemIndex))
             {
                 var triangleItem = document.GetItem(triangleItemIndex);
+                mirroredTriangleItems.Add(triangleItemIndex);
                 for (var offset = 0; offset + 2 < simulation.TriangleIndices.Count; offset += 3)
                 {
                     var bOffset = checked(dataStart + (int)triangleItem.DataOffset + (offset + 1) * sizeof(ushort));
@@ -908,6 +914,22 @@ public static class NativeBphclWriter
                     BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(bOffset, sizeof(ushort)), c);
                     BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(cOffset, sizeof(ushort)), b);
                 }
+            }
+        }
+
+        foreach (var buffer in cloth.BufferDefinitions)
+        {
+            var item = document.GetItem(buffer.ItemIndex);
+            var member = GetMemberOffset(document, item.TypeIndex, "triangleIndices");
+            if (!member.HasValue || !document.TryGetReferencedItem(checked(item.DataOffset + member.Value), out var index) || !mirroredTriangleItems.Add(index)) continue;
+            var triangles = document.GetItem(index);
+            for (var i = 0; i + 2 < triangles.Count; i += 3)
+            {
+                var b = checked(dataStart + (int)triangles.DataOffset + (i + 1) * sizeof(ushort));
+                var c = checked(b + sizeof(ushort));
+                var value = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(b, 2));
+                bytes.AsSpan(c, 2).CopyTo(bytes.AsSpan(b, 2));
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(c, 2), value);
             }
         }
 
@@ -1001,7 +1023,10 @@ public static class NativeBphclWriter
         int dataStart,
         NativeBphclCloth cloth,
         NativeBphclSimpleMeshBoneDeform deformer,
-        NativeBphclSkeleton skeleton)
+        NativeBphclSkeleton skeleton,
+        NativeBphclCloth? sourceCloth = null,
+        NativeBphclSimpleMeshBoneDeform? sourceDeformer = null,
+        NativeBphclSkeleton? sourceSkeleton = null)
     {
         if (deformer.TriangleBonePairs.Count == 0 ||
             deformer.TriangleBonePairs.Count != deformer.LocalBoneTransforms.Count ||
@@ -1019,6 +1044,9 @@ public static class NativeBphclWriter
             return false;
 
         var worlds = BuildSkeletonWorldMatrices(skeleton);
+        var originalWorlds = sourceSkeleton == null ? null : BuildSkeletonWorldMatrices(sourceSkeleton);
+        NativeBphclSimCloth? originalSimulation = null;
+        if (sourceCloth != null && sourceDeformer != null && TryFindTriangleSimulation(sourceCloth, sourceDeformer, out var original)) originalSimulation = original;
         for (var index = 0; index < deformer.TriangleBonePairs.Count; index++)
         {
             var pair = deformer.TriangleBonePairs[index];
@@ -1049,6 +1077,20 @@ public static class NativeBphclWriter
                 return false;
 
             var rebuilt = boneWorld * inverseTriangleFrame;
+            if (originalSimulation != null && sourceDeformer != null && originalWorlds != null && index < sourceDeformer.LocalBoneTransforms.Count)
+            {
+                var originalOffset = sourceDeformer.TriangleBonePairs[index].TriangleOffset / 6 * 3;
+                if (originalOffset > originalSimulation.TriangleIndices.Count - 3 || !originalWorlds.TryGetValue(boneIndex, out var originalBone)) return false;
+                var originalFrame = BuildCentroidTriangleFrame(
+                    originalSimulation.Particles[originalSimulation.TriangleIndices[originalOffset]].Position,
+                    originalSimulation.Particles[originalSimulation.TriangleIndices[originalOffset + 1]].Position,
+                    originalSimulation.Particles[originalSimulation.TriangleIndices[originalOffset + 2]].Position);
+                var reflection = System.Numerics.Matrix4x4.CreateScale(-1, 1, 1);
+                if (!System.Numerics.Matrix4x4.Invert(reflection * originalBone * reflection, out var inverseMirroredBone)) return false;
+                // Preserve the authored deformer-to-bone offset, including scale,
+                // while rebasing into TotK's mirrored target bone convention.
+                rebuilt = reflection * sourceDeformer.LocalBoneTransforms[index] * originalFrame * reflection * inverseMirroredBone * boneWorld * inverseTriangleFrame;
+            }
             var matrixOffset = checked(dataStart + (int)transformItem.DataOffset + index * 64);
             if (matrixOffset < 0 || matrixOffset > bytes.Length - 64)
                 return false;

@@ -22,12 +22,13 @@ public static class ViewportTools
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
         bar.Children.Add(Icon("Maximize", "Frame all (Home)", view.Fit));
         bar.Children.Add(Icon("Focus", "Frame selected (.)", view.FrameSelected));
-        bar.Children.Add(Icon("RotateCcw", "Reset view", view.ResetView));
-        var menu = new ContextMenu();
-        menu.ItemsSource = Enum.GetValues<CameraView>().Select(direction => { var item = new MenuItem { Header = direction.ToString() }; item.Click += (_, _) => view.SetView(direction); return item; }).ToArray();
-        Button? views = null; views = Icon("Box", "Axis views", () => menu.Open(views!)); views.ContextMenu = menu; bar.Children.Add(views);
         bar.Children.Add(Icon("ZoomIn", "Zoom in", () => view.ZoomAt(1, new(view.Bounds.Width / 2, view.Bounds.Height / 2))));
         bar.Children.Add(Icon("ZoomOut", "Zoom out", () => view.ZoomAt(-1, new(view.Bounds.Width / 2, view.Bounds.Height / 2))));
+        foreach (var button in bar.Children.OfType<Button>())
+        {
+            button.Background = new SolidColorBrush(Color.Parse("#3C4245"));
+            button.Foreground = Brushes.White;
+        }
         return bar;
     }
 }

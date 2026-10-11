@@ -3,7 +3,7 @@ namespace HKCLTool;
 internal sealed record BotwActorModelReference(string Resource, string Model, string BindBone);
 internal sealed record BotwActorAnimationReference(string State, string Clip);
 
-internal sealed class BotwActorResources
+internal sealed partial class BotwActorResources
 {
     private readonly BotwSarcArchive _pack;
     private readonly Dictionary<string, BotwSarcEntry> _entries;
@@ -14,9 +14,12 @@ internal sealed class BotwActorResources
     public string SourcePath { get; }
     public string? SourceEntry { get; }
     public bool IsSwitch => _pack.LittleEndian;
+    public bool IsTotk { get; }
     public IReadOnlyList<string> Roots => _roots;
     public List<string> Warnings { get; } = new();
     public List<BotwActorModelReference> Models { get; } = new();
+    public string VariationMatAnim { get; private set; } = "";
+    public int VariationMatAnimFrame { get; private set; }
     public List<string> AnimationResources { get; } = new();
     public List<BotwActorAnimationReference> Animations { get; } = new();
     public List<string> PhysicsFiles { get; } = new();
@@ -26,8 +29,10 @@ internal sealed class BotwActorResources
     {
         SourcePath = Path.GetFullPath(path);
         SourceEntry = actorEntry;
-        ActorName = Path.GetFileNameWithoutExtension(actorEntry ?? path);
-        var archive = BotwSarcArchive.OpenIndexed(path);
+        IsTotk = path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase);
+        ActorName = IsTotk ? Path.GetFileName(path)[..^8] : Path.GetFileNameWithoutExtension(actorEntry ?? path);
+        var availableRoots = TotkResourceCompression.Roots(path).Concat(roots ?? []).ToArray();
+        var archive = IsTotk ? BotwSarcArchive.Parse(_totkCompression.Decode(File.ReadAllBytes(path), availableRoots)) : BotwSarcArchive.OpenIndexed(path);
         if (actorEntry != null)
         {
             _container = archive;
@@ -57,13 +62,14 @@ internal sealed class BotwActorResources
             }
         }
         AddRoot(Path.GetDirectoryName(SourcePath)!);
-        ReadReferences();
+        if (IsTotk) ReadTotkReferences(); else ReadReferences();
     }
 
     private void AddRoot(string path)
     {
         var root = Path.GetFullPath(path);
         if (Directory.Exists(Path.Combine(root, "content"))) root = Path.Combine(root, "content");
+        if (IsTotk && Directory.Exists(Path.Combine(root, "romfs"))) root = Path.Combine(root, "romfs");
         if (!_roots.Contains(root, StringComparer.OrdinalIgnoreCase)) _roots.Add(root);
     }
 
@@ -81,6 +87,11 @@ internal sealed class BotwActorResources
             if (!candidate.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("An actor resource lies outside its resource folder.");
             if (File.Exists(candidate)) return File.ReadAllBytes(candidate);
+            if (IsTotk)
+            {
+                if (File.Exists(candidate + ".zs")) return _totkCompression.Decode(File.ReadAllBytes(candidate + ".zs"), _roots);
+                continue;
+            }
             var titlePath = Path.Combine(root, "Pack", "TitleBG.pack");
             if (!_titleArchives.TryGetValue(titlePath, out var title))
             {
@@ -102,8 +113,15 @@ internal sealed class BotwActorResources
         return null;
     }
 
-    public byte[]? ReadModel(string resource, string suffix = "") =>
-        Read($"Model/{resource}{suffix}.sbfres") ?? Read($"Model/{resource}{suffix}.bfres");
+    public byte[]? ReadModel(string resource, string suffix = "")
+    {
+        if (!IsTotk) return Read($"Model/{resource}{suffix}.sbfres") ?? Read($"Model/{resource}{suffix}.bfres");
+        if (suffix.Length > 0) return null;
+        // Extra roots may be decoded model folders rather than complete romfs trees.
+        var data = Read($"{resource}.bfres") ?? Read($"Model/{resource}.bfres");
+        if (data != null) return data;
+        return Read($"Model/{resource}.bfres.mc") is { } packed ? TotkMeshCodec.Decode(packed) : null;
+    }
 
     private AampReadList? Parameters(string folder, string name, string extension)
     {
@@ -124,6 +142,9 @@ internal sealed class BotwActorResources
         var modelList = Parameters("ModelList", Link("ModelUser", "ModelList", ".bmodellist"), "bmodellist");
         if (modelList != null)
         {
+            var controller = modelList.Objects.FirstOrDefault(o => o.Hash == BotwAampWriter.Crc32("ControllerInfo"));
+            VariationMatAnim = controller?.Find("VariationMatAnim")?.AsString() ?? "";
+            VariationMatAnimFrame = controller?.Find("VariationMatAnimFrame")?.AsInt32() ?? 0;
             foreach (var data in modelList.FindChild("ModelData")?.Children ?? Enumerable.Empty<AampReadList>())
             {
                 var resource = data.Objects.FirstOrDefault(o => o.Hash == BotwAampWriter.Crc32("Base"))?.Find("Folder")?.AsString();

@@ -6,3 +6,34 @@ artifacts/
 *.user
 /PhysicsTool.RegressionTests/PhysicsTool.RegressionTests.csproj
 /PhysicsTool/NativeFbx/build/
+
+# Local settings, secrets and diagnostic output
+.env
+.env.*
+!.env.example
+*.pdb
+*.log
+settings.json
+actor-browser-settings.json
+actor-folders.json
+actor-catalog-*.json
+portable.txt
+.DS_Store
+Thumbs.db
+
+# User-supplied game resources and extracted test fixtures
+*.hkcl
+*.bphcl
+*.bphyssb
+*.bphhb
+*.hkrg
+*.hkrb
+*.hksc
+*.shksc
+*.bfres
+*.sbfres
+*.bntx
+*.pack
+*.sbactorpack
+*.zs
+*.txtg

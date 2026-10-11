@@ -1,5 +1,29 @@
 # BotW Physics Research
 
+## Zelda Dress Follow-Up - 2026-10-05
+
+The reported exposed calf reproduces in `Act_Call_Hello` with simulation both enabled and disabled. Isolated renders show that this cannot be attributed solely to collision response. Zelda's skirt helper group drives 18 bones, including parents of cloth-deformed bones and `Skirt_3_C_B`, which is also a driver. The native cloth layer writes only a subset of the skirt bones.
+
+The previous helper evaluator calculated every output against the same initial world-pose dictionary. A later child therefore failed to inherit an earlier helper-parent output, and all driver measurements were taken before the output loop. Preserved Switch analysis of `0x71018f0e90` shows per-output transform writes via `0x7101cb7890`; connection routines `0x7101cb1d10` / `0x7101cb1fb0` request rotation (`0x7101cb2500`, cache flag 0x18) and translation (`0x7101cb2b50`, cache flag 0x19) when first needed. The evaluator now applies outputs to a detached working hierarchy in resource order and caches those two measurements separately on demand. Input/rest bone objects remain untouched.
+
+Actor animation suppression previously included inferred cloth ancestors and reused that set to suppress helper outputs. Those are different responsibilities: helpers on non-deformed skirt ancestors must continue to run even if animation tracks in the cloth chain are suppressed. Helper filtering now uses the explicit cloth-deformer output set; the animation suppression policy itself is unchanged.
+
+Regression coverage includes same-group parent/child output and downstream driver measurement, pose isolation, and native Zelda root preservation with simulation on/off. `--dress-audit OUTPUT ACTOR` captures the greeting at four frames in animation-only/helper/simulation modes. Wii U and Switch renders were checked at the affected calf. This addresses the reproduced pose, not every possible animation intersection; no native weights, collision dimensions, authored physics or game resources were edited.
+
+## Avalonia Collider and Simulation Audit - 2026-10-05
+
+Read-only headless Ghidra analysis of the preserved BotW Switch `main` identifies tapered-capsule registration at `0x7101e0a704`, vtable `0x7102c44178`, transform/setup at `0x7101db3090` / `0x7101db21c8`, and scalar contact at `0x7101db2538` through the `0x7101db3114` thunk. The four-point entry is `0x7101db3118`. These are fresh Switch executable checks; Wii U tapered equations were not independently decoded in this pass.
+
+The previous preview approximated a tapered capsule by projecting onto the centerline and interpolating its radius. Native setup instead derives a tangent cone between endpoint spheres. For center separation L and radii r0/r1, s = (r1-r0)/L and c = sqrt(1-s*s). Given axial coordinate z and radial distance rho relative to the first center, the cone signed distance is `rho*c - z*s - r0`, with normal `radialDirection*c - axis*s`. Cap selection uses `z + rho*s/c`, below zero for the first sphere and above L for the second. The preview now uses those equivalent scalar equations, and surface/wire geometry joins the caps at the same tangent rings. Ordinary capsules remain on their prior constant-radius path.
+
+Native setup reports invalid tapered shapes when radii differ by less than 2 percent or their difference exceeds center separation. The editable preview tolerates these cases: equal radii reduce to a capsule; coincident or nested spheres reduce to the larger sphere. A deterministic perpendicular normal handles points exactly on the cone axis. These are deliberate finite preview fallbacks, not claims about valid authored native assets or their undefined/diagnostic paths.
+
+The regular Avalonia suite now includes the preserved cloth/native-link/moving-contact/friction/skinning/bone-deformation/helper-driver equation checks. New tapered tests cover an analytically verified missed-contact case, sloped projection, cap branches, endpoint reversal, axis points, collapsed/nested shapes and agreement of rendered vertices with the signed-distance surface. `--simulation-audit` can additionally run native actors, including `TitleBG.pack::Actor/Pack/...` entries, without modifying source files.
+
+Eight native runs completed at 600 simulation frames each, 1/60-second steps with the 30 Hz animation clock and repeated clip loops: Switch/Wii U Bokoblin (four cloths, 91 particles, 19 capsules) and Switch/Wii U Zelda (three cloths, 185 particles, 12 helper groups, 18 capsules, nine spheres and one plane), two clips per actor/platform. All had finite particles/model/bones/colliders and zero emergency resets. Source pack hashes were unchanged. These fixtures exercise integration and ordinary collider regressions; they do not contain tapered colliders, whose new equation coverage is synthetic. No new helper-driver equation defect was found. The native equation suite passed before and after the collider change.
+
+Remaining gaps are complete operator/state transitions, local-range reference normals and normal-component limits, virtual collision points, broader anti-pinch recovery, native aerodynamics, and integrated collider angular motion. Existing preview safety clamps also remain. BPHCL simulation is still unsupported. Passing these checks does not establish agreement with captured gameplay, nor validate every native shape or helper rig.
+
 ## Scope
 
 The cloth simulator remains a preview solver, not a replacement for the game's Havok runtime. These notes distinguish executable evidence from independently tested corrections. No game executable or decompiled source is distributed here.

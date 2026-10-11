@@ -12,6 +12,17 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Build standalone MeshCodec helper
+        shell: pwsh
+        run: |
+          $os = switch ($env:RUNNER_OS) { 'Windows' { 'win' } 'macOS' { 'osx' } default { 'linux' } }
+          $rid = $os + '-' + $env:RUNNER_ARCH.ToLowerInvariant()
+          cmake -S PhysicsTool/ThirdParty/MeshCodec -B artifacts/meshcodec -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build artifacts/meshcodec --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install artifacts/meshcodec --config Release --prefix "PhysicsTool/ThirdParty/MeshCodec/runtimes/$rid"
+          exit $LASTEXITCODE
       - run: dotnet build src/PhysicsTool.Desktop/PhysicsTool.Desktop.csproj -c Release
       - run: dotnet run --project tests/PhysicsTool.Checks -c Release -- artifacts/checks
       - uses: actions/upload-artifact@v4

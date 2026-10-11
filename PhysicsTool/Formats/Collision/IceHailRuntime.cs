@@ -6,8 +6,7 @@ namespace HKCLTool;
 
 internal static class IceHailRuntime
 {
-    private static readonly string ResourcePrefix =
-        typeof(IceHailRuntime).Assembly.GetName().Name + ".Formats.Collision.IceHail.";
+    private static readonly string ResourcePrefix = FindResourcePrefix();
     private static readonly Lazy<IReadOnlyDictionary<string, string>> Modules = new(LoadModules);
     private static readonly Lazy<string> Runtime = new(() => Modules.Value["runtime.js"]);
 
@@ -40,6 +39,14 @@ internal static class IceHailRuntime
 
     private static string? LoadModule(string id) =>
         Modules.Value.TryGetValue(id.Replace('\\', '/'), out var source) ? source : null;
+
+    private static string FindResourcePrefix()
+    {
+        const string suffix = ".Formats.Collision.IceHail.runtime.js";
+        var resource = typeof(IceHailRuntime).Assembly.GetManifestResourceNames().SingleOrDefault(n => n.EndsWith(suffix, StringComparison.Ordinal))
+            ?? throw new InvalidOperationException("The embedded collision runtime is missing.");
+        return resource[..^"runtime.js".Length];
+    }
 
     private static IReadOnlyDictionary<string, string> LoadModules()
     {

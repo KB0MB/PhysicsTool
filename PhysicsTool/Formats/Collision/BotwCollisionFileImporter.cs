@@ -9,15 +9,15 @@ internal static class BotwCollisionFileImporter
 {
     private static readonly byte[] HavokMagic = [0x57, 0xe0, 0xe0, 0x57, 0x10, 0xc0, 0xc0, 0x10];
 
-    public static IReadOnlyList<BotwCollisionMesh> Import(string path)
+    public static IReadOnlyList<BotwCollisionMesh> Import(string path, string? actorEntry = null)
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             throw new FileNotFoundException("The collision file could not be found.", path);
 
         var meshes = new List<BotwCollisionMesh>();
-        if (Path.GetExtension(path).Equals(".sbactorpack", StringComparison.OrdinalIgnoreCase))
+        if (actorEntry != null || Path.GetExtension(path).Equals(".sbactorpack", StringComparison.OrdinalIgnoreCase))
         {
-            var archive = BotwSarcArchive.Open(path);
+            var archive = OpenActorArchive(path, actorEntry);
             var entries = archive.Entries
                 .Where(entry => entry.Name.EndsWith(".hkrb", StringComparison.OrdinalIgnoreCase))
                 .ToArray();
@@ -37,6 +37,33 @@ internal static class BotwCollisionFileImporter
         if (meshes.Count == 0)
             throw new InvalidDataException("The collision file contains no supported shape geometry.");
         return meshes;
+    }
+
+    private static BotwSarcArchive OpenActorArchive(string path, string? actorEntry)
+    {
+        var archive = BotwSarcArchive.Open(path);
+        if (actorEntry == null) return archive;
+        var entry = archive.Entries.SingleOrDefault(e => e.Name == actorEntry)
+            ?? throw new InvalidDataException("The selected actor is missing from its container.");
+        return BotwSarcArchive.Parse(archive.Read(entry).Span);
+    }
+
+    internal static BotwCollisionPlatform DetectPlatform(string path, string? actorEntry = null)
+    {
+        byte[] data;
+        if (actorEntry != null || Path.GetExtension(path).Equals(".sbactorpack", StringComparison.OrdinalIgnoreCase))
+        {
+            var archive = OpenActorArchive(path, actorEntry);
+            var entry = archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".hkrb", StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException("The actor pack contains no HKRB collision files.");
+            data = archive.Read(entry).ToArray();
+        }
+        else data = File.ReadAllBytes(path);
+        if (data.AsSpan().StartsWith("Yaz0"u8)) data = BotwYaz0.Decode(data);
+        var header = FindCollisionPackfile(data);
+        if (header.Length >= 20 && header[16] == 4 && header[17] == 0) return BotwCollisionPlatform.WiiU;
+        if (header.Length >= 20 && header[16] == 8 && header[17] != 0) return BotwCollisionPlatform.Switch;
+        throw new InvalidDataException("Unsupported collision platform layout.");
     }
 
     private static byte[] FindCollisionPackfile(byte[] data)

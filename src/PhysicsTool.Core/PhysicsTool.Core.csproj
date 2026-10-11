@@ -4,12 +4,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>PhysicsTool</RootNamespace>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../PhysicsTool/Formats/**/*.cs" Exclude="../../PhysicsTool/Formats/Actors/ToolboxActorTexture.cs" LinkBase="Formats" />
     <Compile Include="../../PhysicsTool/Editor/Viewport/BfresModelPose.cs" Link="Models/BfresModelPose.cs" />
     <Compile Include="../../PhysicsTool/UI/UserFacingExceptionFormatter.cs" Link="UserFacingExceptionFormatter.cs" />
     <Compile Include="../../PhysicsTool/ThirdParty/Toolbox/*.cs" LinkBase="ThirdParty/Toolbox" />
+    <Compile Include="../../PhysicsTool/ThirdParty/ToolboxAstc/*.cs" LinkBase="ThirdParty/ToolboxAstc" />
     <Compile Include="../../PhysicsTool/Editor/Models/*.cs" LinkBase="Models" />
     <Compile Include="../../PhysicsTool/Editor/Simulation/*.cs" LinkBase="Simulation" />
     <Compile Include="../../PhysicsTool/Editor/Viewport/VisualModelData.cs" Link="Models/VisualModelData.cs" />
@@ -31,7 +34,21 @@
     <Reference Include="Syroot.NintenTools.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.Bfres.dll</HintPath></Reference>
     <Reference Include="Syroot.NintenTools.NSW.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bfres.dll</HintPath></Reference>
     <Reference Include="Syroot.NintenTools.NSW.Bntx"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bntx.dll</HintPath></Reference>
-    <InternalsVisibleTo Include="PhysicsTool.Desktop" />
+    <InternalsVisibleTo Include="PhysicsTool" />
     <InternalsVisibleTo Include="PhysicsTool.Checks" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../../PhysicsTool/ThirdParty/ToolboxAstc/LICENSE;../../PhysicsTool/ThirdParty/ToolboxAstc/SOURCES.txt" Link="Licenses/ToolboxAstc/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../../PhysicsTool/ThirdParty/MeshCodec/runtimes/**/*" Exclude="../../PhysicsTool/ThirdParty/MeshCodec/runtimes/**/*.pdb;../../PhysicsTool/ThirdParty/MeshCodec/runtimes/**/*.lib" Link="Tools/MeshCodec/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(IntermediateOutputPath)MeshCodec-source.zip" Link="Licenses/MeshCodec-source.zip" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="PackageMeshCodecSource" BeforeTargets="BeforeBuild">
+    <RemoveDir Directories="$(IntermediateOutputPath)MeshCodec-source" />
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <ItemGroup>
+      <MeshCodecSource Include="../../PhysicsTool/ThirdParty/MeshCodec/**/*" Exclude="../../PhysicsTool/ThirdParty/MeshCodec/runtimes/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(MeshCodecSource)" DestinationFiles="@(MeshCodecSource->'$(IntermediateOutputPath)MeshCodec-source/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <ZipDirectory SourceDirectory="$(IntermediateOutputPath)MeshCodec-source" DestinationFile="$(IntermediateOutputPath)MeshCodec-source.zip" Overwrite="true" />
+  </Target>
 </Project>

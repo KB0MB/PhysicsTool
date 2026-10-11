@@ -68,6 +68,22 @@ public static class BphclStandaloneValidation
             if (graph.Cloths.FirstOrDefault(candidate => string.Equals(candidate.Name, cloth.Name, StringComparison.Ordinal)) is not { } sourceCloth)
                 throw new InvalidDataException($"Generated BPHCL cloth '{cloth.Name}' has no source graph entry.");
 
+            if (sourceCloth.GeneratedSimulateConfig is { } expectedConfig)
+            {
+                var configs = cloth.Operators.Where(op => op.ClassName == "hclSimulateOperator").SelectMany(op => op.SimulateConfigs).ToArray();
+                if (configs.Length != 1 || !configs[0].ConstraintExecution.SequenceEqual(expectedConfig.ConstraintExecution) ||
+                    configs[0].SubSteps != expectedConfig.SubSteps || configs[0].NumberOfSolveIterations != expectedConfig.NumberOfSolveIterations ||
+                    configs[0].AdaptConstraintStiffness != expectedConfig.AdaptConstraintStiffness ||
+                    configs[0].UseAllInstanceCollidables != expectedConfig.UseAllInstanceCollidables ||
+                    !configs[0].InstanceCollidablesUsed.SequenceEqual(expectedConfig.InstanceCollidablesUsed))
+                    throw new InvalidDataException($"Generated BPHCL cloth '{cloth.Name}' changed its solver configuration.");
+                var particles = cloth.SimCloths.SelectMany(sim => sim.Particles).ToArray();
+                if (particles.Length != sourceCloth.Particles.Count || particles.Where((p, i) =>
+                    p.Mass != sourceCloth.Particles[i].Mass || p.InverseMass != sourceCloth.Particles[i].InverseMass ||
+                    p.Fixed != sourceCloth.Particles[i].Fixed).Any())
+                    throw new InvalidDataException($"Generated BPHCL cloth '{cloth.Name}' changed its particle masses or fixed membership.");
+            }
+
             foreach (var simulation in cloth.SimCloths)
             {
                 var expectedTotalMass = simulation.Particles

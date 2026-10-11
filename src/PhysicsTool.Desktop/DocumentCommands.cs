@@ -59,15 +59,15 @@ public sealed partial class MainWindow
         if (!await Dialogs.Confirm(this, "Merge selected donor", report.Description + "\n\nContinue?")) return;
         var result = Session.MergeFrom(DonorSession); Refresh(true); _status.Text = result;
     }
-    private void OpenExportMenu()
+    private void OpenFileMenu()
     {
-        if (!_export.IsEnabled) return;
+        UpdateActions();
         var json = MenuCommand("JSON", () => ExportDocument(null, true));
         var wiiU = MenuCommand("Wii U HKCL", () => ExportDocument(HkclPlatform.WiiU));
         var nx = MenuCommand("Switch HKCL", () => ExportDocument(HkclPlatform.Switch));
         wiiU.IsEnabled = nx.IsEnabled = !Session.Document.IsReadOnlyExternal;
-        _export.ContextMenu = new ContextMenu { ItemsSource = new object[] { MenuCommand("Save as...", () => SaveDocument(true)), new Separator(), json, wiiU, nx } };
-        _export.ContextMenu.Open(_export);
+        _export.ItemsSource = new object[] { json, wiiU, nx };
+        _file.ContextMenu!.Open(_file);
     }
     private async Task ExportDocument(HkclPlatform? platform, bool json = false)
     {

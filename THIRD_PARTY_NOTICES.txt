@@ -1,4 +1,11 @@
-Avalonia migration additions
+PhysicsTool 2.0 distribution notices
+
+Complete package license texts and a versioned inventory are shipped under
+Licenses. See BUILD_AND_LICENSES.md in binary archives (docs/RELEASING.md in
+source) for source distribution and platform details. Sections describing
+Autodesk FBX SDK, DirectXTex, tegra_swizzle_x64 and app-local VCRuntime below
+document the legacy WinForms application; those components are NOT bundled
+by the Avalonia release packager.
 
 The Avalonia application uses Avalonia (MIT), SkiaSharp (MIT and bundled native
 Skia notices), and Silk.NET 2.23.0 (MIT/X11). Their upstream source and license
@@ -12,7 +19,7 @@ Lucide.Avalonia 0.2.20 (MIT) supplies the viewport tool icons, based on Lucide
 https://github.com/dme-compunet/Lucide.Avalonia
 https://github.com/lucide-icons/lucide
 
-AssimpNetter is also used for reference-model import in the Avalonia app.
+AssimpNetter is used for collision source-mesh import in the Avalonia app.
 The Autodesk FBX bridge and DirectXTex mentioned below belong to the preserved
 WinForms implementation and are not used by the Avalonia model importer.
 
@@ -135,8 +142,10 @@ https://github.com/DesignEngrLab/MIConvexHull
 
 Tkmm.BymlLibrary 1.2.3 (AGPL-3.0-or-later), by TKMM-Team and its upstream
 contributors, is used unmodified for BYML v7 and YAML serialization.
-License: Licenses/BymlLibrary-LICENSE.txt. Its AGPL terms apply to this
-component in addition to PhysicsTool's own GPL license. Corresponding source:
+License: Licenses/BymlLibrary-LICENSE.txt. GPLv3 section 13 permits combining
+GPLv3 and AGPLv3 works; the AGPL requirements apply to the combination.
+The exact dependency source is also included in Licenses/Tkmm.BymlLibrary-1.2.3-source.zip.
+Corresponding source:
 https://github.com/TKMM-Team/Tkmm.BymlLibrary/tree/6f6ac2d38410d8e797262b7132fde08982938e53
 
 Revrs 1.0.6 (MIT), by ArchLeaders, and VYaml 0.28.1 (MIT), by hadashiA,
@@ -152,3 +161,22 @@ https://github.com/oleg-st/ZstdSharp
 The supplied Polytope IO Blender add-on by Qw2 was reviewed as a format
 reference only; its source is not copied or bundled. No game assets or
 compression dictionaries are bundled by this feature.
+MeshCodec helper
+---------------
+The standalone PhysicsTool.MeshCodec executable calls dt-12345/MeshCodec's
+DecompressMC API directly, using a PhysicsTool GPL-2.0-only stdin/stdout adapter.
+The former Toolbox native wrapper is not included. Upstream is GPL-2.0;
+the bundled source preserves the Zstandard, meshoptimizer-derived and float16
+notices. Source revision and modifications are recorded in LOCAL_CHANGES.md.
+https://github.com/dt-12345/MeshCodec
+PhysicsTool communicates with this separate executable through standard I/O.
+Complete corresponding helper source and licenses are included in
+Licenses/MeshCodec-source.zip. Build instructions are in that archive's README.
+
+TotK material and texture preview
+--------------------------------
+TOTK.frag and TexToGo/material handling are adapted from Switch Toolbox.
+The managed ASTC decoder is copied from its ASTC directory, retaining the
+Ryujinx namespace and FasTC source reference. Source attribution and Toolbox's
+GPL-3.0 license are bundled under Licenses/ToolboxAstc. The decoder source is
+included in the PhysicsTool repository under PhysicsTool/ThirdParty/ToolboxAstc.

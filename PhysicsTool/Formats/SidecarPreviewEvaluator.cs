@@ -77,10 +77,11 @@ internal static class SidecarPreviewEvaluator
         BphhbDocumentSummary document,
         int groupIndex,
         IReadOnlyList<VisualModelBone> currentBones,
-        IReadOnlyList<VisualModelBone> restBones)
+        IReadOnlyList<VisualModelBone> restBones,
+        IReadOnlyList<SidecarDriverGroup>? preparedGroups = null)
     {
         var archive = document.Archive;
-        var group = BphhbBridge.GetDriverGroups(document).ElementAtOrDefault(groupIndex);
+        var group = (preparedGroups ?? BphhbBridge.GetDriverGroups(document)).ElementAtOrDefault(groupIndex);
         var data = archive?.Root.Children.SingleOrDefault();
         if (group == null || data == null)
             return Empty;
@@ -207,9 +208,10 @@ internal static class SidecarPreviewEvaluator
         BphyssbDocumentSummary document,
         int groupIndex,
         IReadOnlyList<VisualModelBone> currentBones,
-        IReadOnlyList<VisualModelBone> restBones)
+        IReadOnlyList<VisualModelBone> restBones,
+        IReadOnlyList<SidecarDriverGroup>? preparedGroups = null)
     {
-        var group = BphyssbBridge.GetDriverGroups(document).ElementAtOrDefault(groupIndex);
+        var group = (preparedGroups ?? BphyssbBridge.GetDriverGroups(document)).ElementAtOrDefault(groupIndex);
         var data = document.Archive?.Root.Children.FirstOrDefault(child =>
             child.FindChild(BphyssbBoneListHash) != null &&
             child.FindChild(BphyssbMainListHash) != null &&
@@ -232,7 +234,7 @@ internal static class SidecarPreviewEvaluator
         var rest = IndexBones(restBones);
         var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<SidecarBonePreviewPose>();
-        var driverValues = new Dictionary<int, DriverValues>();
+        var driverValues = new Dictionary<int, (Lazy<DriverValues> Rotation, Lazy<DriverValues> Translation)>();
 
         foreach (var driverIndex in group.DriverIndices)
         {
@@ -256,13 +258,22 @@ internal static class SidecarPreviewEvaluator
             }
             if (baseIndex == -1)
                 baseBone = current.Values.FirstOrDefault(bone => bone.Index == currentBone.ParentIndex);
-            var relative = RelativeMatrix(currentBone, baseBone);
-            Matrix4x4.Decompose(relative, out _, out var relativeRotation, out var relativeTranslation);
-            var angles = MeasureBotwRotation(
-                Quaternion.Normalize(Quaternion.Inverse(GetQuaternion(source, BaseRotationHash)) * relativeRotation),
-                GetVector3(source, TargetAimHash, Vector3.UnitZ), GetVector3(source, TargetUpHash, Vector3.UnitY));
-            driverValues[driverIndex] = new DriverValues(angles.Z, angles.X, angles.Y,
-                relativeTranslation - GetVector3(source, BaseTranslationHash, Vector3.Zero));
+            // Native connections sample/cache a driver when first used. An earlier
+            // support output in this group may already have moved that driver.
+            DriverValues Sample()
+            {
+                var sampled = current[NormalizeBoneName(name)];
+                var space = baseIndex == -1 ? current.Values.FirstOrDefault(b => b.Index == sampled.ParentIndex)
+                    : GetBone(current, boneNames, baseIndex);
+                var relative = RelativeMatrix(sampled, space);
+                Matrix4x4.Decompose(relative, out _, out var relativeRotation, out var relativeTranslation);
+                var angles = MeasureBotwRotation(
+                    Quaternion.Normalize(Quaternion.Inverse(GetQuaternion(source, BaseRotationHash)) * relativeRotation),
+                    GetVector3(source, TargetAimHash, Vector3.UnitZ), GetVector3(source, TargetUpHash, Vector3.UnitY));
+                return new DriverValues(angles.Z, angles.X, angles.Y,
+                    relativeTranslation - GetVector3(source, BaseTranslationHash, Vector3.Zero));
+            }
+            driverValues[driverIndex] = (new Lazy<DriverValues>(Sample), new Lazy<DriverValues>(Sample));
             result.Add(new SidecarBonePreviewPose(
                 name,
                 currentBone.Position,
@@ -301,7 +312,7 @@ internal static class SidecarPreviewEvaluator
                     _ => -1
                 };
                 var weight = output.Find(weightHash)?.AsSingle() ?? 0f;
-                var input = values.GetAttribute(attribute);
+                var input = (attribute < 3 ? values.Rotation : values.Translation).Value.GetAttribute(attribute);
                 float value;
                 if (connectionType == 0)
                 {
@@ -333,7 +344,7 @@ internal static class SidecarPreviewEvaluator
             if (!group.DrivenBoneIndices.Contains(boneIndex))
                 continue;
             var name = BoneName(boneNames, boneIndex);
-            result.Add(BuildDrivenPose(
+            var pose = BuildDrivenPose(
                 name,
                 boneIndex,
                 GetInt(source, TargetSpaceHash),
@@ -350,10 +361,34 @@ internal static class SidecarPreviewEvaluator
                 ReadOutput(GetInt(source, TargetBendVHash)),
                 boneNames,
                 current,
-                rest, botw: true));
+                rest, botw: true);
+            result.Add(pose);
+            ApplyDrivenPose(current, pose);
         }
 
-        return new SidecarPreviewEvaluation(result, missing.OrderBy(name => name).ToArray());
+        return new SidecarPreviewEvaluation(result.Select(p => p.IsDriven && TryGetBone(current, p.Name, out var bone)
+            ? new SidecarBonePreviewPose(p.Name, bone!.Position, bone.Rotation, bone.Scale, true) : p).ToArray(),
+            missing.OrderBy(name => name).ToArray());
+    }
+
+    private static void ApplyDrivenPose(Dictionary<string, VisualModelBone> current, SidecarBonePreviewPose pose)
+    {
+        if (!TryGetBone(current, pose.Name, out var previous) || !Matrix4x4.Invert(ToMatrix(previous!), out var inverse)) return;
+        var world = Matrix4x4.CreateScale(pose.Scale) * Matrix4x4.CreateFromQuaternion(pose.Rotation) * Matrix4x4.CreateTranslation(pose.Position);
+        var delta = inverse * world;
+        var descendants = new HashSet<int> { previous!.Index };
+        var pending = new Queue<int>(); pending.Enqueue(previous.Index);
+        while (pending.TryDequeue(out var parent))
+            foreach (var bone in current.Values.Where(b => b.ParentIndex == parent))
+                if (descendants.Add(bone.Index)) pending.Enqueue(bone.Index);
+        foreach (var entry in current.Where(p => descendants.Contains(p.Value.Index)).ToArray())
+        {
+            var bone = entry.Value;
+            var matrix = bone.Index == previous.Index ? world : ToMatrix(bone) * delta;
+            if (Matrix4x4.Decompose(matrix, out var scale, out var rotation, out var position))
+                current[entry.Key] = new VisualModelBone { Index = bone.Index, ParentIndex = bone.ParentIndex, Name = bone.Name,
+                    Sources = bone.Sources, Position = position, Rotation = rotation, Scale = scale };
+        }
     }
 
     private static SidecarBonePreviewPose BuildDrivenPose(
@@ -539,7 +574,7 @@ internal static class SidecarPreviewEvaluator
     private static Vector3 NormalizeOrDefault(Vector3 value, Vector3 fallback) =>
         value.LengthSquared() > 0.000001f ? Vector3.Normalize(value) : fallback;
 
-    private static float EvaluateCurve(IReadOnlyList<Vector4> keys, float input)
+    internal static float EvaluateCurve(IReadOnlyList<Vector4> keys, float input)
     {
         if (keys.Count == 0)
             return 0f;
@@ -592,7 +627,7 @@ internal static class SidecarPreviewEvaluator
     private static string BoneName(IReadOnlyList<string> names, int index) =>
         (uint)index < (uint)names.Count ? names[index] : $"bone_{index}";
 
-    private static IReadOnlyDictionary<string, VisualModelBone> IndexBones(IEnumerable<VisualModelBone> bones) => bones
+    private static Dictionary<string, VisualModelBone> IndexBones(IEnumerable<VisualModelBone> bones) => bones
         .GroupBy(bone => NormalizeBoneName(bone.Name), StringComparer.OrdinalIgnoreCase)
         .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 

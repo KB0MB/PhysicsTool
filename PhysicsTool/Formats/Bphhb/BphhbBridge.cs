@@ -48,6 +48,8 @@ public sealed record BphhbOutputLink(int Connection0, int? Connection1);
 
 public static class BphhbBridge
 {
+    internal static BphhbDocumentSummary EditConnections(BphhbDocumentSummary document, Action<BotwAampWriter.AampListNode> edit) =>
+        Rebuild(document, root => edit(RequireDataRoot(root)));
     private const int HeaderSize = 0x30;
     private const uint BoneIdHash = 3407736066u;
     private const uint BaseBoneIdHash = 4279981158u;
@@ -173,6 +175,18 @@ public static class BphhbBridge
     /// </summary>
     public static BphhbDocumentSummary Export(BphyssbDocumentSummary source, string outputPath)
         => ExportWithParents(source, outputPath, null);
+
+    public static IReadOnlyList<string> GetConversionWarnings(BphyssbDocumentSummary source)
+    {
+        var data = source.Archive?.Root.Children.FirstOrDefault(child => child.FindChild("connection_curve_list") != null);
+        var curves = data?.FindChild("connection_curve_list")?.Objects;
+        if (curves == null) return Array.Empty<string>();
+        var extrapolated = curves.Count(curve =>
+            (!(curve.Find("constant_in")?.AsBoolean() ?? true) && curve.Find(CurveKey0Hash)?.AsVector4().Z != 0f) ||
+            (!(curve.Find("constant_out")?.AsBoolean() ?? true) && curve.Find(CurveKey2Hash)?.AsVector4().Z != 0f));
+        return extrapolated == 0 ? Array.Empty<string>() : new[] {
+            $"{extrapolated} support curve(s) extrapolate beyond their authored key range. BPHHB preview clamps outside that range; those extreme poses need in-game verification." };
+    }
 
     public static BphhbDocumentSummary ExportWithParents(
         BphyssbDocumentSummary source,
@@ -362,6 +376,39 @@ public static class BphhbBridge
         }
 
         var outputMap = new Dictionary<int, int>();
+        var weightedCurves = new Dictionary<(int Curve, float Weight), int>();
+
+        int MapWeightedCurve(AampReadObject output, uint connectionHash, string weightName)
+        {
+            var curveIndex = DecodeCurveReference(ReadRequiredAampInt(output, connectionHash, "output"));
+            if (curveIndex < 0) return -1;
+            if (curveIndex >= sourceCurves.Objects.Count)
+                throw new InvalidDataException($"BPHYSSB output references missing curve #{curveIndex}.");
+            var weight = output.Find(weightName)?.AsSingle() ?? 0f;
+            if (!float.IsFinite(weight)) throw new InvalidDataException("BPHYSSB output has a non-finite weight.");
+            if (weight == 1f) return curveIndex;
+            if (weightedCurves.TryGetValue((curveIndex, weight), out var existing)) return existing;
+
+            // BPHHB sums connections without a weight field. Bake each output's
+            // weight into its own Hermite values/tangents, not the shared source curve.
+            var original = sourceCurves.Objects[curveIndex];
+            var packed = ReadRequiredAampInt(original, SupportBoneAttributeHash, "connection_curve_list");
+            var target = new BotwAampWriter.AampObjectNode($"connection_curve_{curves.Objects.Count}");
+            target.Parameters.Add(RawInt(CurveDriverHash, (int)((uint)packed >> 16)));
+            target.Parameters.Add(RawInt(CurveAttributeHash, UnpackBoneAttribute(packed & 0xFFFF, curveIndex)));
+            target.Parameters.Add(RawInt(CurveKeyCountHash, 3));
+            foreach (var hash in new[] { CurveKey0Hash, CurveKey1Hash, CurveKey2Hash })
+            {
+                var key = original.Find(hash)?.AsVector4() ?? throw new InvalidDataException("Support curve is missing a key.");
+                var values = new[] { key.X, key.Y * weight, key.Z * weight, key.W * weight };
+                if (values.Any(value => !float.IsFinite(value))) throw new InvalidDataException("Weighted support curve is non-finite.");
+                target.Parameters.Add(BotwAampWriter.AampParameterNode.Raw(hash, 5, values.SelectMany(BitConverter.GetBytes).ToArray()));
+            }
+            var index = curves.Objects.Count;
+            curves.Objects.Add(target);
+            weightedCurves.Add((curveIndex, weight), index);
+            return index;
+        }
 
         int MapActiveOutput(int handle)
         {
@@ -378,15 +425,15 @@ public static class BphhbBridge
                 if (sourceDoubles == null || index >= sourceDoubles.Objects.Count)
                     throw new InvalidDataException($"BPHYSSB references missing double output #{index}.");
                 var sourceOutput = sourceDoubles.Objects[index];
-                connection0 = DecodeCurveReference(ReadRequiredAampInt(sourceOutput, SupportConnection0Hash, "output_double_list"));
-                connection1 = DecodeCurveReference(ReadRequiredAampInt(sourceOutput, SupportConnection1Hash, "output_double_list"));
+                connection0 = MapWeightedCurve(sourceOutput, SupportConnection0Hash, "weight_0");
+                connection1 = MapWeightedCurve(sourceOutput, SupportConnection1Hash, "weight_1");
             }
             else
             {
                 if (sourceSingles == null || handle >= sourceSingles.Objects.Count)
                     throw new InvalidDataException($"BPHYSSB references missing single output #{handle}.");
                 var sourceOutput = sourceSingles.Objects[handle];
-                connection0 = DecodeCurveReference(ReadRequiredAampInt(sourceOutput, SupportConnectionHash, "output_single_list"));
+                connection0 = MapWeightedCurve(sourceOutput, SupportConnectionHash, "weight");
                 connection1 = -1;
             }
 
@@ -561,12 +608,9 @@ public static class BphhbBridge
             var pose = FindList(data, PoseDrivenListHash);
             if (driven != null && pose != null)
             {
-                for (var index = 0; index < Math.Min(driven.Objects.Count, pose.Objects.Count); index++)
+                foreach (var record in driven.Objects.Where(o => GetInt(o, BoneIdHash) == boneIndex))
                 {
-                    if (GetInt(driven.Objects[index], BoneIdHash) != boneIndex)
-                        continue;
-
-                    var poseObject = pose.Objects[index];
+                    var poseObject = SidecarConnectionEditing.Pose(data, boneIndex, true, isolate: true);
                     SetInt(poseObject, BaseBoneIdHash, baseBoneIndex);
                     SetVector3(poseObject, "base_translate", translation);
                     SetVector4(poseObject, "base_rotate", rotation);
@@ -615,8 +659,8 @@ public static class BphhbBridge
                     .ToArray();
                 foreach (var entry in sourceDriven)
                 {
-                    if (pose == null || entry.index >= pose.Objects.Count)
-                        throw new InvalidDataException($"Driven record #{entry.index} has no matching pose record.");
+                    if (pose == null) throw new InvalidDataException("The helper has no pose table.");
+                    var sourcePoseIndex = SidecarConnectionEditing.SinglePose(entry.item, pose.Objects.Count);
 
                     var targetPoseIndex = pose.Objects.Count;
                     var clonedDriven = CloneObject(entry.item, $"driven_bone_{driven.Objects.Count}");
@@ -625,7 +669,7 @@ public static class BphhbBridge
                     RemapPoseDrivenId(clonedDriven, BotwAampWriter.Crc32("rotate_driven_id"), targetPoseIndex);
                     RemapPoseDrivenId(clonedDriven, BotwAampWriter.Crc32("aim_driven_id"), targetPoseIndex);
 
-                    var clonedPose = CloneObject(pose.Objects[entry.index], $"pose_driven_{targetPoseIndex}");
+                    var clonedPose = CloneObject(pose.Objects[sourcePoseIndex], $"pose_driven_{targetPoseIndex}");
                     foreach (var outputHash in PoseOutputHashes)
                         CloneDrivenOutput(clonedPose, outputHash, outputs, curves, outputMap, curveMap, sourceBoneIndex, newBoneIndex);
 
@@ -686,8 +730,7 @@ public static class BphhbBridge
             var curveMap = new Dictionary<int, int>();
             foreach (var sourceRecord in sourceRecords)
             {
-                if (sourceRecord.index >= poses.Objects.Count)
-                    throw new InvalidDataException($"Driven record #{sourceRecord.index} has no matching pose record.");
+                var sourcePoseIndex = SidecarConnectionEditing.SinglePose(sourceRecord.item, poses.Objects.Count);
 
                 var targetPoseIndex = poses.Objects.Count;
                 var clonedDriven = CloneObject(sourceRecord.item, $"driven_bone_{driven.Objects.Count}");
@@ -696,7 +739,7 @@ public static class BphhbBridge
                 RemapPoseDrivenId(clonedDriven, BotwAampWriter.Crc32("rotate_driven_id"), targetPoseIndex);
                 RemapPoseDrivenId(clonedDriven, BotwAampWriter.Crc32("aim_driven_id"), targetPoseIndex);
 
-                var clonedPose = CloneObject(poses.Objects[sourceRecord.index], $"pose_driven_{targetPoseIndex}");
+                var clonedPose = CloneObject(poses.Objects[sourcePoseIndex], $"pose_driven_{targetPoseIndex}");
                 foreach (var outputHash in PoseOutputHashes)
                     CloneDrivenOutput(clonedPose, outputHash, outputs, curves, outputMap, curveMap, int.MinValue, targetBoneIndex);
 
@@ -741,7 +784,8 @@ public static class BphhbBridge
             RemapBoneIds(FindList(data, DriverListHash)?.Objects, remap, BoneIdHash, BaseBoneIdHash);
             RemapBoneIds(FindList(data, DrivenListHash)?.Objects, remap, BoneIdHash);
             RemapBoneIds(FindList(data, PoseDrivenListHash)?.Objects, remap, BaseBoneIdHash);
-            RemapBoneIds(FindList(data, BotwAampWriter.Crc32("connection_curve_list"))?.Objects, remap, BotwAampWriter.Crc32("driver_bone_id"));
+            // Curves refer to driver-record indices, not entries in bone_list.
+            // Reordering the bone table does not reorder driver records.
         });
     }
 
@@ -863,8 +907,8 @@ public static class BphhbBridge
 
             foreach (var sourceDrivenIndex in group.DrivenIndices)
             {
-                if (sourceDrivenIndex >= sourceDriven.Objects.Count || sourceDrivenIndex >= sourcePoses.Objects.Count)
-                    throw new InvalidDataException($"Driven record #{sourceDrivenIndex} has no matching pose record.");
+                if (sourceDrivenIndex >= sourceDriven.Objects.Count) throw new InvalidDataException("Invalid driven record.");
+                var sourcePoseIndex = SidecarConnectionEditing.SinglePose(CloneObject(sourceDriven.Objects[sourceDrivenIndex]), sourcePoses.Objects.Count);
 
                 var targetPoseIndex = targetPoses.Objects.Count;
                 var clonedDriven = CloneObject(sourceDriven.Objects[sourceDrivenIndex], $"driven_bone_{targetDriven.Objects.Count}");
@@ -873,7 +917,7 @@ public static class BphhbBridge
                 RemapPoseDrivenId(clonedDriven, BotwAampWriter.Crc32("rotate_driven_id"), targetPoseIndex);
                 RemapPoseDrivenId(clonedDriven, BotwAampWriter.Crc32("aim_driven_id"), targetPoseIndex);
 
-                var sourcePose = sourcePoses.Objects[sourceDrivenIndex];
+                var sourcePose = sourcePoses.Objects[sourcePoseIndex];
                 var clonedPose = CloneObject(sourcePose, $"pose_driven_{targetPoseIndex}");
                 SetInt(clonedPose, BaseBoneIdHash, MapBone(sourcePose.Find(BaseBoneIdHash)?.AsInt32() ?? -1));
                 foreach (var outputHash in PoseOutputHashes)
@@ -906,6 +950,8 @@ public static class BphhbBridge
             var removedPoses = Enumerable.Range(0, poses.Objects.Count)
                 .Where(i => PoseOutputHashes.Any(hash => removedOutputs.Contains(GetInt(poses.Objects[i], hash))))
                 .ToHashSet();
+            foreach (var index in group.DrivenIndices)
+                removedPoses.Add(SidecarConnectionEditing.SinglePose(driven.Objects[index], poses.Objects.Count));
             var channels = new[] { "translate", "rotate", "aim" };
             var removedDriven = new HashSet<int>();
             for (var i = 0; i < driven.Objects.Count; i++)
@@ -1070,7 +1116,8 @@ public static class BphhbBridge
                 var drivenIndices = Enumerable.Range(0, driven.Objects.Count)
                     .Where(index => PoseIndexForDriven(index) is var poseIndex && poseIndex >= 0 && PoseOutputHashes
                         .Select(hash => poses.Objects[poseIndex].Find(hash)?.AsInt32() ?? -1)
-                        .Any(outputSet.Contains))
+                        .Any(outputSet.Contains) || groupIndex == 0 && PoseIndexForDriven(index) is var unconnectedPose && unconnectedPose >= 0 &&
+                            PoseOutputHashes.All(hash => (poses.Objects[unconnectedPose].Find(hash)?.AsInt32() ?? -1) < 0))
                     .ToArray();
                 var driverBoneIndices = driverIndices
                     .Select(index => drivers.Objects[index].Find(BoneIdHash)?.AsInt32() ?? -1)
@@ -1233,8 +1280,9 @@ public static class BphhbBridge
                 .Select(index => drivers.Objects[index]));
 
             var poses = RequireList(data, "pose_driven_list");
+            var driven = RequireList(data, "driven_bone_list");
             MirrorTransformRecords(group.DrivenIndices
-                .Where(index => index >= 0 && index < poses.Objects.Count)
+                .Select(index => SidecarConnectionEditing.SinglePose(driven.Objects[index], poses.Objects.Count)).Distinct()
                 .Select(index => poses.Objects[index]));
         });
     }
@@ -1261,11 +1309,8 @@ public static class BphhbBridge
             var pose = FindList(data, PoseDrivenListHash);
             if (driven != null && pose != null)
             {
-                for (var index = 0; index < Math.Min(driven.Objects.Count, pose.Objects.Count); index++)
-                {
-                    if (GetInt(driven.Objects[index], BoneIdHash) == boneIndex)
-                        MirrorTransformRecords(new[] { pose.Objects[index] });
-                }
+                if (driven.Objects.Any(o => GetInt(o, BoneIdHash) == boneIndex))
+                    MirrorTransformRecords(new[] { SidecarConnectionEditing.Pose(data, boneIndex, true, isolate: true) });
             }
         });
     }
@@ -1368,6 +1413,9 @@ public static class BphhbBridge
             Outputs = outputs
         };
     }
+
+    internal static BphhbDocumentSummary UpdateCurveKeys(BphhbDocumentSummary document, int index, IReadOnlyList<Vector4> keys) =>
+        Rebuild(document, root => SidecarCurveEditing.Write(RequireList(RequireDataRoot(root), "connection_curve_list"), index, keys));
 
     private static BphhbDocumentSummary Rebuild(BphhbDocumentSummary document, Action<BotwAampWriter.AampListNode> edit)
     {

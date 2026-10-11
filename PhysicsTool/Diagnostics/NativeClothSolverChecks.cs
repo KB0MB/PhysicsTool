@@ -148,7 +148,7 @@ internal static class NativeClothSolverChecks
         {
             typeof(HkclPreviewSimulator).GetMethod("SampleInputPose", methods)!.Invoke(sampleSolver, new object[] { inputs, fraction });
             var sampled = (ColliderPreviewShape)typeof(HkclPreviewSimulator).GetMethod("GetSubstepCollider", methods)!
-                .Invoke(sampleSolver, new object[] { offsetContact.Colliders[0], motions[0]!, fraction })!;
+                .Invoke(sampleSolver, new object[] { offsetContact.Colliders[0], motions.Values.Cast<object>().Single(), fraction })!;
             Near(sampled.TransformOrigin!.Value, Vector3.Lerp(Vector3.UnitX, origin, fraction), "Collider origin followed a bone arc instead of linear native substeps.");
             var rotatedLocalPoint = Vector3.Transform(-Vector3.UnitX, Matrix4x4.CreateRotationY(angle * fraction));
             Near(sampled.Start - sampled.TransformOrigin.Value, rotatedLocalPoint, "Collider substeps altered the authored shape offset.");

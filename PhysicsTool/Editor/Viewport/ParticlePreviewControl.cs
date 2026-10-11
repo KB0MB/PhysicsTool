@@ -2283,7 +2283,7 @@ public sealed class ParticlePreviewControl : GLControl
         if (_data == null || _data.RagdollConstraints.Count == 0)
             return;
 
-        var colliderCenters = _data.Colliders.ToDictionary(collider => collider.Index, GetColliderCenter);
+        var colliderCenters = _data.Colliders.DistinctBy(collider => collider.Index).ToDictionary(collider => collider.Index, GetColliderCenter);
         var lines = new List<Vector3>();
         foreach (var constraint in _data.RagdollConstraints)
         {

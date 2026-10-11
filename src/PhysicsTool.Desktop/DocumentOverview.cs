@@ -15,6 +15,8 @@ public sealed class DocumentOverview : UserControl
     private readonly TextBlock _currentFile = FileLabel(), _donorFile = FileLabel(), _bonesTitle = Heading("Bones");
     private readonly TextBlock _currentEmpty = Empty("No physics file loaded"), _donorEmpty = Empty("No donor file loaded"), _bonesEmpty = Empty("No bones selected");
     private readonly Button _remove = new() { Content = "Remove selected" }, _duplicate = new() { Content = "Duplicate selected" }, _merge = new() { Content = "Merge selected (M)" }, _clear = new() { Content = "Clear donor" };
+    private readonly Button _openDonor = new() { Name = "OpenDonor", Content = "Open Donor" };
+    internal Button SwapButton { get; } = new() { Name = "SwapFiles", Content = "Swap files" };
     private readonly MenuItem _renameMenu = new() { Header = "Rename" }, _duplicateMenu = new() { Header = "Duplicate" }, _removeMenu = new() { Header = "Remove" };
     private EditorSession? _session;
     private EditorSession? _donorSession;
@@ -26,6 +28,8 @@ public sealed class DocumentOverview : UserControl
     public event Action? RenameRequested;
     public event Action? MergeRequested;
     public event Action? ClearDonorRequested;
+    public event Action? OpenDonorRequested;
+    public event Action? SwapRequested;
 
     public DocumentOverview()
     {
@@ -40,9 +44,12 @@ public sealed class DocumentOverview : UserControl
         files.Children.Add(Section("Current file", _currentFile, _current, _currentEmpty, currentActions));
         var rowSplit = new GridSplitter { ResizeDirection = GridResizeDirection.Rows, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetRow(rowSplit, 1); files.Children.Add(rowSplit);
         var donorActions = new WrapPanel();
+        _openDonor.Margin = SwapButton.Margin = new Thickness(0, 0, 8, 4);
+        _openDonor.Click += (_, _) => OpenDonorRequested?.Invoke(); donorActions.Children.Add(_openDonor);
         _merge.Margin = _clear.Margin = new Thickness(0, 0, 8, 4);
         _merge.Click += (_, _) => MergeRequested?.Invoke(); donorActions.Children.Add(_merge);
         _clear.Click += (_, _) => ClearDonorRequested?.Invoke(); donorActions.Children.Add(_clear);
+        SwapButton.Click += (_, _) => SwapRequested?.Invoke(); donorActions.Children.Add(SwapButton);
         var donor = Section("Donor file", _donorFile, _donorList, _donorEmpty, donorActions); Grid.SetRow(donor, 2); files.Children.Add(donor);
         layout.Children.Add(files);
         var split = new GridSplitter { ResizeDirection = GridResizeDirection.Columns, HorizontalAlignment = HorizontalAlignment.Stretch }; Grid.SetColumn(split, 1); layout.Children.Add(split);
@@ -89,10 +96,15 @@ public sealed class DocumentOverview : UserControl
         try
         {
             _currentFile.Text = FileName(session);
-            var rows = session.Document.GetClothSummaries(); _current.ItemsSource = rows; _current.SelectedIndex = rows.Count > 0 ? session.ClothIndex : -1;
+            var rows = session.Document.GetClothSummaries();
+            // Keep item containers alive between the two presses of a double-click.
+            if (!_current.Items.Cast<string>().SequenceEqual(rows)) _current.ItemsSource = rows;
+            _current.SelectedIndex = rows.Count > 0 ? session.ClothIndex : -1;
             _currentEmpty.IsVisible = rows.Count == 0;
             _donorFile.Text = FileName(donor);
-            var donorRows = donor.Document.GetClothSummaries(); _donorList.ItemsSource = donorRows; _donorList.SelectedIndex = donorRows.Count > 0 ? donor.ClothIndex : -1;
+            var donorRows = donor.Document.GetClothSummaries();
+            if (!_donorList.Items.Cast<string>().SequenceEqual(donorRows)) _donorList.ItemsSource = donorRows;
+            _donorList.SelectedIndex = donorRows.Count > 0 ? donor.ClothIndex : -1;
             _donorEmpty.IsVisible = donorRows.Count == 0; UpdateActions();
             ShowCurrentBones();
         }
@@ -106,6 +118,11 @@ public sealed class DocumentOverview : UserControl
         _duplicate.IsEnabled = _duplicateMenu.IsEnabled = _renameMenu.IsEnabled = _session?.CanManageCloth == true;
         _merge.IsEnabled = _session?.Document.HasDocument == true && _donorSession?.HasSelectedEntry == true && !_session.Document.IsHkrg && !_donorSession.Document.IsHkrg;
         _clear.IsEnabled = _donorSession?.Document.HasDocument == true;
+        var currentLoaded = _session?.Document.HasDocument == true;
+        var donorLoaded = _donorSession?.Document.HasDocument == true;
+        _openDonor.IsVisible = currentLoaded && !donorLoaded;
+        _merge.IsVisible = _clear.IsVisible = SwapButton.IsVisible = currentLoaded && donorLoaded;
+        SwapButton.IsEnabled = currentLoaded && donorLoaded;
     }
     private void ShowCurrentBones()
     {
@@ -128,6 +145,8 @@ public sealed class DocumentOverview : UserControl
         DockPanel.SetDock(file, Dock.Top); dock.Children.Add(file);
         actions.Margin = new Thickness(0, 10, 0, 10); DockPanel.SetDock(actions, Dock.Bottom); dock.Children.Add(actions);
         var content = new Grid(); content.Children.Add(list); content.Children.Add(empty);
-        dock.Children.Add(new Border { BorderBrush = new SolidColorBrush(Color.Parse("#484B4D")), BorderThickness = new Thickness(1), Child = content }); return dock;
+        var border = new Border { BorderThickness = new Thickness(1), Child = content };
+        border.Bind(Border.BorderBrushProperty, new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("PhysicsBorder"));
+        dock.Children.Add(border); return dock;
     }
 }

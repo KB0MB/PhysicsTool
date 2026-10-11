@@ -9,14 +9,16 @@ public static class PortableModelImporter
     public static readonly string[] Extensions = [".fbx", ".dae", ".obj", ".gltf", ".glb", ".bfres", ".sbfres"];
     private static readonly Lazy<VisualModelTexture> EyeGlint = new(() => ModelTextures.Resource("EyeGlint.png"));
     internal static void ConfigureBfres() => HKCLTool.VisualModelImporter.EyeGlint = () => EyeGlint.Value;
-    public static VisualModelData Load(string path)
+    public static VisualModelData Load(string path) => LoadRig(path).Rest;
+    public static ImportedModelRig LoadRig(string path)
     {
         path = Path.GetFullPath(path);
         if (!Extensions.Contains(Path.GetExtension(path).ToLowerInvariant()))
             throw new NotSupportedException("Select a BFRES, SBFRES, FBX, DAE, OBJ, glTF, or GLB model.");
         if (Path.GetExtension(path).Equals(".bfres", StringComparison.OrdinalIgnoreCase) ||
             Path.GetExtension(path).Equals(".sbfres", StringComparison.OrdinalIgnoreCase))
-        { ConfigureBfres(); return new BfresModelPose(path).Sample(null, null); }
+        { ConfigureBfres(); var rig = new BfresModelPose(path); var rest = rig.Sample(null, null); return new(rest, overrides => rig.Sample(rest, overrides))
+            { NativeSkeleton = (clip, frame, suppressed) => rig.Sample(null, null, clip, frame, suppressed, true) }; }
         using var context = new AssimpContext();
         var scene = context.ImportFile(path, PostProcessSteps.Triangulate | PostProcessSteps.GenerateSmoothNormals |
             PostProcessSteps.SortByPrimitiveType | PostProcessSteps.ValidateDataStructure);
@@ -27,11 +29,13 @@ public static class PortableModelImporter
         if (!float.IsFinite(unit) || unit <= 0) throw new InvalidDataException("Invalid model unit scale.");
         var result = new VisualModelData { SourcePath = path, BoundsMinimum = new(float.MaxValue), BoundsMaximum = new(float.MinValue) };
         var textures = new Dictionary<string, VisualModelTexture?>();
+        var worlds = new List<Matrix4x4>();
+        var weights = new List<AssimpModelSkin.MeshWeights>();
         Visit(scene.RootNode, Matrix4x4.CreateScale(unit), -1, 0);
         if (result.Meshes.Count == 0) throw new InvalidDataException("The model contains no triangles.");
         result.DefaultTextureMeshCount = result.Meshes.Count(m => m.Texture == null);
-        if (scene.HasAnimations) result.Warnings.Add("Animations are present; this preview currently displays the imported static pose.");
-        return result;
+        var skin = new AssimpModelSkin(result, worlds, weights);
+        return new(result, skin.Sample) { UnitScale = unit };
 
         void Visit(Node node, Matrix4x4 parent, int parentIndex, int depth)
         {
@@ -42,11 +46,12 @@ public static class PortableModelImporter
             if (!Matrix4x4.Decompose(world, out var s, out var r, out var p))
                 throw new InvalidDataException("Model contains a singular transform.");
             result.Bones.Add(new() { Index = boneIndex, ParentIndex = parentIndex, Name = node.Name, Position = p, Rotation = r, Scale = s });
-            foreach (var index in node.MeshIndices) AddMesh(scene.Meshes[index], world, node.Name);
+            worlds.Add(world);
+            foreach (var index in node.MeshIndices) AddMesh(scene.Meshes[index], world, node.Name, boneIndex);
             foreach (var child in node.Children) Visit(child, world, boneIndex, depth + 1);
         }
 
-        void AddMesh(Mesh source, Matrix4x4 world, string nodeName)
+        void AddMesh(Mesh source, Matrix4x4 world, string nodeName, int nodeIndex)
         {
             var indices = source.Faces.Where(f => f.IndexCount == 3).SelectMany(f => f.Indices).Select(i => checked((uint)i)).ToArray();
             if (indices.Length == 0) return;
@@ -80,6 +85,12 @@ public static class PortableModelImporter
                 mesh.Material.AlbedoUvSet = "UV" + albedoSlot.UVIndex;
             if (material.GetMaterialTexture(TextureType.Normals, 0, out var slot)) mesh.Material.NormalUvSet = "UV" + slot.UVIndex;
             result.Meshes.Add(mesh);
+            var influences = Enumerable.Range(0, source.VertexCount).Select(_ => new List<AssimpModelSkin.Weight>()).ToArray();
+            foreach (var bone in source.Bones)
+                foreach (var weight in bone.VertexWeights)
+                    if (weight.VertexID >= 0 && weight.VertexID < influences.Length)
+                        influences[weight.VertexID].Add(new(bone.Name, weight.Weight));
+            weights.Add(new(nodeIndex, influences));
         }
 
         VisualModelTexture? Texture(Material material, TextureType type)

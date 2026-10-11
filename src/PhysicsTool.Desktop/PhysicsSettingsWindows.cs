@@ -15,7 +15,6 @@ internal class PhysicsSettingsWindow : Window
     protected PhysicsSettingsWindow(string title, double height)
     {
         Title = title; Width = 620; Height = height; MinWidth = 460; MinHeight = 300;
-        Background = new SolidColorBrush(Color.Parse("#303234"));
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var content = new DockPanel(); DockPanel.SetDock(Actions, Dock.Bottom); content.Children.Add(Actions);
         DockPanel.SetDock(Error, Dock.Bottom); content.Children.Add(Error);

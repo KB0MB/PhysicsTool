@@ -32,6 +32,18 @@ public sealed record PreviewOptions
         solver.WindSpeed = WindSpeed; solver.WindGustiness = Gustiness;
         solver.GravityScale = GravityScale; solver.SolverIterations = SolverPasses;
     }
+    public void ApplyTo(HkrgGlidePreviewSimulator solver)
+    {
+        Validate();
+        solver.RandomWindDirections = Direction == WindAxis.Random;
+        solver.WindDirection = Direction switch
+        {
+            WindAxis.NegativeX => -Vector3.UnitX, WindAxis.PositiveY => Vector3.UnitY, WindAxis.NegativeY => -Vector3.UnitY,
+            WindAxis.PositiveZ => Vector3.UnitZ, WindAxis.NegativeZ => -Vector3.UnitZ, _ => Vector3.UnitX
+        };
+        solver.WindSpeed = WindSpeed; solver.WindGustiness = Gustiness;
+        solver.GravityScale = GravityScale; solver.SolverIterations = Math.Min(32, 7 * SolverPasses);
+    }
 }
 
 public sealed class PreviewStepClock

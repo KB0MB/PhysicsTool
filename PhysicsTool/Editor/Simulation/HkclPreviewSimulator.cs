@@ -41,6 +41,8 @@ public sealed class HkclPreviewSimulator
     private readonly int _authoredSolveIterations;
     private readonly bool _adaptConstraintStiffness;
     private readonly bool _useNativeHkclInputSampling;
+    private readonly ClothSolverProfile _profile;
+    private readonly Dictionary<int, Vector3> _particleForces = new();
     private readonly bool _transferMotionEnabled;
     private readonly int _transferMotionTransformIndex;
     private readonly bool _transferTranslationMotion;
@@ -67,6 +69,7 @@ public sealed class HkclPreviewSimulator
 
     public HkclPreviewSimulator(ParticlePreviewData source)
     {
+        _profile = source.SolverProfile;
         _particles = source.Particles.ToDictionary(
             particle => particle.Index,
             particle => new SimParticle(particle));
@@ -107,6 +110,27 @@ public sealed class HkclPreviewSimulator
             .ToDictionary(
                 group => group.Key,
                 group => (IReadOnlyList<ParticlePreviewBoneWeight>)group.Last().BoneWeights.ToArray());
+        if (_profile == ClothSolverProfile.TotkExperimental)
+        {
+            // MoveParticles supplies fixed inputs only. Free particles also need
+            // their authored skin weights when resetting/seeking the preview.
+            // Keep LocalRange's original reference vertices intact for solving.
+            foreach (var range in source.LocalRanges)
+            {
+                if (_particleAttachments.ContainsKey(range.ParticleIndex) ||
+                    !_particles.TryGetValue(range.ParticleIndex, out var particle) || particle.Fixed) continue;
+                var weights = range.ReferenceBoneWeights.Where(w => float.IsFinite(w.Weight) && w.Weight > 0 && w.ReferencePosition.HasValue).ToArray();
+                float total = weights.Sum(w => w.Weight);
+                if (total <= 0.000001f) continue;
+                var reference = weights.Aggregate(Vector3.Zero, (p, w) => p + w.ReferencePosition!.Value * (w.Weight / total));
+                var offset = particle.RestPosition - reference;
+                _particleAttachments.Add(particle.Index, weights.Select(w => new ParticlePreviewBoneWeight
+                {
+                    BoneIndex = w.BoneIndex, Weight = w.Weight,
+                    ReferencePosition = w.ReferencePosition!.Value + offset
+                }).ToArray());
+            }
+        }
         _boneParents = source.Bones.ToDictionary(bone => bone.Index, bone => bone.ParentIndex);
         _triangleDrivenBones = _boneBindings.Select(binding => binding.BoneIndex).ToHashSet();
         _boneBindingCalibrations = _boneBindings.ToDictionary(binding => binding, CalibrateBoneBinding);
@@ -117,7 +141,7 @@ public sealed class HkclPreviewSimulator
         _authoredSubSteps = Math.Clamp(source.SimulationSubSteps, 1, 32);
         _authoredSolveIterations = Math.Clamp(source.SimulationSolveIterations, 1, 32);
         _adaptConstraintStiffness = source.AdaptConstraintStiffness;
-        _useNativeHkclInputSampling = source.UseNativeHkclInputSampling;
+        _useNativeHkclInputSampling = source.UseNativeHkclInputSampling || _profile == ClothSolverProfile.TotkExperimental;
         _transferMotionEnabled = source.TransferMotionEnabled;
         _transferMotionTransformIndex = source.TransferMotionTransformIndex;
         _transferTranslationMotion = source.TransferTranslationMotion;
@@ -138,6 +162,7 @@ public sealed class HkclPreviewSimulator
             particle.Reset(GetParticleReferencePosition(particle));
         _windTime = 0.0f;
         NumericalResetCount = 0;
+        _particleForces.Clear();
         _previousIntegrationStep = 0.0f;
         RememberInputPose();
         _nextRandomWindChange = 0.0f;
@@ -155,7 +180,10 @@ public sealed class HkclPreviewSimulator
 
     public IReadOnlyDictionary<int, ColliderPreviewShape> GetColliderPoses()
     {
-        return _colliders.ToDictionary(
+        // Collision masks address slots, which may reference the same native
+        // collider repeatedly. Only the viewport pose map is keyed by unique
+        // collider ID; keep all slots in _colliders for solving and pinching.
+        return _colliders.DistinctBy(collider => collider.Index).ToDictionary(
             collider => collider.Index,
             collider => GetAnimatedCollider(collider));
     }
@@ -178,6 +206,18 @@ public sealed class HkclPreviewSimulator
     public int LastBindingFallbackCount { get; private set; }
     public int LastBindingFlipCorrectionCount { get; private set; }
     public int NumericalResetCount { get; private set; }
+    public ClothSolverProfile Profile => _profile;
+
+    // One-frame force accumulator matching TotK's action buffer, before inverse mass.
+    public void SetParticleForces(IReadOnlyDictionary<int, Vector3> forces)
+    {
+        if (_profile != ClothSolverProfile.TotkExperimental)
+            throw new NotSupportedException("Native action forces are available in the TotK runtime only.");
+        if (forces.Any(pair => !_particles.ContainsKey(pair.Key) || !IsFinite(pair.Value)))
+            throw new ArgumentException("Forces must reference existing particles and be finite.", nameof(forces));
+        _particleForces.Clear();
+        foreach (var pair in forces) _particleForces.Add(pair.Key, pair.Value);
+    }
 
     /// <summary>
     /// Supplies rest-world to current-world skeleton transforms for this frame.
@@ -268,9 +308,9 @@ public sealed class HkclPreviewSimulator
         }
     }
 
-    private Dictionary<int, ColliderMotion> BuildColliderMotions(IReadOnlyDictionary<int, Matrix4x4> target, float dt)
+    private Dictionary<ColliderPreviewShape, ColliderMotion> BuildColliderMotions(IReadOnlyDictionary<int, Matrix4x4> target, float dt)
     {
-        var result = new Dictionary<int, ColliderMotion>();
+        var result = new Dictionary<ColliderPreviewShape, ColliderMotion>();
         foreach (var collider in _colliders)
         {
             var start = _previousInputBoneDeltas.GetValueOrDefault(collider.BoneIndex, Matrix4x4.Identity);
@@ -288,7 +328,7 @@ public sealed class HkclPreviewSimulator
                 var sine = xyz.Length();
                 if (sine > 1e-8f) angular = xyz * (2f * MathF.Atan2(sine, rotation.W) / (sine * dt));
             }
-            result[collider.Index] = new ColliderMotion(pivot, startPivot, endPivot, velocity, angular);
+            result[collider] = new ColliderMotion(pivot, startPivot, endPivot, velocity, angular);
         }
         return result;
     }
@@ -1103,7 +1143,7 @@ public sealed class HkclPreviewSimulator
             _subStepIndex = subStepIndex;
             SampleInputPose(frameInput, (subStepIndex + 1f) / subSteps);
             var colliders = _colliders.Select(source => new MovingCollider(
-                GetSubstepCollider(source, motions[source.Index], (subStepIndex + 1f) / subSteps), motions[source.Index])).ToArray();
+                GetSubstepCollider(source, motions[source], (subStepIndex + 1f) / subSteps), motions[source])).ToArray();
             var windDirection = GetWindDirection(subStep);
             var gust = 1.0f + MathF.Sin(_windTime * 1.8f) * Math.Clamp(WindGustiness, 0.0f, 1.0f);
             var wind = WindEnabled ? windDirection * Math.Max(0.0f, WindSpeed) * gust : Vector3.Zero;
@@ -1128,6 +1168,7 @@ public sealed class HkclPreviewSimulator
         _inputBoneDeltas.Clear();
         foreach (var entry in frameInput) _inputBoneDeltas.Add(entry.Key, entry.Value);
         RememberInputPose();
+        _particleForces.Clear();
     }
 
     private void SolveConstraintSet(int constraintSetIndex,
@@ -1181,10 +1222,17 @@ public sealed class HkclPreviewSimulator
         }
 
         var blend = 1.0f - MathF.Exp(-deltaSeconds * 2.2f);
-        var blended = Vector3.Lerp(_currentWindDirection, _targetWindDirection, blend);
-        _currentWindDirection = blended.LengthSquared() > 0.000001f
-            ? Vector3.Normalize(blended)
-            : _targetWindDirection;
+        var dot = Math.Clamp(Vector3.Dot(_currentWindDirection, _targetWindDirection), -1f, 1f);
+        if (dot > .9999f) _currentWindDirection = _targetWindDirection;
+        else
+        {
+            var axis = Vector3.Cross(_currentWindDirection, _targetWindDirection);
+            // Normalized linear blending cannot leave an exactly opposite direction.
+            if (axis.LengthSquared() < .000001f)
+                axis = Vector3.Cross(_currentWindDirection, MathF.Abs(_currentWindDirection.Y) < .9f ? Vector3.UnitY : Vector3.UnitX);
+            var rotation = Quaternion.CreateFromAxisAngle(Vector3.Normalize(axis), MathF.Acos(dot) * blend);
+            _currentWindDirection = Vector3.Normalize(Vector3.Transform(_currentWindDirection, rotation));
+        }
         return _currentWindDirection;
     }
 
@@ -1213,7 +1261,12 @@ public sealed class HkclPreviewSimulator
                 (particle.Position - particle.PreviousPosition) * (damping * timeRatio),
                 MaximumPreviewSpeed * deltaSeconds);
             particle.PreviousPosition = particle.Position;
-            particle.Position += velocity + (_gravity * Math.Max(0.0f, GravityScale) + wind) * (deltaSeconds * deltaSeconds);
+            // TotK 710059aee0 integrates (actionForce + gravity * mass) * inverseMass.
+            // Preview wind remains an acceleration, not a reconstructed game action.
+            var gravityWeight = _profile == ClothSolverProfile.TotkExperimental
+                ? particle.Mass * particle.EffectiveInverseMass : 1f;
+            var forceAcceleration = _particleForces.GetValueOrDefault(particle.Index) * particle.EffectiveInverseMass;
+            particle.Position += velocity + (_gravity * (Math.Max(0.0f, GravityScale) * gravityWeight) + forceAcceleration + wind) * (deltaSeconds * deltaSeconds);
         }
     }
 
@@ -1352,7 +1405,12 @@ public sealed class HkclPreviewSimulator
                 if (area1 > 1e-10f && area2 > 1e-10f && edge.LengthSquared() > 1e-12f)
                 {
                     var normal = NormalizeOrFallback(n1 / area1 + n2 / area2, Vector3.Zero);
-                    error += normal * (area1 * area2 / edge.LengthSquared() * bend.RestCurvature);
+                    var height = area1 * area2 / edge.LengthSquared() * bend.RestCurvature;
+                    // TotK's rest-pose kernel disables this correction above the
+                    // authored squared-height limit. BotW has no equivalent flag.
+                    if (bend.ClampBendStiffness && height * height > bend.MaxRestPoseHeightSq)
+                        continue;
+                    error += normal * height;
                 }
             }
             if (!IsFinite(error) || error.LengthSquared() <= 0.000000000001f)
@@ -1719,6 +1777,18 @@ public sealed class HkclPreviewSimulator
         out CollisionContact contact,
         float detectionMargin = 0f)
     {
+        if (collider.Kind == ColliderPreviewKind.TaperedCapsule)
+        {
+            var distance = CapsuleProfile.Create(collider).SignedDistance(particle.Position,
+                particle.Position - particle.PreviousPosition, out var normal);
+            if (distance >= particle.Radius + detectionMargin)
+            {
+                contact = default;
+                return false;
+            }
+            contact = new CollisionContact(normal, particle.Radius - distance, collider.Index);
+            return true;
+        }
         var axis = collider.End - collider.Start;
         var axisLengthSquared = axis.LengthSquared();
         var t = axisLengthSquared > 0.000001f
@@ -1726,11 +1796,7 @@ public sealed class HkclPreviewSimulator
             : 0.0f;
         var center = collider.Start + axis * t;
         // BotW hclCapsuleShape (main: 7101d9efa0) has one radius.
-        // Only the separately represented tapered shape interpolates radii.
-        var radius = collider.Kind == ColliderPreviewKind.TaperedCapsule
-            ? collider.Radius + (collider.EndRadius - collider.Radius) * t
-            : collider.Radius;
-        return TryGetSphereContact(particle, center, radius, collider.Index, out contact, detectionMargin);
+        return TryGetSphereContact(particle, center, collider.Radius, collider.Index, out contact, detectionMargin);
     }
 
     private static bool TryGetPlaneContact(
@@ -1783,6 +1849,7 @@ public sealed class HkclPreviewSimulator
             PreviousPosition = source.Position;
             Fixed = source.Fixed || source.InverseMass <= 0.0f;
             InverseMass = source.InverseMass;
+            Mass = source.Mass;
             Radius = Math.Max(0.0f, source.Radius);
             Friction = Math.Clamp(source.Friction, 0.0f, 1.0f);
             CollisionMask = source.CollisionMask;
@@ -1794,6 +1861,7 @@ public sealed class HkclPreviewSimulator
         public Vector3 PreviousPosition { get; set; }
         public bool Fixed { get; }
         public float InverseMass { get; }
+        public float Mass { get; }
         public float Radius { get; }
         public float Friction { get; }
         public uint CollisionMask { get; }

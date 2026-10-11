@@ -60,6 +60,9 @@ public sealed record StandaloneBphclClothGraph(
     IReadOnlyList<StandaloneBphclBoneBinding> BoneBindings,
     IReadOnlyList<VolumeConstraintSetData> VolumeSets)
 {
+    // Keep solver semantics independently of the regenerated buffer/operator layout.
+    public ClothSimulateConfigData? GeneratedSimulateConfig { get; init; }
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Name))
@@ -74,18 +77,15 @@ public sealed record StandaloneBphclClothGraph(
         foreach (var particle in Particles)
         {
             if (!float.IsFinite(particle.Position.X) || !float.IsFinite(particle.Position.Y) || !float.IsFinite(particle.Position.Z) ||
-                !float.IsFinite(particle.Mass) || !float.IsFinite(particle.Radius) || !float.IsFinite(particle.Friction))
+                !float.IsFinite(particle.Mass) || !float.IsFinite(particle.InverseMass) ||
+                particle.Mass < 0 || particle.InverseMass < 0 ||
+                !float.IsFinite(particle.Radius) || !float.IsFinite(particle.Friction))
             {
                 throw new InvalidDataException($"Cloth '{Name}' particle {particle.Index} has a non-finite value.");
             }
 
             if (particle.Fixed && (particle.Mass != 0.0f || particle.InverseMass != 0.0f))
                 throw new InvalidDataException($"Cloth '{Name}' fixed particle {particle.Index} must have zero mass and inverse mass.");
-            if (!particle.Fixed && particle.Mass > 0.0f &&
-                MathF.Abs(particle.InverseMass - 1.0f / particle.Mass) > 0.001f)
-            {
-                throw new InvalidDataException($"Cloth '{Name}' particle {particle.Index} has inconsistent mass and inverse mass.");
-            }
         }
 
         foreach (var triangle in Triangles)

@@ -69,15 +69,55 @@ internal static class DocumentChecks
         b.Undo(); Require(!b.IsDirty, "Swap lost undo history"); b.Redo(); a.SwapWith(b);
         Require(a.IsDirty && a.Document.CaptureState() == aState, "Double swap lost edits");
         var bphcl = new EditorSession(); bphcl.Load(Path.Combine(output, "manual-2.bphcl"));
-        var beforeRejectedMerge = bphcl.Document.CaptureState();
-        Require(!bphcl.PreviewMerge(a).Allowed, "Invalid cross-format merge enabled");
-        try { bphcl.MergeFrom(a); throw new Exception("Invalid merge accepted"); }
-        catch (InvalidOperationException) { }
-        Require(bphcl.Document.CaptureState() == beforeRejectedMerge && !bphcl.CanUndo, "Blocked merge changed history");
+        CrossMerge(bphcl, a, Path.Combine(output, "cross-merged.bphcl"));
+        var hkcl = new EditorSession(); hkcl.Load(Path.Combine(output, "manual-1.hkcl")); hkcl.RenameSelected("SwitchTarget");
+        CrossMerge(hkcl, bphcl, Path.Combine(output, "cross-merged.hkcl"));
+        foreach (var fixture in new[] { "fixture-Armor_1106_RaulSkin_Upper.bphcl", "fixture-Npc_Zelda_AncientHyrule.hkcl" })
+        {
+            if (!File.Exists(Path.Combine(output, fixture))) continue;
+            var source = new EditorSession(); source.Load(Path.Combine(output, fixture));
+            source.ClothIndex = source.Document.GetClothSummaries().Count - 1;
+            var target = new EditorSession(); target.Load(Path.Combine(output, fixture.EndsWith(".bphcl") ? "manual-0.hkcl" : "manual-2.bphcl"));
+            target.RenameSelected("CrossFormatTarget");
+            CrossMerge(target, source, Path.Combine(output, "cross-real-" + (target.Document.IsBphcl ? "totk.bphcl" : "botw.hkcl")));
+        }
         b.RemoveSelected(); Require(b.Document.GetClothSummaries().Count == 0 && !b.CanSimulate, "Empty document state");
         b.Save(Path.Combine(output, "empty.hkcl")); b.Undo(); Require(b.HasSelectedEntry, "Empty removal cannot be undone");
         try { a.Load(Path.Combine(output, "missing.hkcl")); throw new Exception("Missing file accepted"); } catch (FileNotFoundException) { }
         Require(a.Document.CaptureState() == aState, "Failed load replaced unsaved document");
         Console.WriteLine("PASS: overview rename/duplicate/remove/merge, format guards, save/export, selection undo, and lossless current/donor swap.");
+    }
+    private static void CrossMerge(EditorSession target, EditorSession source, string output)
+    {
+        static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
+        var original = target.Document.CaptureState(); var donor = source.Document.CaptureState();
+        var count = target.Document.GetClothSummaries().Count;
+        var originalParticles = target.Document.GetParticleRows(0).Select(p => (p.X, p.Y, p.Z, p.Mass, p.InverseMass)).ToArray();
+        var expected = PhysicsConversion.ConvertSelectedCloth(source.Document, source.ClothIndex, target.Platform);
+        var expectedParticles = expected.GetParticleRows(0).Select(p => (p.X, p.Y, p.Z, p.Mass, p.InverseMass)).ToArray();
+        var preview = target.PreviewMerge(source); Require(preview.Allowed, "Cross merge blocked: " + preview.Description);
+        Require(target.Document.CaptureState() == original && source.Document.CaptureState() == donor, "Merge preview mutated files");
+        target.MergeFrom(source);
+        Require(target.Document.GetClothSummaries().Count == count + 1, "Cross merge imported more than the selected cloth");
+        Require(originalParticles.SequenceEqual(target.Document.GetParticleRows(0).Select(p => (p.X, p.Y, p.Z, p.Mass, p.InverseMass))), "Merge changed current cloth particles");
+        Require(expectedParticles.SequenceEqual(target.Document.GetParticleRows(count).Select(p => (p.X, p.Y, p.Z, p.Mass, p.InverseMass))), "Merge used different conversion/mass defaults");
+        Require(source.Document.CaptureState() == donor, "Cross merge changed donor");
+        var merged = target.Document.CaptureState(); target.Undo(); Require(target.Document.CaptureState() == original, "Cross merge undo not lossless");
+        target.Redo(); Require(target.Document.CaptureState() == merged, "Cross merge redo not lossless");
+        target.ExportCopy(output); var reload = new EditorSession(); reload.Load(output);
+        Require(reload.Document.GetClothSummaries().Count == count + 1, "Cross merge did not survive save/reopen");
+        if (reload.Document.IsBphcl)
+        {
+            var native = NativeBphclDocument.Open(output);
+            var storage = BphclSchemaAudit.ValidateArrayStorageTypes(native);
+            Require(storage.Count == 0, "Merged BPHCL array storage mismatch: " + string.Join("; ", storage.Take(5)));
+            Require(native.Skeletons.Count == native.Cloths.Count && native.AampClothEntryNames.SequenceEqual(native.Cloths.Select(c => c.Name)), "Merged BPHCL root registration mismatch");
+            var colliderItems = native.Colliders.Select(c => c.ItemIndex).ToHashSet();
+            Require(native.Cloths.SelectMany(c => c.SimCloths).SelectMany(c => c.CollidableItemIndices).All(colliderItems.Contains), "Merged BPHCL has an unregistered collider");
+            var alignment = native.TypeDefinitions.GroupBy(t => t.TypeIndex).ToDictionary(g => g.Key, g => g.First().Alignment ?? 1);
+            Require(native.Items.All(i => alignment.GetValueOrDefault(i.TypeIndex, 1u) <= 1 || i.DataOffset % alignment[i.TypeIndex] == 0), "Merge broke native alignment");
+        }
+        Require(expectedParticles.SequenceEqual(reload.Document.GetParticleRows(count).Select(p => (p.X, p.Y, p.Z, p.Mass, p.InverseMass))), "Cross merge changed converted particles after saving");
+        target.Undo();
     }
 }

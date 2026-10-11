@@ -1,0 +1,17 @@
+Updated PhysicsTool to 2.0
+
+- Updated the UI to Avalonia
+- Expanded cloth, helper-bone, ragdoll and collision editing
+- Improved cloth/support-bone conversion and cross-format donor merging
+- Added BotW and TotK actor viewing, BFRES materials and animation previews
+- Improved viewport controls, selection, transforms and timelines
+- Simplified file workflows and editing documentation
+- Expanded French, Spanish and Japanese translations
+- Added Windows, Linux and macOS packages for x64 and ARM64
+- Massively improved Havok simulation, bringing cloth and helper-bone behavior much closer to the games
+- Included release notes, dependency notices and SHA-256 checksums
+
+Validated on Windows x64 and Linux x64 through WSLg.
+macOS and ARM64 builds still need native testing.
+Packages are unsigned; macOS builds are not notarized.
+Translated all in-app documentation into French, Spanish and Japanese; some diagnostics remain English.

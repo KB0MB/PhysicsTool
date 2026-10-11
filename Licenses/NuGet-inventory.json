@@ -1,0 +1,272 @@
+[
+  {
+    "Package": "Acornima/1.7.0",
+    "License": "BSD-3-Clause",
+    "Source": "https://github.com/adams85/acornima",
+    "Commit": "401bd62d8aeb9f7cbe7b6147937a87e0c71747a8"
+  },
+  {
+    "Package": "AssimpNetter/6.0.5",
+    "License": "License.txt",
+    "Source": "https://github.com/Saalvage/AssimpNetter",
+    "Commit": "161363c3528c3ba388151e9e796d16ccf9f58913"
+  },
+  {
+    "Package": "Avalonia/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Angle.Windows.Natives/2.1.27548.20260419",
+    "License": "LICENSE",
+    "Source": "https://github.com/AvaloniaUI/angle/",
+    "Commit": "1c89805903c1482166356d3b950d474973180e61"
+  },
+  {
+    "Package": "Avalonia.BuildServices/11.3.2",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia.BuildServices",
+    "Commit": "777f975b0a0cecf0311273711d56697212c558c0"
+  },
+  {
+    "Package": "Avalonia.Desktop/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Fonts.Inter/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.FreeDesktop/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.FreeDesktop.AtSpi/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.HarfBuzz/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Native/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Remote.Protocol/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Skia/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Themes.Fluent/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.Win32/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "Avalonia.X11/12.1.3",
+    "License": "MIT",
+    "Source": "https://github.com/AvaloniaUI/Avalonia",
+    "Commit": "8eeda4f6f546165b3f72e63c9f42247abb306905"
+  },
+  {
+    "Package": "BCnEncoder.Net/2.3.0",
+    "License": "MIT OR Unlicense",
+    "Source": "https://github.com/Nominom/BCnEncoder.NET",
+    "Commit": "74eda8a330759d81e6307f19aefc547e40687825"
+  },
+  {
+    "Package": "BotW-HKX2/1.0.0",
+    "License": "",
+    "Source": "https://github.com/kronerm/HKX2",
+    "Commit": ""
+  },
+  {
+    "Package": "CommunityToolkit.HighPerformance/8.4.0",
+    "License": "MIT",
+    "Source": "https://github.com/CommunityToolkit/dotnet",
+    "Commit": "638b41dad30dffabb123a39aa38eabc7e3721371"
+  },
+  {
+    "Package": "HarfBuzzSharp/8.3.1.3",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "2888c737ad016d584c74525e2d35db5097ea8576"
+  },
+  {
+    "Package": "HarfBuzzSharp.NativeAssets.Linux/8.3.1.3",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "2888c737ad016d584c74525e2d35db5097ea8576"
+  },
+  {
+    "Package": "HarfBuzzSharp.NativeAssets.macOS/8.3.1.3",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "2888c737ad016d584c74525e2d35db5097ea8576"
+  },
+  {
+    "Package": "HarfBuzzSharp.NativeAssets.WebAssembly/8.3.1.3",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "2888c737ad016d584c74525e2d35db5097ea8576"
+  },
+  {
+    "Package": "HarfBuzzSharp.NativeAssets.Win32/8.3.1.3",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "2888c737ad016d584c74525e2d35db5097ea8576"
+  },
+  {
+    "Package": "Jint/4.16.1",
+    "License": "BSD-2-Clause",
+    "Source": "https://github.com/sebastienros/jint",
+    "Commit": "474996a9e9c8f7a40ea429d56bd6bbe4c249ad06"
+  },
+  {
+    "Package": "Lucide.Avalonia/0.2.20",
+    "License": "MIT",
+    "Source": "https://github.com/dme-compunet/Lucide.Avalonia",
+    "Commit": "088f04d08d630cecb60a9276c2f25885dba037c4"
+  },
+  {
+    "Package": "MIConvexHull/1.1.19.1019",
+    "License": "",
+    "Source": "https://github.com/DesignEngrLab/MIConvexHull.git",
+    "Commit": ""
+  },
+  {
+    "Package": "MicroCom.Runtime/0.11.6",
+    "License": "MIT",
+    "Source": "https://github.com/kekekeks/MicroCom",
+    "Commit": "76785efcafd91b5902fd19dd11145f6dd655b7b4"
+  },
+  {
+    "Package": "Microsoft.DotNet.PlatformAbstractions/3.1.6",
+    "License": "LICENSE.TXT",
+    "Source": "git://github.com/dotnet/core-setup",
+    "Commit": "3acd9b0cd16596bad450c82be08780875a73c05c"
+  },
+  {
+    "Package": "Microsoft.Extensions.DependencyModel/9.0.9",
+    "License": "MIT",
+    "Source": "https://github.com/dotnet/runtime",
+    "Commit": "893c2ebbd49952ca49e93298148af2d95a61a0a4"
+  },
+  {
+    "Package": "Newtonsoft.Json/13.0.3",
+    "License": "MIT",
+    "Source": "https://github.com/JamesNK/Newtonsoft.Json",
+    "Commit": "0a2e291c0d9c0c7675d445703e51750363a549ef"
+  },
+  {
+    "Package": "Revrs/1.0.6",
+    "License": "MIT",
+    "Source": "https://github.com/ArchLeaders/Revrs",
+    "Commit": "c74a4f05e716d75812edcc075ff3c87ef588148e"
+  },
+  {
+    "Package": "Silk.NET.Core/2.23.0",
+    "License": "MIT",
+    "Source": "https://github.com/dotnet/Silk.NET",
+    "Commit": "94605142f7b7bd6e69c9201e8e721d245c69eb7e"
+  },
+  {
+    "Package": "Silk.NET.Maths/2.23.0",
+    "License": "MIT",
+    "Source": "https://github.com/dotnet/Silk.NET",
+    "Commit": "94605142f7b7bd6e69c9201e8e721d245c69eb7e"
+  },
+  {
+    "Package": "Silk.NET.OpenGL/2.23.0",
+    "License": "MIT",
+    "Source": "https://github.com/dotnet/Silk.NET",
+    "Commit": "94605142f7b7bd6e69c9201e8e721d245c69eb7e"
+  },
+  {
+    "Package": "SkiaSharp/3.119.4",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "f568ac94dd768ef9a2f593537cfde2dd0d348ef5"
+  },
+  {
+    "Package": "SkiaSharp.NativeAssets.Linux/3.119.4",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "f568ac94dd768ef9a2f593537cfde2dd0d348ef5"
+  },
+  {
+    "Package": "SkiaSharp.NativeAssets.macOS/3.119.4",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "f568ac94dd768ef9a2f593537cfde2dd0d348ef5"
+  },
+  {
+    "Package": "SkiaSharp.NativeAssets.WebAssembly/3.119.4",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "f568ac94dd768ef9a2f593537cfde2dd0d348ef5"
+  },
+  {
+    "Package": "SkiaSharp.NativeAssets.Win32/3.119.4",
+    "License": "MIT",
+    "Source": "https://go.microsoft.com/fwlink/?linkid=868515",
+    "Commit": "f568ac94dd768ef9a2f593537cfde2dd0d348ef5"
+  },
+  {
+    "Package": "Tkmm.BymlLibrary/1.2.3",
+    "License": "AGPL-3.0-or-later",
+    "Source": "https://github.com/TKMM-Team/Tkmm.BymlLibrary",
+    "Commit": "6f6ac2d38410d8e797262b7132fde08982938e53"
+  },
+  {
+    "Package": "Tmds.DBus.Protocol/0.94.1",
+    "License": "MIT",
+    "Source": "https://github.com/tmds/Tmds.DBus",
+    "Commit": "b4a7fed0b878f74cb54f7cca84d2889af4e596ba"
+  },
+  {
+    "Package": "VYaml/0.28.1",
+    "License": "MIT",
+    "Source": "https://github.com/hadashiA/VYaml",
+    "Commit": "d5aff37c3825ae5e4a434e2145e775210394dbda"
+  },
+  {
+    "Package": "VYaml.Annotations/0.28.1",
+    "License": "MIT",
+    "Source": "https://github.com/hadashiA/VYaml",
+    "Commit": "d5aff37c3825ae5e4a434e2145e775210394dbda"
+  },
+  {
+    "Package": "ZstdSharp.Port/0.8.8",
+    "License": "MIT",
+    "Source": "https://github.com/oleg-st/ZstdSharp.git",
+    "Commit": "2cd0c019693bc786a5fe5c3be94e107b24e7267e"
+  }
+]

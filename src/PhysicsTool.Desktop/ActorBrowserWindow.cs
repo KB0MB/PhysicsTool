@@ -8,76 +8,171 @@ using System.Text.Json;
 
 namespace PhysicsTool.Desktop;
 
+internal sealed class ActorBrowserPaths
+{
+    public string Botw { get; set; } = "";
+    public string Totk { get; set; } = "";
+    public bool TotkSelected { get; set; }
+
+    internal static ActorBrowserPaths Read(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return new();
+            using var json = JsonDocument.Parse(File.ReadAllBytes(path));
+            if (json.RootElement.ValueKind != JsonValueKind.Array)
+                return json.RootElement.Deserialize<ActorBrowserPaths>() ?? new();
+            var result = new ActorBrowserPaths();
+            foreach (var folder in json.RootElement.Deserialize<string[]>() ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(folder)) continue;
+                if (File.Exists(Path.Combine(folder, "Pack", "ZsDic.pack.zs")) ||
+                    File.Exists(Path.Combine(folder, "romfs", "Pack", "ZsDic.pack.zs")))
+                { if (result.Totk.Length == 0) result.Totk = folder; }
+                else if (Directory.Exists(folder) && Directory.EnumerateFiles(folder, "*.bfres").Any() &&
+                    !Directory.Exists(Path.Combine(folder, "Actor")))
+                { continue; }
+                else if (result.Botw.Length == 0) result.Botw = folder;
+            }
+            result.TotkSelected = result.Botw.Length == 0 && result.Totk.Length > 0;
+            return result;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or ArgumentException) { return new(); }
+    }
+}
+
 internal sealed class ActorBrowserWindow : Window
 {
-    private readonly TextBox _root = new() { PlaceholderText = "Game resource folder", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox _search = new() { PlaceholderText = "Search actors" };
-    private readonly ListBox _actors = new();
-    private readonly TextBlock _status = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
-    private readonly CancellationTokenSource _cancellation = new();
-    private readonly Button _scan, _open;
-    private IReadOnlyList<BotwActorCatalogEntry> _entries = [];
-    private readonly string _settings = Path.Combine(AppContext.BaseDirectory, "actor-folders.json");
-    internal string[] ResourceRoots { get; private set; } = [];
-    internal ActorBrowserWindow()
+    private sealed class GameTab(bool totk)
     {
-        Title = "Actors with cloth or helper bones"; Width = 800; Height = 620; MinWidth = 560; MinHeight = 360;
+        public bool Totk { get; } = totk;
+        public TextBox Root { get; } = new() { Name = totk ? "TotkActorRoot" : "BotwActorRoot", PlaceholderText = totk ? "TOTK romfs folder" : "BOTW game resource folder", HorizontalAlignment = HorizontalAlignment.Stretch };
+        public TextBox Search { get; } = new() { Name = totk ? "TotkActorSearch" : "BotwActorSearch", PlaceholderText = "Search actors" };
+        public ListBox Actors { get; } = new() { Name = totk ? "TotkActors" : "BotwActors" };
+        public TextBlock Status { get; } = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+        public Button Scan { get; } = new() { Content = "Scan" };
+        public Button Browse { get; } = new() { Content = "Browse" };
+        public Button Open { get; } = new() { Content = "Open actor", IsEnabled = false };
+        public IReadOnlyList<BotwActorCatalogEntry> Entries { get; set; } = [];
+        public bool Busy { get; set; }
+        public bool Attempted { get; set; }
+        public int WarningCount { get; set; }
+        public string[] ResourceRoots => new[] { Root.Text }
+            .Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private readonly GameTab _botw = new(false), _totk = new(true);
+    private readonly TabControl _tabs = new() { Name = "ActorGameTabs" };
+    private readonly CancellationTokenSource _cancellation = new();
+    private readonly string _settings;
+    private readonly Func<string[], bool, IProgress<string>, CancellationToken, Task<BotwActorCatalogResult>> _scan;
+    private bool _opened;
+    private GameTab Selected => _tabs.SelectedIndex == 1 ? _totk : _botw;
+    internal string[] ResourceRoots => Selected.ResourceRoots;
+
+    internal ActorBrowserWindow(string? settingsPath = null,
+        Func<string[], bool, IProgress<string>, CancellationToken, Task<BotwActorCatalogResult>>? scan = null)
+    {
+        _settings = settingsPath ?? AppDataPaths.SettingsFile("actor-folders.json");
+        _scan = scan ?? ((roots, totk, progress, token) => Task.Run(() => new BotwActorCatalog(
+            AppDataPaths.CacheFile(totk ? "actor-catalog-totk.json" : "actor-catalog-botw.json")).Scan(roots, progress, token), token));
+        var paths = ActorBrowserPaths.Read(_settings);
+        _botw.Root.Text = paths.Botw; _totk.Root.Text = paths.Totk;
+        Title = "Actors with cloth or helper bones"; Width = 800; Height = 660; MinWidth = 560; MinHeight = 420;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var layout = new Grid { RowDefinitions = new("Auto,Auto,*,Auto,Auto"), Margin = new Thickness(16), RowSpacing = 12 };
-        var folders = new Grid { ColumnDefinitions = new("*,Auto,Auto"), ColumnSpacing = 8 };
-        folders.Children.Add(_root);
-        var browse = new Button { Content = "Browse" }; Grid.SetColumn(browse, 1); folders.Children.Add(browse);
-        _scan = new Button { Content = "Scan" }; Grid.SetColumn(_scan, 2); folders.Children.Add(_scan);
-        browse.Click += async (_, _) =>
+        _tabs.Items.Add(new TabItem { Header = "BOTW", Content = Build(_botw) });
+        _tabs.Items.Add(new TabItem { Header = "TOTK", Content = Build(_totk) });
+        _tabs.SelectedIndex = paths.TotkSelected ? 1 : 0;
+        _tabs.Margin = new Thickness(16, 8, 16, 16); Content = _tabs;
+        _tabs.SelectionChanged += async (_, e) => { if (e.Source == _tabs && _opened) await ScanIfNeeded(Selected); };
+        Opened += async (_, _) => { _opened = true; await ScanIfNeeded(Selected); };
+        Closed += (_, _) => { _cancellation.Cancel(); SavePaths(Selected); };
+    }
+
+    private Control Build(GameTab tab)
+    {
+        var layout = new Grid { RowDefinitions = new("Auto,Auto,*,Auto,Auto"), Margin = new Thickness(0, 12, 0, 0), RowSpacing = 12 };
+        var folders = new StackPanel { Spacing = 8 };
+        var row = new Grid { ColumnDefinitions = new("*,Auto,Auto"), ColumnSpacing = 8 };
+        row.Children.Add(tab.Root); Grid.SetColumn(tab.Browse, 1); row.Children.Add(tab.Browse);
+        Grid.SetColumn(tab.Scan, 2); row.Children.Add(tab.Scan); folders.Children.Add(row);
+        ToolTip.SetTip(tab.Root, tab.Totk ? "TOTK game resources, including Pack/Actor and Pack/ZsDic.pack.zs." : "BOTW game resources. Both Wii U and Switch dumps are supported.");
+        layout.Children.Add(folders);
+        tab.Browse.Click += async (_, _) =>
         {
-            var result = await StorageProvider.OpenFolderPickerAsync(new() { Title = "Game resource folder", AllowMultiple = false });
-            if (result.FirstOrDefault()?.TryGetLocalPath() is { } path) { _root.Text = path; await Scan(); }
+            var path = await PickFolder(tab.Totk ? "TOTK romfs folder" : "BOTW game resource folder");
+            if (path != null) { tab.Root.Text = path; await Scan(tab); }
         };
-        _scan.Click += async (_, _) => await Scan(); layout.Children.Add(folders);
-        Grid.SetRow(_search, 1); layout.Children.Add(_search);
-        _actors.ItemTemplate = new FuncDataTemplate<BotwActorCatalogEntry>((entry, _) => new TextBlock
+        tab.Scan.Click += async (_, _) => await Scan(tab);
+        tab.Root.PropertyChanged += (_, change) =>
+        {
+            if (change.Property != TextBox.TextProperty) return;
+            tab.Attempted = false; tab.Entries = []; tab.WarningCount = 0; tab.Actors.SelectedItem = null; Filter(tab);
+        };
+        Grid.SetRow(tab.Search, 1); layout.Children.Add(tab.Search);
+        tab.Actors.ItemTemplate = new FuncDataTemplate<BotwActorCatalogEntry>((entry, _) => new TextBlock
         {
             Text = entry == null ? "" : $"{entry.Name}  |  {entry.Platform}  |  {(entry.HasCloth ? "Cloth" : "")}{(entry.HasCloth && entry.HasSupport ? " + " : "")}{(entry.HasSupport ? "Helper bones" : "")}  |  {entry.Source}",
             TextWrapping = Avalonia.Media.TextWrapping.Wrap
         });
-        Grid.SetRow(_actors, 2); layout.Children.Add(_actors); Grid.SetRow(_status, 3); layout.Children.Add(_status);
+        Grid.SetRow(tab.Actors, 2); layout.Children.Add(tab.Actors);
+        Grid.SetRow(tab.Status, 3); layout.Children.Add(tab.Status);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
         var close = new Button { Content = "Close", IsCancel = true }; close.Click += (_, _) => Close();
-        _open = new Button { Content = "Open actor", IsEnabled = false }; _open.Click += (_, _) => Choose();
-        actions.Children.Add(close); actions.Children.Add(_open); Grid.SetRow(actions, 4); layout.Children.Add(actions);
-        Content = layout;
-        _actors.DoubleTapped += (_, _) => Choose();
-        _actors.SelectionChanged += (_, _) => _open.IsEnabled = _actors.SelectedItem != null && _scan.IsEnabled;
-        _search.TextChanged += (_, _) => Filter();
-        try { ResourceRoots = File.Exists(_settings) ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(_settings)) ?? [] : []; }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
-        _root.Text = ResourceRoots.FirstOrDefault();
-        Opened += async (_, _) => { if (Directory.Exists(_root.Text)) await Scan(); };
-        Closed += (_, _) => _cancellation.Cancel();
+        tab.Open.Click += (_, _) => Choose(tab); actions.Children.Add(close); actions.Children.Add(tab.Open);
+        Grid.SetRow(actions, 4); layout.Children.Add(actions);
+        tab.Actors.DoubleTapped += (_, _) => Choose(tab);
+        tab.Actors.SelectionChanged += (_, _) => tab.Open.IsEnabled = tab.Actors.SelectedItem != null && !tab.Busy;
+        tab.Search.TextChanged += (_, _) => Filter(tab);
+        return layout;
     }
-    private void Choose() { if (_open.IsEnabled && _actors.SelectedItem is BotwActorCatalogEntry entry) Close(entry); }
-    private void Filter()
+
+    private async Task<string?> PickFolder(string title)
     {
-        _actors.ItemsSource = _entries.Where(entry => entry.Name.Contains(_search.Text ?? "", StringComparison.OrdinalIgnoreCase)).ToArray();
-        _status.Text = $"{_actors.ItemCount} actors";
+        var result = await StorageProvider.OpenFolderPickerAsync(new() { Title = title, AllowMultiple = false });
+        return result.FirstOrDefault()?.TryGetLocalPath();
     }
-    private async Task Scan()
+    private void Choose(GameTab tab)
     {
-        if (!_scan.IsEnabled || !Directory.Exists(_root.Text)) { _status.Text = "Select an available game resource folder."; return; }
-        _scan.IsEnabled = _open.IsEnabled = false; _status.Text = "Scanning actor packs...";
+        if (tab == Selected && tab.Open.IsEnabled && tab.Actors.SelectedItem is BotwActorCatalogEntry entry) Close(entry);
+    }
+    private void Filter(GameTab tab)
+    {
+        var selected = tab.Actors.SelectedItem as BotwActorCatalogEntry;
+        var entries = tab.Entries.Where(entry => entry.Name.Contains(tab.Search.Text ?? "", StringComparison.OrdinalIgnoreCase)).ToArray();
+        tab.Actors.ItemsSource = entries;
+        if (selected != null && entries.Contains(selected)) tab.Actors.SelectedItem = selected;
+        if (!tab.Busy) tab.Status.Text = $"{tab.Actors.ItemCount} actors" + (tab.WarningCount > 0 ? $" ({tab.WarningCount} resource warnings)" : "");
+    }
+    private void SavePaths(GameTab tab)
+    {
+        try { AtomicFile.WriteAllBytes(_settings, JsonSerializer.SerializeToUtf8Bytes(new ActorBrowserPaths {
+            Botw = _botw.Root.Text?.Trim() ?? "", Totk = _totk.Root.Text?.Trim() ?? "", TotkSelected = Selected.Totk })); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { tab.Status.Text += " Folder settings could not be saved."; }
+    }
+    private Task ScanIfNeeded(GameTab tab) => !tab.Attempted && Directory.Exists(tab.Root.Text?.Trim()) ? Scan(tab) : Task.CompletedTask;
+    private async Task Scan(GameTab tab)
+    {
+        if (tab.Busy || _cancellation.IsCancellationRequested) return;
+        if (!Directory.Exists(tab.Root.Text?.Trim())) { tab.Status.Text = "Select an available game resource folder."; return; }
+        tab.Busy = tab.Attempted = true;
+        tab.Scan.IsEnabled = tab.Browse.IsEnabled = tab.Root.IsEnabled = tab.Open.IsEnabled = false;
+        tab.Status.Text = "Scanning actor packs...";
         try
         {
-            ResourceRoots = new[] { Path.GetFullPath(_root.Text!) }.Concat(ResourceRoots).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            var progress = new Progress<string>(message => { if (!_cancellation.IsCancellationRequested) _status.Text = "Scanning " + message; });
-            var result = await Task.Run(() => new BotwActorCatalog().Scan(ResourceRoots, progress, _cancellation.Token));
+            var root = Path.GetFullPath(tab.Root.Text!.Trim());
+            var progress = new Progress<string>(message => { if (!_cancellation.IsCancellationRequested && tab.Busy) tab.Status.Text = "Scanning " + message; });
+            var result = await _scan([root], tab.Totk, progress, _cancellation.Token);
             if (_cancellation.IsCancellationRequested) return;
-            _entries = result.Actors; Filter();
-            if (result.Warnings.Count > 0) _status.Text += $" ({result.Warnings.Count} resource warnings)";
-            try { AtomicFile.WriteAllBytes(_settings, JsonSerializer.SerializeToUtf8Bytes(ResourceRoots)); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _status.Text += " Folder settings could not be saved."; }
+            tab.Entries = result.Actors.Where(a => a.IsTotk == tab.Totk).ToArray();
+            tab.WarningCount = result.Warnings.Count; tab.Busy = false; Filter(tab); SavePaths(tab);
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { _status.Text = UserFacingExceptionFormatter.Format(ex); }
-        finally { _scan.IsEnabled = true; _open.IsEnabled = _actors.SelectedItem != null; }
+        catch (Exception ex) { tab.Status.Text = UserFacingExceptionFormatter.Format(ex); }
+        finally
+        {
+            tab.Busy = false; tab.Scan.IsEnabled = tab.Browse.IsEnabled = tab.Root.IsEnabled = true;
+            tab.Open.IsEnabled = tab.Actors.SelectedItem != null;
+        }
     }
 }

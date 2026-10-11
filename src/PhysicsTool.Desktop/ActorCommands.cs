@@ -43,7 +43,8 @@ public sealed partial class MainWindow
         DockPanel.SetDock(_actorBar, Dock.Bottom); center.Children.Add(_actorBar);
         _animations.SelectionChanged += (_, _) =>
         {
-            if (_updatingTimeline || _actorScene == null) return;
+            if (_updatingTimeline) return;
+            if (_actorScene == null) { SelectEditorAnimation(_animations.SelectedIndex - 1); return; }
             _actorPlaying = false; SeekActor(0); UpdateActorPlayback();
         };
         _timeline.ValueChanged += (_, _) => { if (!_updatingTimeline) SeekActor(_timeline.Value); };
@@ -92,7 +93,7 @@ public sealed partial class MainWindow
             var progress = new Progress<string>(message => { if (request == _modelRequest) _status.Text = message; });
             var scene = await Task.Run(() => BotwActorScene.Load(path, folders, progress, cancel.Token, entry), cancel.Token);
             if (request != _modelRequest || cancel.IsCancellationRequested) { scene.Dispose(); return; }
-            StopSimulation();
+            PauseEditorAnimation(); StopSimulation();
             if (_actorScene == null)
             {
                 _savedEditorModel = _viewport.Model; _savedBoneVisibility = _bonesToggle.IsChecked == true;
@@ -109,7 +110,7 @@ public sealed partial class MainWindow
             _workspace.ColumnDefinitions[1].Width = new GridLength(0);
             _workspace.ColumnDefinitions[2].MinWidth = 0; _workspace.ColumnDefinitions[2].Width = new GridLength(0);
             _actorBar.IsVisible = true; PoseActor(true, 0); ShowEditor(); UpdateActions(); UpdateActorPlayback();
-            Title = "PhysicsTool Avalonia - " + scene.Resources.ActorName;
+            Title = "PhysicsTool - " + scene.Resources.ActorName;
             _status.Text = $"{scene.Resources.ActorName}: {scene.ClothCount} cloths, {scene.SupportCount} helper groups, {scene.Animations.Count} animations, {scene.TextureCount} textures."
                 + (scene.Resources.Warnings.Count == 0 ? "" : " " + string.Join(" ", scene.Resources.Warnings.Take(2)));
         }
@@ -125,11 +126,11 @@ public sealed partial class MainWindow
         _workspace.ColumnDefinitions[1].Width = new GridLength(5);
         _workspace.ColumnDefinitions[2].MinWidth = 300; _workspace.ColumnDefinitions[2].Width = _inspectorWidth;
         _bonesToggle.IsChecked = _savedBoneVisibility;
-        _viewport.SetModel(_savedEditorModel); _savedEditorModel = null; Refresh(); UpdateModelActions();
+        _viewport.SetModel(_savedEditorModel); _savedEditorModel = null; Refresh(); ConfigureEditorTimeline(); UpdateModelActions();
     }
     private void SeekActor(double frame)
     {
-        if (_actorScene == null) return;
+        if (_actorScene == null) { SeekEditorAnimation(frame); return; }
         _actorFrame = Math.Clamp(frame, 0, ActorAnimation?.FrameCount ?? 0);
         PoseActor(true, 0); UpdateActorPlayback();
     }
@@ -147,6 +148,7 @@ public sealed partial class MainWindow
     }
     private void ToggleActorPlayback()
     {
+        if (_actorScene == null) { ToggleEditorPlayback(); return; }
         if (ActorAnimation == null) return;
         if (!_actorPlaying && _actorFrame >= ActorAnimation.FrameCount) SeekActor(0);
         _actorPlaying = !_actorPlaying; UpdateActorPlayback();

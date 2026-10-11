@@ -1,7 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../PhysicsTool/Diagnostics/ColliderPoseChecks.cs" Link="ColliderPoseChecks.cs" />
+    <Compile Include="../../PhysicsTool/Diagnostics/ClothSimulationChecks.cs" Link="ClothSimulationChecks.cs" />
+    <Compile Include="../../PhysicsTool/Diagnostics/NativeClothSolverChecks.cs" Link="NativeClothSolverChecks.cs" />
+    <Compile Include="../../PhysicsTool/Diagnostics/ClothBoneDeformChecks.cs" Link="ClothBoneDeformChecks.cs" />
+    <Compile Include="../../PhysicsTool/Diagnostics/ClothSkinReferenceChecks.cs" Link="ClothSkinReferenceChecks.cs" />
+    <Compile Include="../../PhysicsTool/Diagnostics/SupportBoneSimulationChecks.cs" Link="SupportBoneSimulationChecks.cs" />
     <ProjectReference Include="../../src/PhysicsTool.Desktop/PhysicsTool.Desktop.csproj" />
     <PackageReference Include="Avalonia.Headless" Version="12.1.3" />
+    <Reference Include="Syroot.NintenTools.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.Bfres.dll</HintPath></Reference>
+    <Reference Include="Syroot.NintenTools.NSW.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bfres.dll</HintPath></Reference>
   </ItemGroup>
 </Project>

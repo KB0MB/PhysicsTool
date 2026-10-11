@@ -17,8 +17,13 @@ internal sealed class BotwActorScene : IDisposable
     private readonly List<ToolboxActorModel> _models = new();
     private readonly List<(int Model, string Bone)> _attachments = new();
     private readonly List<HkclService> _supports = new();
+    // Actor resources are read-only; editor evaluations still rebuild after edits.
+    private readonly Dictionary<HkclService, IReadOnlyList<SidecarDriverGroup>> _supportGroups = new();
     private readonly List<Layer> _layers = new();
     private readonly HashSet<string> _clothOwned = new(StringComparer.OrdinalIgnoreCase);
+    // Animation suppression includes ancestors; helper suppression only includes
+    // actual solver outputs, since helpers can drive the surrounding skirt rig.
+    private readonly HashSet<string> _clothDriven = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _temporaryDirectory = Path.Combine(Path.GetTempPath(), "PhysicsTool-ActorViewer", Guid.NewGuid().ToString("N"));
     public BotwActorResources Resources { get; }
     public List<ToolboxActorAnimation> Animations { get; } = new();
@@ -30,7 +35,7 @@ internal sealed class BotwActorScene : IDisposable
     public IReadOnlyList<BotwActorMesh> Meshes => _meshes;
     public bool HasCloth => _layers.Any(l => l.Source.Particles.Count > 0);
     public int ClothCount => _layers.Count(l => l.Source.Particles.Count > 0);
-    public int SupportCount => _supports.Sum(s => s.GetSidecarDriverGroups().Count);
+    public int SupportCount => _supportGroups.Values.Sum(g => g.Count);
     public int RagdollCount => _layers.Count(l => l.Source.RagdollConstraints.Count > 0);
     public int TextureCount { get; private set; }
     public bool WindEnabled { get; set; }
@@ -53,24 +58,34 @@ internal sealed class BotwActorScene : IDisposable
     private void Load(IProgress<string>? progress, CancellationToken cancellation)
     {
         var documents = new Dictionary<string, ToolboxBfresDocument>();
+        Resources.PrepareTotkStrings();
         var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
         foreach (var name in Resources.Models.Select(m => m.Resource).Distinct())
         {
             cancellation.ThrowIfCancellationRequested();
             progress?.Report($"Loading {name}");
-            var bytes = Resources.ReadModel(name) ?? throw new FileNotFoundException($"Missing Model/{name}.sbfres. Add the matching game resource folder.");
+            var bytes = Resources.ReadModel(name) ?? throw new FileNotFoundException(Resources.IsTotk
+                ? $"Missing Model/{name}.bfres.mc. Select the matching TOTK romfs in the Actor browser."
+                : $"Missing Model/{name}.sbfres. Add the matching game resource folder.");
             var document = new ToolboxBfresDocument(bytes); documents[name] = document;
             document.ReadTextures(textures, Resources.Warnings);
+            if (Resources.IsTotk) TexToGoTexture.Load(document, Resources, textures, cancellation);
             foreach (var suffix in document.IsSwitch ? new[] { ".Tex" } : new[] { ".Tex1" })
                 if (Resources.ReadModel(name, suffix) is { } textureData) new ToolboxBfresDocument(textureData).ReadTextures(textures, Resources.Warnings);
             AddAnimations(document, name);
         }
         TextureCount = textures.Count;
+        var hasAppearance = false;
         foreach (var reference in Resources.Models)
         {
             cancellation.ThrowIfCancellationRequested();
-            _models.Add(new ToolboxActorModel(documents[reference.Resource], reference.Model, textures));
+            var document = documents[reference.Resource];
+            var appearance = ToolboxActorAppearance.Read(document, Resources.VariationMatAnim, Resources.VariationMatAnimFrame, Resources.Warnings);
+            hasAppearance |= appearance.Count > 0;
+            _models.Add(new ToolboxActorModel(document, reference.Model, textures, appearance, Resources.Warnings));
         }
+        if (!hasAppearance && !string.IsNullOrWhiteSpace(Resources.VariationMatAnim) && Resources.VariationMatAnim != "Dummy")
+            Resources.Warnings.Add($"Texture variation {Resources.VariationMatAnim} could not be resolved; default material textures are shown.");
         for (var i = 0; i < _models.Count; i++)
         {
             var bone = Resources.Models[i].BindBone;
@@ -112,11 +127,14 @@ internal sealed class BotwActorScene : IDisposable
             try
             {
                 var service = new HkclService(); service.Load(path);
-                if (service.IsHelperBoneSidecar) { _supports.Add(service); continue; }
+                if (service.IsHelperBoneSidecar) { _supports.Add(service); _supportGroups[service] = service.GetSidecarDriverGroups(); continue; }
                 var cloths = service.GetClothSummaries();
                 for (var c = 0; c < cloths.Count; c++)
                 {
-                    var source = service.GetParticlePreview(c);
+                    ParticlePreviewData source;
+                    try { source = service.IsBphcl ? service.GetTotkSimulationPreview(c) : service.GetParticlePreview(c); }
+                    catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+                    { Resources.Warnings.Add($"Cloth {service.GetClothName(c)}: {UserFacingExceptionFormatter.Format(ex)}"); continue; }
                     var clothProfile = profile?.Cloths.FirstOrDefault(p => cloths[c].Contains(p.Name, StringComparison.OrdinalIgnoreCase));
                     AddLayer(source, clothProfile);
                 }
@@ -147,6 +165,7 @@ internal sealed class BotwActorScene : IDisposable
         var ownershipSolver = new HkclPreviewSimulator(source);
         var bones = source.Bones.ToDictionary(b => b.Index);
         var owners = ownershipSolver.DrivenBoneIndices.ToHashSet();
+        foreach (var index in owners) _clothDriven.Add(bones[index].Name);
         var anchors = source.ParticleAttachments.SelectMany(a => a.BoneWeights).Select(w => w.BoneIndex)
             .Concat(source.Colliders.Select(c => c.BoneIndex)).Concat(source.LocalRanges.SelectMany(r => r.ReferenceBoneWeights).Select(w => w.BoneIndex)).ToHashSet();
         foreach (var index in owners.ToArray())
@@ -160,7 +179,7 @@ internal sealed class BotwActorScene : IDisposable
         var baseBone = source.Bones.FirstOrDefault(b => b.Name == profile?.BaseBone);
         var attachments = source.ParticleAttachments.Where(a => a.BoneWeights.Count > 0).ToDictionary(a => a.ParticleIndex, a => a);
         var points = source.Particles.ToDictionary(p => p.Index);
-        foreach (var p in source.Particles.Where(p => !attachments.ContainsKey(p.Index)))
+        foreach (var p in source.Particles.Where(p => source.SolverProfile != ClothSolverProfile.TotkExperimental && !attachments.ContainsKey(p.Index)))
         {
             var attachment = new ParticlePreviewAttachment { ParticleIndex = p.Index };
             if (baseBone != null) attachment.BoneWeights.Add(new() { BoneIndex = baseBone.Index, Weight = 1 });
@@ -213,23 +232,26 @@ internal sealed class BotwActorScene : IDisposable
         var overrides = new Dictionary<string, VisualBoneOverride>(StringComparer.OrdinalIgnoreCase);
         var clean = Skeleton(animation, frame, null, simulate);
         foreach (var service in _supports)
-        for (var g = 0; g < service.GetSidecarDriverGroups().Count; g++)
+        for (var g = 0; g < _supportGroups[service].Count; g++)
         {
-            var evaluation = service.EvaluateSidecarDriverGroup(g, clean.Bones, RestModel.Bones);
-            foreach (var pose in evaluation.Poses.Where(p => p.IsDriven && !(simulate && _clothOwned.Contains(p.Name))))
+            var evaluation = service.EvaluateSidecarDriverGroup(g, clean.Bones, RestModel.Bones, _supportGroups[service]);
+            foreach (var pose in evaluation.Poses.Where(p => p.IsDriven && !(simulate && _clothDriven.Contains(p.Name))))
                 overrides[pose.Name] = new(pose.Name, pose.Position, pose.Rotation, pose.Scale);
             if (evaluation.Poses.Any(p => p.IsDriven)) clean = Skeleton(animation, frame, overrides, simulate);
         }
-        // Particle inputs never receive animated cloth tracks or last frame's
-        // simulated output. Only the surrounding actor skeleton drives them.
-        var input = simulate ? clean : Skeleton(animation, frame, overrides.Where(o => !_clothOwned.Contains(o.Key)).ToDictionary(o => o.Key, o => o.Value), true);
+        // Simulation inputs never receive last frame's cloth output. BotW retains
+        // its suppressed preview path; TotK animation-only particles use the same
+        // current skeleton as the visible model, including authored cloth tracks.
+        var input = simulate ? clean : Skeleton(animation, frame, overrides.Where(o => !_clothDriven.Contains(o.Key)).ToDictionary(o => o.Key, o => o.Value), true);
         var restBones = RestModel.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var currentBones = input.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var animatedBones = !simulate ? clean.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase) : currentBones;
         foreach (var layer in _layers)
         {
+            var particleBones = layer.Source.SolverProfile == ClothSolverProfile.TotkExperimental && !simulate ? animatedBones : currentBones;
             var deltas = new Dictionary<int, Matrix4x4>();
             foreach (var bone in layer.Source.Bones)
-                if (restBones.TryGetValue(bone.Name, out var rest) && currentBones.TryGetValue(bone.Name, out var current) && Matrix4x4.Invert(Matrix(rest), out var inverse))
+                if (restBones.TryGetValue(bone.Name, out var rest) && particleBones.TryGetValue(bone.Name, out var current) && Matrix4x4.Invert(Matrix(rest), out var inverse))
                     deltas[bone.Index] = inverse * Matrix(current);
             var sourceBones = layer.Source.Bones.ToDictionary(b => b.Index);
             Matrix4x4 ParentDelta(int index, HashSet<int> visited)

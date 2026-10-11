@@ -32,7 +32,8 @@ internal sealed class BfresModelPose
         if (_models.Count == 0) throw new InvalidDataException("This BFRES contains no models. Select the model resource, not a texture or animation resource.");
     }
 
-    public VisualModelData Sample(VisualModelData? appearance, IReadOnlyList<VisualBoneOverride>? overrides)
+    public VisualModelData Sample(VisualModelData? appearance, IReadOnlyList<VisualBoneOverride>? overrides,
+        ToolboxActorAnimation? animation = null, double frame = 0, ISet<string>? suppressed = null, bool skeletonOnly = false)
     {
         var mapped = overrides?.GroupBy(p => p.Name[(p.Name.LastIndexOf(':') + 1)..], StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
@@ -41,7 +42,7 @@ internal sealed class BfresModelPose
         result.Warnings.AddRange(_warnings);
         foreach (var model in _models)
         {
-            var pose = model.Pose(null, 0, mapped);
+            var pose = skeletonOnly ? model.SkeletonPose(animation, frame, mapped, suppressed) : model.Pose(animation, frame, mapped, suppressed);
             var offset = result.Bones.Count;
             result.Bones.AddRange(pose.Bones.Select(b => new VisualModelBone { Index = b.Index + offset,
                 ParentIndex = b.ParentIndex < 0 ? -1 : b.ParentIndex + offset, Name = b.Name,
@@ -64,7 +65,7 @@ internal sealed class BfresModelPose
                 result.TriangleCount += pose.TriangleCount;
             }
         }
-        if (result.Meshes.Count == 0) throw new InvalidDataException("This BFRES has no renderable meshes.");
+        if (!skeletonOnly && result.Meshes.Count == 0) throw new InvalidDataException("This BFRES has no renderable meshes.");
         result.DefaultTextureMeshCount = result.Meshes.Count(m => m.Texture == null);
         return result;
     }

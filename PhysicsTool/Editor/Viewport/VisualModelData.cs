@@ -93,6 +93,8 @@ public sealed class VisualModelUvSet
 
 public sealed class VisualModelMaterialSettings
 {
+    public TotkPreviewMaterial? Totk { get; set; }
+    public bool UseBotwPreviewShader { get; set; }
     public VisualModelShaderModel ShaderModel { get; set; }
     public bool UseAlbedo { get; set; } = true;
     public bool UseSpm { get; set; }
@@ -119,6 +121,8 @@ public sealed class VisualModelMaterialSettings
 
     public VisualModelMaterialSettings Clone() => new()
     {
+        Totk = Totk,
+        UseBotwPreviewShader = UseBotwPreviewShader,
         ShaderModel = ShaderModel,
         UseAlbedo = UseAlbedo,
         UseSpm = UseSpm,
@@ -150,6 +154,8 @@ public sealed class VisualModelMesh
     public string Name { get; init; } = string.Empty;
     // Interleaved position, normal, and the FBX albedo UV: 3 + 3 + 2 floats.
     public float[] Vertices { get; init; } = Array.Empty<float>();
+    public Vector4[] Tangents { get; set; } = [];
+    public string TangentUvSet { get; set; } = "";
     public uint[] Indices { get; init; } = Array.Empty<uint>();
     public Vector4 BaseColor { get; init; } = Vector4.One;
     public VisualModelCullingMode CullingMode { get; init; }
@@ -168,6 +174,9 @@ public sealed class VisualModelMesh
 
 public sealed class VisualModelTexture
 {
+    public bool IsSrgb { get; init; }
+    public bool IsSingleChannel { get; init; }
+    public bool UseRedAsLuminance { get; init; }
     public string Name { get; init; } = string.Empty;
     public string SourcePath { get; init; } = string.Empty;
     public int Width { get; init; }

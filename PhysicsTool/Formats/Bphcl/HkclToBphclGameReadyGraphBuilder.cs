@@ -138,7 +138,7 @@ public static class HkclToBphclGameReadyGraphBuilder
 			orderby particle.Index
 			select particle).ToArray();
 		HashSet<int> landscapeParticles = (preserveNativeBphclValues ? new HashSet<int>() : SelectLandscapeParticles(array, BphclConversionProfileCatalog.ShouldEnableReverseLandscapeCollision(source.SourcePath, sourceClothName)));
-		StandaloneBphclParticle[] array2 = array.Select((ParticleEditRow particle) => new StandaloneBphclParticle(particle.Index, new Vector4(particle.X, particle.Y, particle.Z, particle.W), particle.Fixed, preserveNativeBphclValues ? particle.Mass : ToBphclMass(particle.Fixed, particle.Mass, massScale), preserveNativeBphclValues ? particle.InverseMass : ToBphclInverseMass(particle.Fixed, particle.Mass, massScale), particle.Radius, particle.Friction, preserveNativeBphclValues ? particle.CollisionMask : ApplyLandscapeCollisionMask(particle, landscapeParticles.Contains(particle.Index)))).ToArray();
+		StandaloneBphclParticle[] array2 = array.Select((ParticleEditRow particle) => new StandaloneBphclParticle(particle.Index, new Vector4(particle.X, particle.Y, particle.Z, particle.W), particle.Fixed, preserveNativeBphclValues ? particle.Mass : ToBphclMass(particle.Fixed, particle.Mass, massScale), preserveNativeBphclValues ? particle.InverseMass : particle.Fixed ? 0f : particle.InverseMass * massScale, particle.Radius, particle.Friction, preserveNativeBphclValues ? particle.CollisionMask : ApplyLandscapeCollisionMask(particle, landscapeParticles.Contains(particle.Index)))).ToArray();
 		StandaloneBphclBone[] bones = (from bone in source.GetBoneRows(clothIndex)
 			orderby bone.Index
 			select new StandaloneBphclBone(bone.Index, preserveNativeBphclValues ? bone.Name : ToBphclRuntimeBoneName(bone.Name), bone.ParentIndex, new Vector4(bone.X, bone.Y, bone.Z, bone.TranslationW), new Vector4(bone.RotationX, bone.RotationY, bone.RotationZ, bone.RotationW), new Vector4(bone.ScaleX, bone.ScaleY, bone.ScaleZ, preserveNativeBphclValues ? bone.ScaleW : 1f))).ToArray();
@@ -191,13 +191,31 @@ public static class HkclToBphclGameReadyGraphBuilder
 			}
 			clothRuntimeData = EnsureDerivedBendPass(clothRuntimeData, sourceBendSetIndex, metadata.Index);
 		}
+		ClothSimulateConfigData? generatedConfig = null;
 		if (!preserveNativeBphclValues)
 		{
-			(list, dictionary, array3, array5, array6, volumeSets, clothRuntimeData) = CanonicalizeFreshConstraintProgram(list, dictionary, array3, array5, array6, volumeSets, clothRuntimeData);
-			if (BphclConversionProfileCatalog.TryGetReverseConstraintExecution(source.SourcePath, sourceClothName, out int[] execution))
+			var configs = source.GetClothRuntimeData(clothIndex).Operators
+				.Where(op => op.ClassName == "hclSimulateOperator").SelectMany(op => op.SimulateConfigs).ToArray();
+			if (configs.Length != 1)
+				throw new InvalidDataException($"Cloth '{text}' needs exactly one simulation configuration for fresh BPHCL export; found {configs.Length}.");
+			if (array6.Any(set => set.TransformSetIndex != 0))
+				throw new InvalidDataException($"Cloth '{text}' uses bone planes outside the generated skeleton transform set.");
+			var indexMap = list.OrderBy(set => set.Index)
+				.Select((set, index) => (set.Index, Target: index)).ToDictionary(pair => pair.Index, pair => pair.Target);
+			var execution = configs[0].ConstraintExecution;
+			if (execution.Any(index => index != -1 && !indexMap.ContainsKey(index)))
+				throw new InvalidDataException($"Cloth '{text}' has an unsupported solver execution entry.");
+			generatedConfig = configs[0] with {
+				ConstraintExecution = execution.Select(index => index == -1 ? -1 : indexMap[index]).ToArray(),
+				UseAllInstanceCollidables = configs[0].InstanceCollidablesUsed.Count == 0 || configs[0].UseAllInstanceCollidables };
+			// A measured profile can add a bend set absent from BotW. Run it beside each source bend pass.
+			foreach (var added in list.Where(set => !constraintSetSummaries.Any(original => original.Index == set.Index)))
 			{
-				clothRuntimeData = ApplyVerifiedConstraintExecution(clothRuntimeData, execution);
+				var bendIndices = constraintSetSummaries.Where(set => set.ClassName == "hclBendLinkConstraintSet").Select(set => indexMap[set.Index]).ToHashSet();
+				generatedConfig = generatedConfig with { ConstraintExecution = generatedConfig.ConstraintExecution
+					.SelectMany(index => bendIndices.Contains(index) ? new[] { index, indexMap[added.Index] } : new[] { index }).ToArray() };
 			}
+			(list, dictionary, array3, array5, array6, volumeSets, clothRuntimeData) = CanonicalizeFreshConstraintProgram(list, dictionary, array3, array5, array6, volumeSets, clothRuntimeData);
 		}
 		if (!preserveNativeBphclValues)
 		{
@@ -239,7 +257,8 @@ public static class HkclToBphclGameReadyGraphBuilder
 			orderby constraint.ConstraintSetIndex, constraint.LinkIndex
 			select constraint).ToArray(), (from range in array3
 			orderby range.ConstraintSetIndex, range.LocalConstraintIndex
-			select range).ToArray(), array5, array6, clothRuntimeData, simulationRuntime, skinOperatorData, array8, colliders, readOnlyList, array7, volumeSets);
+			select range).ToArray(), array5, array6, clothRuntimeData, simulationRuntime, skinOperatorData, array8, colliders, readOnlyList, array7, volumeSets)
+		{ GeneratedSimulateConfig = generatedConfig };
 		float? MapConstraint(string constraintClass, string fieldName, float? value)
 		{
 			if (!preserveNativeBphclValues)
@@ -456,8 +475,7 @@ public static class HkclToBphclGameReadyGraphBuilder
 	private static (List<StandaloneBphclConstraintSetMetadata> ConstraintSets, Dictionary<(int Set, int Link), StandaloneBphclConstraint> Constraints, StandaloneBphclLocalRange[] LocalRanges, StandaloneBphclTransitionConstraintSet[] TransitionSets, StandaloneBphclBonePlaneConstraintSet[] BonePlaneSets, VolumeConstraintSetData[] VolumeSets, ClothRuntimeData Runtime) CanonicalizeFreshConstraintProgram(IReadOnlyList<StandaloneBphclConstraintSetMetadata> sourceSets, IReadOnlyDictionary<(int Set, int Link), StandaloneBphclConstraint> sourceConstraints, IReadOnlyList<StandaloneBphclLocalRange> sourceLocalRanges, IReadOnlyList<StandaloneBphclTransitionConstraintSet> sourceTransitionSets, IReadOnlyList<StandaloneBphclBonePlaneConstraintSet> sourceBonePlaneSets, IReadOnlyList<VolumeConstraintSetData> sourceVolumeSets, ClothRuntimeData sourceRuntime)
 	{
 		StandaloneBphclConstraintSetMetadata[] source = (from set in sourceSets
-			where !string.Equals(set.TypeName, "hclBonePlanesConstraintSet", StringComparison.Ordinal)
-			orderby GetFreshBphclConstraintOrder(set.TypeName), set.Index
+			orderby set.Index
 			select set).ToArray();
 		Dictionary<int, int> indexMap = source.Select((StandaloneBphclConstraintSetMetadata set, int index) => (OldIndex: set.Index, NewIndex: index)).ToDictionary(((int OldIndex, int NewIndex) entry) => entry.OldIndex, ((int OldIndex, int NewIndex) entry) => entry.NewIndex);
 		checked
@@ -508,7 +526,9 @@ public static class HkclToBphclGameReadyGraphBuilder
 					SimulateConfigs = simulateConfigs
 				};
 			}).ToArray();
-			return (ConstraintSets: item, Constraints: item2, LocalRanges: item3, TransitionSets: item4, BonePlaneSets: Array.Empty<StandaloneBphclBonePlaneConstraintSet>(), VolumeSets: item5, Runtime: sourceRuntime with
+			return (ConstraintSets: item, Constraints: item2, LocalRanges: item3, TransitionSets: item4,
+				BonePlaneSets: sourceBonePlaneSets.Select(set => set with { ConstraintSetIndex = indexMap[set.ConstraintSetIndex], ConstraintId = (uint)indexMap[set.ConstraintSetIndex] }).ToArray(),
+				VolumeSets: item5, Runtime: sourceRuntime with
 			{
 				Operators = operators
 			});

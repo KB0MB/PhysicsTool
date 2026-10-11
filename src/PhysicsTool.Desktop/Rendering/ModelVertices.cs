@@ -7,7 +7,8 @@ public static class ModelVertices
     public static float[] Build(VisualModelMesh source)
     {
         const int sourceStride = 8;
-        const int targetStride = 20;
+        var totk = source.Material.Totk;
+        int targetStride = totk == null ? 20 : 24;
         var vertexCount = source.Vertices.Length / sourceStride;
         var result = new float[checked(vertexCount * targetStride)];
         var albedo = ResolveUvCoordinates(source, source.Material.AlbedoUvSet);
@@ -15,6 +16,22 @@ public static class ModelVertices
         var normal = ResolveUvCoordinates(source, source.Material.NormalUvSet);
         var ao = ResolveUvCoordinates(source, source.Material.AmbientOcclusionUvSet);
         var auxiliary = ResolveUvCoordinates(source, source.Material.AuxiliaryUvSet);
+        var rawUvs = totk?.UvSets.Select(name => ResolveUvCoordinates(source, name)).ToArray();
+        if (totk != null && totk.Integers.GetValueOrDefault("totkNormalSource", -1) is >= 0 and <= 7 and var normalSlot)
+        {
+            // Tangents must use the same transformed UVs as the normal texture.
+            var srt = totk.Vectors[$"totkTextureSrt{normalSlot}"];
+            var rotation = totk.Scalars[$"totkTextureRotation{normalSlot}"];
+            var transformed = new float[vertexCount * 2];
+            float c = MathF.Cos(rotation), s = MathF.Sin(rotation);
+            for (int v = 0; v < vertexCount; v++)
+            {
+                var uv = ReadVisualModelUv(normal, source.Vertices, v) * new Vector2(srt.X, srt.Y);
+                transformed[v * 2] = c * uv.X + s * uv.Y + srt.Z;
+                transformed[v * 2 + 1] = -s * uv.X + c * uv.Y + srt.W;
+            }
+            normal = transformed;
+        }
 
         for (var vertex = 0; vertex < vertexCount; vertex++)
         {
@@ -26,9 +43,26 @@ public static class ModelVertices
             CopyUv(normal, source.Vertices, vertex, result, targetOffset + 10);
             CopyUv(ao, source.Vertices, vertex, result, targetOffset + 12);
             CopyUv(auxiliary, source.Vertices, vertex, result, targetOffset + 14);
+            if (totk != null)
+            {
+                for (int uv = 0; uv < 4; uv++) CopyUv(rawUvs![uv], source.Vertices, vertex, result, targetOffset + 6 + uv * 2);
+                var color = vertex < totk.VertexColors.Length ? totk.VertexColors[vertex] : Vector4.One;
+                result[targetOffset + 20] = color.X; result[targetOffset + 21] = color.Y;
+                result[targetOffset + 22] = color.Z; result[targetOffset + 23] = color.W;
+            }
         }
 
-        WriteVisualModelTangents(source, normal, result, targetStride);
+        bool authored = source.Tangents.Length == vertexCount && source.TangentUvSet == source.Material.NormalUvSet;
+        if (totk != null && totk.Integers.GetValueOrDefault("totkNormalSource", -1) is >= 0 and <= 7 and var slot)
+            authored &= totk.Vectors[$"totkTextureSrt{slot}"] == new Vector4(1, 1, 0, 0) && totk.Scalars[$"totkTextureRotation{slot}"] == 0;
+        if (authored)
+        {
+            for (int v = 0; v < vertexCount; v++)
+            {
+                var t = source.Tangents[v]; WriteVisualModelTangent(result, v, targetStride, new(t.X, t.Y, t.Z), t.W);
+            }
+        }
+        else WriteVisualModelTangents(source, normal, result, targetStride);
 
         return result;
     }

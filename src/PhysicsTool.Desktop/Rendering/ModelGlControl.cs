@@ -36,7 +36,9 @@ public sealed class ModelGlControl : OpenGlControlBase
             var scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
             int width = Math.Max(1, (int)Math.Ceiling(Bounds.Width * scaling)), height = Math.Max(1, (int)Math.Ceiling(Bounds.Height * scaling));
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-            _renderer.Draw(_view.Model, _view.HiddenMeshes, _view.CameraMatrix, _view.ViewDirection, width, height, _view.GridLines);
+            var background = _view.ViewportBackground;
+            _renderer.Draw(_view.Model, _view.HiddenMeshes, _view.CameraMatrix, _view.ViewDirection, width, height, _view.GridLines,
+                new System.Numerics.Vector3(background.R / 255f, background.G / 255f, background.B / 255f), _view.ShowEmission);
             if (!_view.GpuReady) Dispatcher.UIThread.Post(() => { _view.GpuReady = true; _view.InvalidateVisual(); });
             if (CaptureNextFrame)
             {

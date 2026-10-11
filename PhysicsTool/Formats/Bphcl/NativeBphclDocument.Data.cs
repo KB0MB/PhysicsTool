@@ -1338,6 +1338,15 @@ public sealed partial class NativeBphclDocument
             throw new InvalidDataException($"BPHCL array at DATA+0x{arrayFieldOffset:X} has no ITEM reference.");
 
         var storageItem = GetItem(storageItemIndex);
+        if (storageItem.Count == 0)
+        {
+            // Empty arrays have no element relocations. Their declared hkArray
+            // type still supplies the pointer type needed when appending entries.
+            var fieldPatch = InternalPatches.FirstOrDefault(group => group.Offsets.Contains(arrayFieldOffset))
+                ?? throw new InvalidDataException("Empty BPHCL array has no field relocation metadata.");
+            var entryType = NativeBphclTypeTable.GetArrayElementType(this, fieldPatch.TypeIndex);
+            return new NativeBphclReferenceArray(arrayFieldOffset, storageItemIndex, storageItem, entryType);
+        }
         var patch = InternalPatches.FirstOrDefault(group => group.Offsets.Contains(storageItem.DataOffset));
         if (patch is null)
         {

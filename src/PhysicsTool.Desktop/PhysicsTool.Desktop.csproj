@@ -2,6 +2,16 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>PhysicsTool</AssemblyName>
+    <RootNamespace>PhysicsTool.Desktop</RootNamespace>
+    <Product>PhysicsTool</Product>
+    <Title>PhysicsTool</Title>
+    <Version>2.0.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -15,12 +25,13 @@
     <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
     <PackageReference Include="Lucide.Avalonia" Version="0.2.20" />
     <EmbeddedResource Include="Rendering/Shaders/*" />
+    <EmbeddedResource Include="../../PhysicsTool/Languages/*.json" Link="Languages/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Languages/*.json" WithCulture="false" />
     <EmbeddedResource Include="../../PhysicsTool/Resources/VisualModel/*.png" Link="Textures/%(Filename)%(Extension)" />
     <AvaloniaResource Include="../../PhysicsTool/Resources/Branding/PhysicsTool.png" Link="Assets/PhysicsTool.png" />
     <None Include="../../LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../THIRD_PARTY_NOTICES.txt" Link="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../PhysicsTool/ThirdParty/AssimpNetter-LICENSE.txt" Link="Licenses/AssimpNetter-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../PhysicsTool/ThirdParty/BCnEncoder-LICENSE.txt" Link="Licenses/BCnEncoder-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../Licenses/**/*" Link="Licenses/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../PhysicsTool/ThirdParty/Toolbox/LICENSE.txt" Link="Licenses/Toolbox-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../PhysicsTool/ThirdParty/Toolbox/SOURCES.txt" Link="Licenses/Toolbox-SOURCES.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

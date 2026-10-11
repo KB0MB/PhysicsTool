@@ -65,7 +65,8 @@ internal sealed class ToolboxActorModel
     public string Name { get; }
     public VisualModelData RestPose { get; }
 
-    public ToolboxActorModel(ToolboxBfresDocument document, string name, Dictionary<string, VisualModelTexture> textures)
+    public ToolboxActorModel(ToolboxBfresDocument document, string name, Dictionary<string, VisualModelTexture> textures,
+        IReadOnlyDictionary<(string Material, string Sampler), string>? textureOverrides = null, List<string>? warnings = null)
     {
         dynamic model = document.Models.FirstOrDefault(m => (string)m.Name == name)
             ?? throw new InvalidDataException($"BFRES does not contain the referenced model '{name}'. Available: {string.Join(", ", document.Models.Select(m => (string)m.Name))}");
@@ -121,19 +122,59 @@ internal sealed class ToolboxActorModel
             if (!lod.PrimitiveType.ToString().Contains("Triangles")) throw new InvalidDataException($"Mesh {shape.Name} uses unsupported primitive type {lod.PrimitiveType}.");
             if (faces.Any(i => i >= count)) throw new InvalidDataException($"Mesh {shape.Name} has an invalid vertex index.");
             dynamic material = materials[(int)shape.MaterialIndex];
-            var visual = MakeMaterial((string)shape.Name, material, textures, verts, faces);
+            VisualModelMesh visual = MakeMaterial((string)shape.Name, material, textures, verts, faces, textureOverrides, warnings);
             foreach (var attr in attributes.Where(a => a.Key.StartsWith("_u", StringComparison.Ordinal)).OrderBy(a => a.Key))
                 visual.UvSets.Add(new VisualModelUvSet { Name = attr.Key, Coordinates = attr.Value.SelectMany(uv => new[] { uv.X, uv.Y }).ToArray() });
+            ToolboxBotwMaterial.Apply((object)material, visual, warnings);
+            ToolboxTotkMaterial.Apply((object)material, visual, textures);
+            if (visual.Material.Totk is { } totk)
+                totk.VertexColors = Enumerable.Range(0, count).Select(v => Attribute("_c0", v, Vector4.One)).ToArray();
+            if (attributes.ContainsKey("_t0"))
+            {
+                visual.Tangents = new Vector4[count];
+                visual.TangentUvSet = visual.Material.NormalUvSet;
+                for (int v = 0; v < count; v++)
+                {
+                    var raw = Attribute("_t0", v, Vector4.UnitX);
+                    var t = new Vector3(raw.X, raw.Y, raw.Z);
+                    var n = Attribute("_n0", v, Vector4.UnitY);
+                    var b = Vector3.Cross(new(n.X, n.Y, n.Z), t) * (raw.W < 0 ? -1 : 1);
+                    if (attributes.ContainsKey("_b0")) { var bitangent = Attribute("_b0", v, Vector4.Zero); b = new(bitangent.X, bitangent.Y, bitangent.Z); }
+                    if (skinCount == 0 || skinCount == 1 && _bones[indices[v][0]].Rigid)
+                    { t = Vector3.TransformNormal(t, _restWorld[indices[v][0]]); b = Vector3.TransformNormal(b, _restWorld[indices[v][0]]); }
+                    t = SafeNormal(t - normals[v] * Vector3.Dot(normals[v], t));
+                    visual.Tangents[v] = new(t, Vector3.Dot(Vector3.Cross(normals[v], t), b) < 0 ? -1 : 1);
+                }
+            }
             _meshes.Add(new(visual, sourcePositions, normals, indices, weights));
         }
         RestPose = Pose(null, 0);
     }
 
-    private static VisualModelMesh MakeMaterial(string shape, dynamic material, Dictionary<string, VisualModelTexture> textures, float[] vertices, uint[] indices)
+    private static VisualModelMesh MakeMaterial(string shape, dynamic material, Dictionary<string, VisualModelTexture> textures, float[] vertices, uint[] indices,
+        IReadOnlyDictionary<(string Material, string Sampler), string>? textureOverrides, List<string>? warnings)
     {
         var refs = ToolboxBfresDocument.Items((object)material.TextureRefs).Select(t => t is string text ? text : (string)t.Name).ToArray();
+        string? albedoOverride = null;
+        if (textureOverrides?.Count > 0)
+        {
+            var samplers = (object)material is ResS.Material nx
+                ? Enumerable.Range(0, nx.SamplerDict.Count).Select(nx.SamplerDict.GetKey).ToArray()
+                : ((ResU.Material)material).Samplers.Keys.ToArray();
+            foreach (var pair in textureOverrides.Where(p => p.Key.Material == (string)material.Name))
+            {
+                var index = Array.IndexOf(samplers, pair.Key.Sampler);
+                if (index < 0 || index >= refs.Length)
+                { warnings?.Add($"Material {material.Name}: variation sampler {pair.Key.Sampler} was not found."); continue; }
+                // Change only this model's bindings, never the shared BFRES or decoded textures.
+                refs[index] = pair.Value;
+                if (pair.Key.Sampler == "_a0") albedoOverride = pair.Value;
+                if (!textures.ContainsKey(pair.Value)) warnings?.Add($"Material {material.Name}: missing variation texture {pair.Value}.");
+            }
+        }
         VisualModelTexture? Find(string suffix) => refs.Select(n => textures.GetValueOrDefault(n)).FirstOrDefault(t => t != null && t.Name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
         var alb = Find("_Alb") ?? refs.Select(n => textures.GetValueOrDefault(n)).FirstOrDefault(t => t != null && !t.Name.EndsWith("_Nrm") && !t.Name.EndsWith("_Spm"));
+        if (albedoOverride != null) alb = textures.GetValueOrDefault(albedoOverride);
         var spm = Find("_Spm"); var nrm = Find("_Nrm"); var ao = Find("_Ao");
         var name = (string)material.Name;
         var shader = name.Contains("Eyelash", StringComparison.OrdinalIgnoreCase) ? VisualModelShaderModel.Eyelash
@@ -164,18 +205,26 @@ internal sealed class ToolboxActorModel
         foreach (var mesh in _meshes)
         {
             var vertices = (float[])mesh.Visual.Vertices.Clone();
+            var tangents = new Vector4[mesh.Visual.Tangents.Length];
             for (var v = 0; v < mesh.Positions.Length; v++)
             {
-                var p = Vector3.Zero; var n = Vector3.Zero;
+                var p = Vector3.Zero; var n = Vector3.Zero; var t = Vector3.Zero; var b = Vector3.Zero;
+                var restT = tangents.Length > v ? new Vector3(mesh.Visual.Tangents[v].X, mesh.Visual.Tangents[v].Y, mesh.Visual.Tangents[v].Z) : Vector3.Zero;
+                var restB = tangents.Length > v ? Vector3.Cross(mesh.Normals[v], restT) * mesh.Visual.Tangents[v].W : Vector3.Zero;
                 for (var j = 0; j < mesh.Bones[v].Length; j++)
-                { var matrix = delta[mesh.Bones[v][j]]; var weight = mesh.Weights[v][j]; p += Vector3.Transform(mesh.Positions[v], matrix) * weight; n += Vector3.TransformNormal(mesh.Normals[v], matrix) * weight; }
+                {
+                    var matrix = delta[mesh.Bones[v][j]]; var weight = mesh.Weights[v][j]; p += Vector3.Transform(mesh.Positions[v], matrix) * weight; n += Vector3.TransformNormal(mesh.Normals[v], matrix) * weight;
+                    if (tangents.Length > v) { t += Vector3.TransformNormal(restT, matrix) * weight; b += Vector3.TransformNormal(restB, matrix) * weight; }
+                }
                 n = SafeNormal(n);
+                if (tangents.Length > v) { t = SafeNormal(t - n * Vector3.Dot(n, t)); tangents[v] = new(t, Vector3.Dot(Vector3.Cross(n, t), b) < 0 ? -1 : 1); }
                 vertices[v * 8] = p.X; vertices[v * 8 + 1] = p.Y; vertices[v * 8 + 2] = p.Z;
                 vertices[v * 8 + 3] = n.X; vertices[v * 8 + 4] = n.Y; vertices[v * 8 + 5] = n.Z;
                 pose.BoundsMinimum = Vector3.Min(pose.BoundsMinimum, p); pose.BoundsMaximum = Vector3.Max(pose.BoundsMaximum, p);
             }
             var src = mesh.Visual;
             pose.Meshes.Add(new() { Name = src.Name, Vertices = vertices, Indices = src.Indices, BaseColor = src.BaseColor, CullingMode = src.CullingMode,
+                Tangents = tangents, TangentUvSet = src.TangentUvSet,
                 UseMissingTextureFallback = src.UseMissingTextureFallback,
                 Texture = src.Texture, SpecularTexture = src.SpecularTexture, NormalTexture = src.NormalTexture, AmbientOcclusionTexture = src.AmbientOcclusionTexture,
                 EyeGlintTexture = src.EyeGlintTexture, UvSets = src.UvSets, Material = src.Material });

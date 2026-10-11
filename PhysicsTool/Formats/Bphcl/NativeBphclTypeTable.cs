@@ -325,26 +325,6 @@ internal sealed class NativeBphclTypeTable
                 continue;
             }
 
-            // A few Havok helper types are named but intentionally omit a
-            // TBDY layout record. They cannot be appended as independent
-            // reflection entries. Map a uniquely named counterpart already
-            // present in the target instead (for example the packed
-            // BoneSpaceDeformer blend blocks).
-            if (!sourceTable.Bodies.Any(body => body.TypeIndex == sourceIndex))
-            {
-                var sourceName = sourceTable.GetTypeName(sourceIndex);
-                var candidates = targetTable.GetTypeNames()
-                    .Select((name, index) => (name, index))
-                    .Where(entry => entry.index > 0 && string.Equals(entry.name, sourceName, StringComparison.Ordinal))
-                    .Select(entry => (uint)entry.index)
-                    .ToArray();
-                if (candidates.Length == 1)
-                {
-                    sourceToMerged[sourceIndex] = candidates[0];
-                    continue;
-                }
-            }
-
             sourceToMerged[sourceIndex] = nextTypeIndex++;
             addedSourceTypes.Add(sourceIndex);
         }
@@ -372,11 +352,13 @@ internal sealed class NativeBphclTypeTable
         {
             var named = sourceTable.NamedTypes.ElementAtOrDefault(checked((int)sourceTypeIndex - 1))
                 ?? throw new InvalidDataException($"Source BPHCL TYPE has no name record for type {sourceTypeIndex}.");
-            var body = sourceTable.Bodies.FirstOrDefault(entry => entry.TypeIndex == sourceTypeIndex)
-                ?? throw new InvalidDataException($"Source BPHCL TYPE has no body record for type {sourceTypeIndex}.");
+            var body = sourceTable.Bodies.FirstOrDefault(entry => entry.TypeIndex == sourceTypeIndex);
 
             mergedNamedTypes.Add(named.Remap(sourceToMerged, sourceTypeStringMap, sourceTable.TypeStrings));
-            mergedBodies.Add(body.Remap(sourceToMerged, sourceFieldStringMap));
+            // Forward/packed blend aliases legitimately have a name without
+            // a layout body. Preserve that distinction instead of inventing a
+            // layout or binding to a same-named concrete type in the target.
+            if (body != null) mergedBodies.Add(body.Remap(sourceToMerged, sourceFieldStringMap));
             foreach (var hash in sourceTable.Hashes.Where(entry => entry.TypeIndex == sourceTypeIndex))
                 mergedHashes.Add(hash.Remap(sourceToMerged));
         }
@@ -692,8 +674,8 @@ internal sealed class NativeBphclTypeTable
             if (body is null)
             {
                 // Some reflected helper/forward types deliberately have a
-                // name record but no layout body. They cannot be copied as
-                // standalone TYPE records, so match their declared identity.
+                // name record but no layout body. Match their declared identity
+                // separately from a same-named type with a concrete layout.
                 keys[index] = baseKey;
                 return baseKey;
             }

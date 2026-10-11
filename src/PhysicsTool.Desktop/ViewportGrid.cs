@@ -6,30 +6,26 @@ public readonly record struct GridLine(Vector3 Start, Vector3 End, Vector3 Color
 
 public sealed partial class PhysicsViewport
 {
-    public IReadOnlyList<GridLine> GridLines
+    public IReadOnlyList<GridLine> GridLines => IsLightViewport ? LightWorldGrid : WorldGrid;
+    private static readonly IReadOnlyList<GridLine> WorldGrid = CreateWorldGrid(false);
+    private static readonly IReadOnlyList<GridLine> LightWorldGrid = CreateWorldGrid(true);
+
+    private static IReadOnlyList<GridLine> CreateWorldGrid(bool light)
     {
-        get
+        // Neither camera navigation nor framing may change the grid's units or bounds.
+        const float step = .25f;
+        const int count = 40;
+        const float span = count * step;
+        var result = new List<GridLine>();
+        var minor = light ? new Vector3(.72f, .76f, .78f) : new Vector3(.23f, .255f, .26f);
+        for (var i = -count; i <= count; i++)
         {
-            var radius = Math.Max(1, Math.Max(Bounds.Width, Bounds.Height) / PixelsPerUnit * 1.5);
-            var desired = 48 / PixelsPerUnit;
-            var power = Math.Pow(10, Math.Floor(Math.Log10(desired)));
-            var ratio = desired / power;
-            var step = (float)(power * (ratio <= 1 ? 1 : ratio <= 2 ? 2 : ratio <= 5 ? 5 : 10));
-            var count = (int)Math.Ceiling(radius / step);
-            var x = MathF.Floor(_center.X / step) * step;
-            var z = MathF.Floor(_center.Z / step) * step;
-            var span = count * step;
-            var result = new List<GridLine>();
-            for (var i = -count; i <= count; i++)
-            {
-                var px = x + i * step; var pz = z + i * step;
-                // Grid coordinates are world-space multiples, never camera-relative heights.
-                result.Add(new(new(px, 0, z - span), new(px, 0, z + span),
-                    MathF.Abs(px) < step * .01f ? new(.3f, .42f, .65f) : new(.23f, .255f, .26f)));
-                result.Add(new(new(x - span, 0, pz), new(x + span, 0, pz),
-                    MathF.Abs(pz) < step * .01f ? new(.65f, .3f, .3f) : new(.23f, .255f, .26f)));
-            }
-            return result;
+            var offset = i * step;
+            result.Add(new(new(offset, 0, -span), new(offset, 0, span),
+                i == 0 ? new(.3f, .42f, .65f) : minor));
+            result.Add(new(new(-span, 0, offset), new(span, 0, offset),
+                i == 0 ? new(.65f, .3f, .3f) : minor));
         }
+        return result.AsReadOnly();
     }
 }

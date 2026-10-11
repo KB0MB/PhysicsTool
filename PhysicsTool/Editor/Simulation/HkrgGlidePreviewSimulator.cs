@@ -129,6 +129,7 @@ public sealed class HkrgGlidePreviewSimulator
     public IReadOnlyDictionary<int, ColliderPreviewShape> GetColliderPoses()
     {
         var result = new Dictionary<int, ColliderPreviewShape>();
+        var poses = GetBonePoses();
         foreach (var collider in _colliders)
         {
             if (!_bones.TryGetValue(collider.BoneIndex, out var bone) ||
@@ -137,7 +138,7 @@ public sealed class HkrgGlidePreviewSimulator
                 continue;
             }
 
-            var currentPose = GetBonePoses().TryGetValue(collider.BoneIndex, out var pose) ? pose : restPose;
+            var currentPose = poses.TryGetValue(collider.BoneIndex, out var pose) ? pose : restPose;
             result[collider.Index] = new ColliderPreviewShape
             {
                 Index = collider.Index,

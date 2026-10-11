@@ -18,11 +18,114 @@ internal static class Program
     {
         try
         {
+            if (args.Length >= 2 && args[0] == "--documentation")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                DocumentationChecks.Run(Path.GetFullPath(args[1])); return 0;
+            }
+            if (args.FirstOrDefault() == "--meshcodec") { MeshCodecChecks.Run(); MeshCodecChecks.Fixtures(args.Skip(1).ToArray()); return 0; }
+            if (args.Length >= 2 && args[0] == "--audit-to-totk") { TotkConversionAudit.Run(args[1], args.ElementAtOrDefault(2)); return 0; }
+            if (args.Length >= 2 && args[0] == "--mirror-cloth") { WholeClothMirrorChecks.Run(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--actor-particles") { ActorParticleChecks.Inspect(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--tegra-layout") { TegraLayoutChecks.Native(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--dump-actor-textures") { TotkActorChecks.DumpTextures(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--profile-actor") { TotkActorChecks.Profile(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--totk-shader-gpu")
+            {
+                TotkShaderGpuChecks.ToolboxShader = args[1];
+                AppBuilder.Configure<TotkShaderGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().StartWithClassicDesktopLifetime([]);
+                return TotkShaderGpuChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--actor-browser")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                ActorBrowserChecks.Run(Path.GetFullPath(args[1])); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--inspect-totk-actor") { TotkActorChecks.Inspect(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--totk-actor") { TotkActorChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--totk-simulation")
+            {
+                TotkSimulationChecks.Run(args[1], args.Skip(2).ToArray()); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--dress-audit")
+            {
+                DressAuditChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(DressAuditChecks.Output);
+                DressAuditChecks.ActorPath = args[2];
+                AppBuilder.Configure<DressAuditChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return DressAuditChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--simulation-audit")
+            {
+                ClothSimulationChecks.Run(args[1]);
+                SupportBoneSimulationChecks.Run(args[1]);
+                SupportHierarchyChecks.Run();
+                SimulationAuditChecks.TaperedContacts();
+                if (args.Length > 2) SimulationAuditChecks.Actors(args[1], args.Skip(2).ToArray());
+                Console.WriteLine("PASS: native cloth, collider, skinning, and helper-bone equations.");
+                return 0;
+            }
+            if (args.Length >= 1 && args[0] == "--botw-materials") { BotwMaterialChecks.Run(args.Skip(1).ToArray()); return 0; }
+            if (args.Length >= 2 && args[0] == "--survey-material") { BotwMaterialChecks.Survey(args[1]); return 0; }
+            if (args.Length >= 1 && args[0] == "--actor-appearance") { ActorAppearanceChecks.Run(args.Skip(1).ToArray()); return 0; }
+            if (args.Length >= 3 && args[0] == "--gpu-collision")
+            {
+                CollisionGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(CollisionGpuChecks.Output); CollisionGpuChecks.Source = args[2];
+                AppBuilder.Configure<CollisionGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]); return CollisionGpuChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--native-collision")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                CollisionChecks.Native(Path.GetFullPath(args[1]), args.Skip(2).ToArray()); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--collision")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                CollisionChecks.Run(Path.GetFullPath(args[1])); return 0;
+            }
+            if (args.Length >= 2 && args[0] is "--ragdoll-editor" or "--helper-editor")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                if (args[0] == "--helper-editor") HelperEditorChecks.Run(Path.GetFullPath(args[1]));
+                else RagdollChecks.Run(Path.GetFullPath(args[1]));
+                return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--file-workflow")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                DocumentChecks.Run(Path.GetFullPath(args[1]));
+                FileWorkflowChecks.Run(Path.GetFullPath(args[1]));
+                return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--audit-cloth-conversion")
+            {
+                ClothConversionAudit.Run(args[1], args.Skip(2).ToArray()); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--collider-poses")
+            {
+                ColliderPoseChecks.Run(args[1], args.Skip(2).ToArray()); return 0;
+            }
+            if (args.FirstOrDefault() == "--gpu-animation")
+            {
+                ActorGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(ActorGpuChecks.Output);
+                ActorGpuChecks.PathToModel = args[2]; ActorGpuChecks.PathToAnimation = args[3];
+                ActorGpuChecks.PathToPhysics = args.Length > 4 ? args[4] : "";
+                AppBuilder.Configure<ActorGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return ActorGpuChecks.Result;
+            }
+            if (args.FirstOrDefault() == "--native-animation")
+            {
+                EditorAnimationChecks.Native(args[1], args[2]); return 0;
+            }
+            if (args.FirstOrDefault() == "--binding")
+            {
+                ModelBindingChecks.RunBfres(args[1]); return 0;
+            }
             if (args.FirstOrDefault() == "--gpu-actor")
             {
                 ActorGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(ActorGpuChecks.Output);
                 ActorGpuChecks.PathToActor = args[2];
-                AppBuilder.Configure<ActorGpuChecks>().UsePlatformDetect().WithInterFont().StartWithClassicDesktopLifetime([]);
+                ActorGpuChecks.ResourceRoots = args.Skip(3).ToArray();
+                AppBuilder.Configure<ActorGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
                 return ActorGpuChecks.Result;
             }
             if (args.FirstOrDefault() == "--catalog")
@@ -32,8 +135,12 @@ internal static class Program
                 var result = catalog.Scan(args.Skip(2), null, CancellationToken.None);
                 Require(result.Actors.Count > 0 && result.Actors.All(a => a.HasCloth || a.HasSupport), "Catalog filter failed");
                 var embedded = result.Actors.Where(a => a.ArchiveEntry != null).ToArray();
-                Require(embedded.Length > 0, "TitleBG actors missing");
-                Console.WriteLine($"PASS: {result.Actors.Count} cloth/helper actors, {embedded.Length} archive actors, {result.Warnings.Count} warnings.");
+                var totk = result.Actors.Where(a => a.IsTotk).ToArray();
+                Require(embedded.Length > 0 || totk.Length > 0, "TitleBG/TotK actors missing");
+                Require(totk.All(a => !a.Name.EndsWith(".pack") && a.IsSwitch), "TotK catalog name/platform mismatch");
+                var cached = catalog.Scan(args.Skip(2), null, CancellationToken.None);
+                Require(result.Actors.SequenceEqual(cached.Actors), "Catalog cache changed actor metadata");
+                Console.WriteLine($"PASS: {result.Actors.Count} cloth/helper actors, {embedded.Length} archive actors, {totk.Length} TotK actors, {result.Warnings.Count} warnings; cached scan matches.");
                 return 0;
             }
             if (args.FirstOrDefault() == "--actors")
@@ -44,11 +151,24 @@ internal static class Program
             {
                 GpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(GpuChecks.Output);
                 GpuChecks.ModelPath = args.Length > 2 ? Path.GetFullPath(args[2]) : ModelChecks.Run(GpuChecks.Output);
-                AppBuilder.Configure<GpuChecks>().UsePlatformDetect().WithInterFont().StartWithClassicDesktopLifetime([]);
+                AppBuilder.Configure<GpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
                 return GpuChecks.Result;
             }
             var output = Path.GetFullPath(args.FirstOrDefault() ?? "artifacts/checks"); Directory.CreateDirectory(output);
+            ClothConversionAudit.Synthetic();
+            TotkSimulationChecks.Equations();
+            ActorParticleChecks.Synthetic();
+            MeshCodecChecks.Run();
+            TotkMaterialChecks.Run();
+            ClothSimulationChecks.Run(Path.Combine(output, "simulation"));
+            SupportBoneSimulationChecks.Run(Path.Combine(output, "simulation"));
+            SupportHierarchyChecks.Run();
+            TotkConversionAudit.Run(Path.Combine(output, "to-totk"));
+            SimulationAuditChecks.TaperedContacts();
             var modelPath = ModelChecks.Run(output);
+            ActorAppearanceChecks.Run([]);
+            BotwMaterialChecks.Run([]);
+            ModelBindingChecks.Run(output);
             for (int format = 0; format < 3; format++)
             {
                 var session = new EditorSession(); session.New("PortableCloth", format);
@@ -76,11 +196,14 @@ internal static class Program
                     for (int frame = 0; frame < 120; frame++) simulator.Step(1f / 60);
                     Require(simulator.GetPositions().Values.All(p => float.IsFinite(p.X) && float.IsFinite(p.Y) && float.IsFinite(p.Z)), "Solver non-finite");
                 }
-                else Require(!reload.CanSimulate, "BPHCL simulation guard");
+                else if (reload.CanSimulate) Require(reload.CreateSimulator().Profile == ClothSolverProfile.TotkExperimental, "BPHCL must use the native TotK profile");
+                else Require(!reload.Document.GetTotkSimulationSupport(0).Supported, "BPHCL runtime guard must explain unsupported cases");
             }
             Console.WriteLine("PASS: Wii U/Switch HKCL and BPHCL drafts, topology, save/reload, atomic edits, undo/redo, solver.");
             DocumentChecks.Run(output);
             ClothTuningChecks.Run(output);
+            TransformPreviewChecks.Run(output);
+            ColliderPoseChecks.Run(Path.Combine(output, "collider-poses"), []);
             foreach (var file in args.Skip(1))
             {
                 var hash = SHA256.HashData(File.ReadAllBytes(file)); var fixture = new EditorSession(); fixture.Load(file); var document = fixture.Document;
@@ -114,6 +237,21 @@ internal static class Program
             window.LoadDonorPath(Path.Combine(output, "manual-1.hkcl")); Dispatcher.UIThread.RunJobs();
             using (var overview = window.CaptureRenderedFrame()!) overview.Save(Path.Combine(output, "overview-980.png"));
             OverviewChecks.Run(window);
+            PhysicsFileDropChecks.Run(output);
+            ActorBrowserChecks.Run(output);
+            TotkSimulationChecks.Editor(output);
+            EditorUsabilityChecks.Run(output);
+            TransformPreviewChecks.RunUi(output);
+            SelectionConstraintChecks.Run(output);
+            InspectorChecks.Run(output);
+            ParticleColliderInspectorChecks.Run(output);
+            HelperEditorChecks.Run(output);
+            ClipboardChecks.Run(output);
+            WholeClothMirrorChecks.Run(output);
+            ConversionChecks.Run(output);
+            FileWorkflowChecks.Run(output);
+            RagdollChecks.Run(output);
+            CollisionChecks.Run(output);
             var duplicate = window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Duplicate selected"));
             Require(duplicate.IsEnabled, "Overview duplicate disabled");
             duplicate.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
@@ -122,9 +260,13 @@ internal static class Program
             var currentPath = window.Session.Path; window.SwapFiles();
             Require(window.DonorSession.Path == currentPath, "UI swap not wired"); window.SwapFiles();
             window.ShowEditor(); Dispatcher.UIThread.RunJobs();
-            Require(!window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Swap files")).IsEnabled, "Swap available inside editor");
+            Require(!window.GetVisualDescendants().OfType<Button>().Any(b => Equals(b.Content, "Swap files") && b.IsEffectivelyVisible), "Swap available inside editor");
             NavigationChecks.Run(window);
+            ColliderChecks.Run(output);
+            ModelBindingChecks.RunEditor(output);
+            EditorAnimationChecks.Run(output);
             TuningWindowChecks.Run(window, output);
+            window.Viewport.SelectRectangle(new Rect(0, 0, window.Viewport.Bounds.Width, window.Viewport.Bounds.Height), SelectionOperation.Replace);
             for (int cycle = 0; cycle < 3; cycle++)
             {
                 window.ToggleSimulation(); Dispatcher.UIThread.RunJobs();
@@ -141,7 +283,7 @@ internal static class Program
                 Require(Enumerable.Range(0, bytes.Length / 4).Select(i => BitConverter.ToUInt32(bytes, i * 4)).Distinct().Take(20).Count() >= 20, "Blank rendered editor");
             }
             var savedState = window.Session.Document.CaptureState();
-            var load = window.LoadModelPathAsync(modelPath);
+            var load = FixtureImports.Model(window, modelPath);
             while (!load.IsCompleted) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
             load.GetAwaiter().GetResult(); Dispatcher.UIThread.RunJobs();
             Require(window.Viewport.Model?.Meshes.Count == 2, "Model UI import");
@@ -155,7 +297,7 @@ internal static class Program
             window.ShowEditor(); Dispatcher.UIThread.RunJobs();
             Require(camera == window.Viewport.CameraState && ReferenceEquals(oldModel, window.Viewport.Model), "Back reset model/camera");
             Require(selected.SequenceEqual(window.Viewport.Selected), "Back reset selection");
-            var badLoad = window.LoadModelPathAsync(Path.Combine(output, "missing.obj"));
+            var badLoad = window.LoadModelPathAsync(Path.Combine(output, "missing.bfres"));
             while (!badLoad.IsCompleted) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
             try { badLoad.GetAwaiter().GetResult(); throw new Exception("Missing model accepted"); } catch (FileNotFoundException) { }
             Require(ReferenceEquals(oldModel, window.Viewport.Model), "Failed import lost previous model");

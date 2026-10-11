@@ -9,9 +9,10 @@ namespace PhysicsTool.Desktop.Rendering;
 public sealed unsafe class ModelGlRenderer : IDisposable
 {
     private readonly GL _gl;
-    private readonly uint _program;
+    private readonly uint _standardProgram, _botwProgram, _totkProgram;
+    private uint _program;
     private readonly GridGlRenderer _grid;
-    private readonly Dictionary<string, int> _locations = new();
+    private readonly Dictionary<(uint Program, string Name), int> _locations = new();
     private readonly Dictionary<VisualModelTexture, uint> _textures = new();
     private readonly List<GpuMesh> _meshes = new();
     private sealed record GpuMesh(uint Vao, uint Vbo, uint Ebo, VisualModelMesh Source, uint[] Textures);
@@ -19,19 +20,38 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     public ModelGlRenderer(GL gl, bool es)
     {
         _gl = gl;
-        uint vs = Compile(ShaderType.VertexShader, Source("Model.vert", es));
-        uint fs = 0;
+        _standardProgram = CreateProgram("Model.frag", es);
         try
         {
-            fs = Compile(ShaderType.FragmentShader, Source("Model.frag", es));
-            _program = gl.CreateProgram(); gl.AttachShader(_program, vs); gl.AttachShader(_program, fs);
-            string[] names = ["aPosition", "aNormal", "aAlbedoUv", "aSpmUv", "aNormalUv", "aAmbientOcclusionUv", "aAuxiliaryUv", "aTangent"];
-            for (uint i = 0; i < names.Length; i++) gl.BindAttribLocation(_program, i, names[i]);
-            gl.LinkProgram(_program); gl.GetProgram(_program, ProgramPropertyARB.LinkStatus, out var linked);
-            if (linked == 0) { var log = gl.GetProgramInfoLog(_program); gl.DeleteProgram(_program); throw new InvalidOperationException("Model shader link failed: " + log); }
+            _botwProgram = CreateProgram("BOTW.frag", es);
+            _totkProgram = CreateProgram("TOTK.frag", es);
+            _grid = new GridGlRenderer(gl, es);
         }
+        catch
+        {
+            gl.DeleteProgram(_standardProgram);
+            if (_botwProgram != 0) gl.DeleteProgram(_botwProgram);
+            if (_totkProgram != 0) gl.DeleteProgram(_totkProgram);
+            throw;
+        }
+    }
+    private uint CreateProgram(string fragment, bool es)
+    {
+        var gl = _gl;
+        uint vs = Compile(ShaderType.VertexShader, Source(fragment == "TOTK.frag" ? "TOTK.vert" : "Model.vert", es));
+        uint fs = 0, program = 0;
+        try
+        {
+            fs = Compile(ShaderType.FragmentShader, Source(fragment, es));
+            program = gl.CreateProgram(); gl.AttachShader(program, vs); gl.AttachShader(program, fs);
+            string[] names = ["aPosition", "aNormal", "aAlbedoUv", "aSpmUv", "aNormalUv", "aAmbientOcclusionUv", "aAuxiliaryUv", "aTangent", "aVertexColor"];
+            for (uint i = 0; i < names.Length; i++) gl.BindAttribLocation(program, i, names[i]);
+            gl.LinkProgram(program); gl.GetProgram(program, ProgramPropertyARB.LinkStatus, out var linked);
+            if (linked == 0) throw new InvalidOperationException(fragment + " link failed: " + gl.GetProgramInfoLog(program));
+            return program;
+        }
+        catch { if (program != 0) gl.DeleteProgram(program); throw; }
         finally { gl.DeleteShader(vs); if (fs != 0) gl.DeleteShader(fs); }
-        _grid = new GridGlRenderer(gl, es);
     }
     private static string Source(string name, bool es)
     {
@@ -49,18 +69,19 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         var log = _gl.GetShaderInfoLog(shader); _gl.DeleteShader(shader);
         throw new InvalidOperationException("Model shader compilation failed: " + log);
     }
-    private int Location(string name) { if (!_locations.TryGetValue(name, out var value)) _locations[name] = value = _gl.GetUniformLocation(_program, name); return value; }
+    private int Location(string name) { var key = (_program, name); if (!_locations.TryGetValue(key, out var value)) _locations[key] = value = _gl.GetUniformLocation(_program, name); return value; }
     private void I(string name, int value) => _gl.Uniform1(Location(name), value);
     private void F(string name, float value) => _gl.Uniform1(Location(name), value);
     private void V(string name, Vector3 value) => _gl.Uniform3(Location(name), value.X, value.Y, value.Z);
     private void M(string name, Matrix4x4 value) => _gl.UniformMatrix4(Location(name), 1, false, (float*)&value);
 
-    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null)
+    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false)
     {
         var gl = _gl;
         gl.Viewport(0, 0, (uint)width, (uint)height); gl.Disable(EnableCap.ScissorTest);
         gl.ColorMask(true, true, true, true); gl.DepthMask(true);
-        gl.ClearColor(36 / 255f, 40 / 255f, 41 / 255f, 1); gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+        var clear = background ?? new Vector3(36 / 255f, 40 / 255f, 41 / 255f);
+        gl.ClearColor(clear.X, clear.Y, clear.Z, 1); gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
         if (grid != null) _grid.Draw(grid, camera);
         if (!ReferenceEquals(_model, model))
         {
@@ -70,13 +91,12 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         }
         if (model == null) return;
         gl.Enable(EnableCap.DepthTest); gl.Disable(EnableCap.CullFace); gl.Disable(EnableCap.Blend);
-        gl.UseProgram(_program); M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
-        V("uViewDirection", direction);
         var right = Vector3.Cross(Vector3.UnitY, direction);
         right = right.LengthSquared() > 1e-8f ? Vector3.Normalize(right) : Vector3.UnitX;
         var up = Vector3.Cross(direction, right);
-        V("uKeyLight", Vector3.Normalize(Vector3.Normalize(new(.35f, .8f, .45f)) * .28f + Vector3.Normalize(direction * .62f + right * .34f + up * .7f) * .72f));
-        V("uFillLight", Vector3.Normalize(direction * .45f - right * .72f + up * .22f));
+        var keyLight = Vector3.Normalize(Vector3.Normalize(new(.35f, .8f, .45f)) * .28f + Vector3.Normalize(direction * .62f + right * .34f + up * .7f) * .72f);
+        var fillLight = Vector3.Normalize(direction * .45f - right * .72f + up * .22f);
+        _program = 0;
         // Match the original complete-model depth prepass to avoid hair/cloth shell artifacts.
         gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
         DrawMeshes();
@@ -91,6 +111,30 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             {
                 if (hidden.Contains(index)) continue;
                 var gpu = _meshes[index]; var m = gpu.Source.Material;
+                var program = m.Totk != null ? _totkProgram : m.UseBotwPreviewShader ? _botwProgram : _standardProgram;
+                if (_program != program)
+                {
+                    _program = program; gl.UseProgram(program);
+                    M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
+                    V("uViewDirection", direction); V("uKeyLight", keyLight); V("uFillLight", fillLight);
+                }
+                if (m.Totk is { } totk)
+                {
+                    V("specLightDirection", keyLight);
+                    I("useNormalMap", m.UseNormal ? 1 : 0); I("renderVertColor", 1);
+                    I("renderDiffuse", 1); I("renderSpecular", m.UseSpm ? 1 : 0); I("renderFresnel", 1); I("colorOverride", 0);
+                    foreach (var pair in totk.Integers) I(pair.Key, pair.Value);
+                    if (!emission) I("totkEmissionEnabled", 0);
+                    foreach (var pair in totk.Scalars) F(pair.Key, pair.Value);
+                    foreach (var pair in totk.Vectors) gl.Uniform4(Location(pair.Key), pair.Value.X, pair.Value.Y, pair.Value.Z, pair.Value.W);
+                    for (int t = 0; t < 8; t++)
+                    {
+                        gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + t));
+                        gl.BindTexture(TextureTarget.Texture2D, gpu.Textures[t]); I($"Texture{t}", t);
+                    }
+                    gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
+                    continue;
+                }
                 string[] sampler = ["uTexture", "uSpecularTexture", "uNormalTexture", "uAmbientOcclusionTexture", "uAuxiliaryTexture", "uEyeGlintTexture"];
                 string[] uses = ["uUseTexture", "uUseSpecularTexture", "uUseNormalTexture", "uUseAmbientOcclusionTexture", "uUseAuxiliaryTexture", "uUseEyeGlintTexture"];
                 bool[] enabled = [m.UseAlbedo || gpu.Source.Texture == null && gpu.Source.UseMissingTextureFallback, m.UseSpm, m.UseNormal, m.UseAmbientOcclusion, m.UseAuxiliary, m.UseEyeGlint];
@@ -127,15 +171,16 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         foreach (var source in model.Meshes)
         {
             var gl = _gl; var vao = gl.GenVertexArray(); var vbo = gl.GenBuffer(); var ebo = gl.GenBuffer();
-            var gpu = new GpuMesh(vao, vbo, ebo, source, new uint[6]); _meshes.Add(gpu);
+            var gpu = new GpuMesh(vao, vbo, ebo, source, new uint[8]); _meshes.Add(gpu);
             gl.BindVertexArray(vao); gl.BindBuffer(BufferTargetARB.ArrayBuffer, vbo);
             var vertices = ModelVertices.Build(source);
             fixed (float* v = vertices) gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.StaticDraw);
             gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, ebo);
             fixed (uint* i = source.Indices) gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(source.Indices.Length * 4), i, BufferUsageARB.StaticDraw);
-            int[] sizes = [3, 3, 2, 2, 2, 2, 2, 4]; int offset = 0;
-            for (uint a = 0; a < sizes.Length; a++) { gl.VertexAttribPointer(a, sizes[a], VertexAttribPointerType.Float, false, 80, (void*)(offset * 4)); gl.EnableVertexAttribArray(a); offset += sizes[a]; }
-            VisualModelTexture?[] textures = [source.Texture ?? (source.UseMissingTextureFallback ? ModelTextures.Default : null), source.SpecularTexture, source.NormalTexture, source.AmbientOcclusionTexture, source.AuxiliaryTexture, source.EyeGlintTexture];
+            int[] sizes = source.Material.Totk == null ? [3, 3, 2, 2, 2, 2, 2, 4] : [3, 3, 2, 2, 2, 2, 2, 4, 4]; int offset = 0;
+            uint stride = source.Material.Totk == null ? 80u : 96u;
+            for (uint a = 0; a < sizes.Length; a++) { gl.VertexAttribPointer(a, sizes[a], VertexAttribPointerType.Float, false, stride, (void*)(offset * 4)); gl.EnableVertexAttribArray(a); offset += sizes[a]; }
+            VisualModelTexture?[] textures = source.Material.Totk?.Textures ?? [source.Texture ?? (source.UseMissingTextureFallback ? ModelTextures.Default : null), source.SpecularTexture, source.NormalTexture, source.AmbientOcclusionTexture, source.AuxiliaryTexture, source.EyeGlintTexture];
             for (int t = 0; t < textures.Length; t++) if (textures[t] is { } texture) gpu.Textures[t] = UploadTexture(texture);
         }
     }
@@ -157,5 +202,5 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         foreach (var t in _textures.Values) _gl.DeleteTexture(t);
         _meshes.Clear(); _textures.Clear();
     }
-    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _gl.DeleteProgram(_program); }
+    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); }
 }

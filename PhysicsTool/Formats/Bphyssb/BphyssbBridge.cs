@@ -46,6 +46,10 @@ public sealed record BphyssbPoseBone(int BoneId, int SpaceId, Vector3 Translatio
 /// </summary>
 public static class BphyssbBridge
 {
+    internal static BphyssbDocumentSummary EditConnections(BphyssbDocumentSummary document, Action<BotwAampWriter.AampListNode> edit) =>
+        Rebuild(document, root => edit(RequireDataRoot(root)));
+    internal static BphyssbDocumentSummary UpdateCurveKeys(BphyssbDocumentSummary document, int index, IReadOnlyList<Vector4> keys) =>
+        Rebuild(document, root => SidecarCurveEditing.Write(RequireList(RequireDataRoot(root), ConnectionCurveListHash, "connection_curve_list"), index, keys));
     private const uint ParamRootHash = 2767637356u;
     private const uint SupportBoneHeaderHash = 2417381405u;
     private const uint SupportBoneDataHash = 2663467289u;
@@ -730,7 +734,7 @@ public static class BphyssbBridge
                     .Select((item, supportIndex) => (item, supportIndex))
                     .Where(item => SupportOutputHashes
                         .Select(hash => item.item.Find(hash)?.AsInt32() ?? -1)
-                        .Any(activeHandles.Contains))
+                        .Any(activeHandles.Contains) || groupIndex == 0 && SupportOutputHashes.All(hash => (item.item.Find(hash)?.AsInt32() ?? -1) < 0))
                     .Select(item => item.supportIndex)
                     .ToArray();
                 var outputHandles = supportIndices
@@ -1418,12 +1422,6 @@ public static class BphyssbBridge
         var sourceDriven = RequireList(sourceData, 1256621249u, "driven_bone_list");
         var sourcePoses = RequireList(sourceData, 1386686749u, "pose_driven_list");
 
-        if (sourceDriven.Objects.Count != sourcePoses.Objects.Count)
-        {
-            throw new InvalidDataException(
-                $"BPHHB has {sourceDriven.Objects.Count} driven records but {sourcePoses.Objects.Count} pose-driven records.");
-        }
-
         var sourceBoneNames = sourceBones.Objects
             .Select((item, index) => ReadString(item, NameHash, $"bone_{index}"))
             .ToArray();
@@ -1431,7 +1429,8 @@ public static class BphyssbBridge
             .Select((item, index) => new SourceDriver(index, ReadRequiredInt(item, SourceBoneIdHash, "driver_bone_list"), item))
             .ToArray();
         var drivenRecords = sourceDriven.Objects
-            .Select((item, index) => new SourceDriven(index, ReadRequiredInt(item, SourceBoneIdHash, "driven_bone_list"), item, sourcePoses.Objects[index]))
+            .Select((item, index) => new SourceDriven(index, ReadRequiredInt(item, SourceBoneIdHash, "driven_bone_list"), item,
+                sourcePoses.Objects[SidecarConnectionEditing.SinglePose(CloneObject(item), sourcePoses.Objects.Count)]))
             .ToArray();
 
         var requiredBoneIds = new List<int>();

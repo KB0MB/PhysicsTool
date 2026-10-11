@@ -1,0 +1,9 @@
+Managed ASTC decoder copied from Switch_Toolbox/Switch_Toolbox_Library/FileFormats/ASTC:
+ASTCDecoder.cs, ASTCPixel.cs, BitArrayStream.cs, IntegerEncoded.cs.
+Source: https://github.com/KillzXGaming/Switch-Toolbox
+The source retains its Ryujinx namespace and FasTC implementation reference.
+The Toolbox repository's GPL-3.0 LICENSE is included alongside these files.
+
+TOTK.frag is adapted from Toolbox/Shader/Bfres/BFRES_Totk.frag.
+TexToGo layout and material bindings are ported from TXTG.cs and BFRES_Render.cs.
+No Windows Forms, GDI, native texture decoder, or game resources are bundled.

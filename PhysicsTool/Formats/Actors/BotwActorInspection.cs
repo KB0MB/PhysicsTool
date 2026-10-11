@@ -21,7 +21,8 @@ internal static class BotwActorInspection
             foreach (var name in refs.AnimationResources)
                 if (refs.ReadModel(name) is { } data)
                     animations.AddRange(new ToolboxBfresDocument(data).SkeletalAnimations.Select(a => new ToolboxActorAnimation(a, name)));
-            var models = refs.Models.Select(m => new ToolboxActorModel(documents[m.Resource], m.Model, textures)).ToArray();
+            var models = refs.Models.Select(m => new ToolboxActorModel(documents[m.Resource], m.Model, textures,
+                ToolboxActorAppearance.Read(documents[m.Resource], refs.VariationMatAnim, refs.VariationMatAnimFrame, refs.Warnings), refs.Warnings)).ToArray();
             var result = new { refs.ActorName, refs.IsSwitch, refs.Models, refs.PhysicsFiles, refs.AnimationResources,
                 AnimationCount = animations.Count, AnimationNames = animations.Select(a => a.Name), Textures = textures.Keys, refs.Warnings,
                 ModelsLoaded = models.Select(m => new { m.Name, Bones = m.RestPose.Bones.Count, Meshes = m.RestPose.Meshes.Count,

@@ -5,7 +5,8 @@ namespace HKCLTool;
 internal sealed record BotwActorCatalogEntry(string Name, string Path, string? ArchiveEntry,
     string ResourceRoot, bool IsSwitch, bool HasCloth, bool HasSupport)
 {
-    public string Platform => IsSwitch ? "Switch" : "Wii U";
+    public string Platform => IsTotk ? "TotK (Switch)" : IsSwitch ? "BotW (Switch)" : "BotW (Wii U)";
+    public bool IsTotk => Path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase);
     public string Source
     {
         get
@@ -23,7 +24,7 @@ internal sealed class BotwActorCatalog
 {
     private sealed record CachedFile(long Length, DateTime Modified, string ResourceRoot, IReadOnlyList<BotwActorCatalogEntry> Actors, IReadOnlyList<string> Warnings);
     private sealed record CacheDocument(int Version, Dictionary<string, CachedFile> Files);
-    private const int CacheVersion = 1;
+    private const int CacheVersion = 2;
     private readonly Dictionary<string, CachedFile> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _scanGate = new();
     private readonly string _cachePath;
@@ -56,7 +57,7 @@ internal sealed class BotwActorCatalog
         foreach (var root in roots)
         {
             cancellation.ThrowIfCancellationRequested();
-            foreach (var directory in new[] { root, System.IO.Path.Combine(root, "Actor", "Pack"), System.IO.Path.Combine(root, "Pack") }.Distinct(StringComparer.OrdinalIgnoreCase))
+            foreach (var directory in new[] { root, System.IO.Path.Combine(root, "Actor", "Pack"), System.IO.Path.Combine(root, "Pack"), System.IO.Path.Combine(root, "Pack", "Actor") }.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (!Directory.Exists(directory)) continue;
                 try
@@ -70,6 +71,7 @@ internal sealed class BotwActorCatalog
             }
         }
         var actors = new List<BotwActorCatalogEntry>();
+        var totkCompression = new TotkResourceCompression();
         var scanned = 0;
         foreach (var (path, root) in files.OrderBy(f => f.Key, StringComparer.OrdinalIgnoreCase))
         {
@@ -83,7 +85,9 @@ internal sealed class BotwActorCatalog
                 { actors.AddRange(cached.Actors); warnings.AddRange(cached.Warnings); continue; }
                 var warningStart = warnings.Count;
                 var entries = new List<BotwActorCatalogEntry>();
-                var archive = BotwSarcArchive.OpenIndexed(path);
+                var archive = path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase)
+                    ? BotwSarcArchive.Parse(totkCompression.Decode(File.ReadAllBytes(path), new[] { root }.Concat(TotkResourceCompression.Roots(path))))
+                    : BotwSarcArchive.OpenIndexed(path);
                 if (IsActorPack(path))
                     AddActor(archive, path, null, root, entries, warnings);
                 else
@@ -109,14 +113,15 @@ internal sealed class BotwActorCatalog
         return new(actors.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ThenBy(a => a.Platform).ThenBy(a => a.Path).ToArray(), warnings);
     }
 
-    internal static bool IsActorPack(string path) => System.IO.Path.GetExtension(path).ToLowerInvariant() is ".sbactorpack" or ".bactorpack";
+    internal static bool IsActorPack(string path) => System.IO.Path.GetExtension(path).ToLowerInvariant() is ".sbactorpack" or ".bactorpack" ||
+        path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase) && !System.IO.Path.GetFileName(path).Equals("ZsDic.pack.zs", StringComparison.OrdinalIgnoreCase);
     private static bool IsReadError(Exception ex) => ex is IOException or UnauthorizedAccessException or ArgumentException or OverflowException or NotSupportedException;
 
     private static void AddActor(BotwSarcArchive pack, string path, string? entry, string root,
         List<BotwActorCatalogEntry> result, List<string> warnings)
     {
-        var cloth = pack.Entries.Any(e => e.Name.EndsWith(".hkcl", StringComparison.OrdinalIgnoreCase));
-        var support = pack.Entries.Any(e => e.Name.EndsWith(".bphyssb", StringComparison.OrdinalIgnoreCase));
+        var cloth = pack.Entries.Any(e => e.Name.EndsWith(".hkcl", StringComparison.OrdinalIgnoreCase) || e.Name.EndsWith(".bphcl", StringComparison.OrdinalIgnoreCase));
+        var support = pack.Entries.Any(e => e.Name.EndsWith(".bphyssb", StringComparison.OrdinalIgnoreCase) || e.Name.EndsWith(".bphhb", StringComparison.OrdinalIgnoreCase));
         // References also count: shared physics may live outside the actor pack.
         foreach (var physics in pack.Entries.Where(e => e.Name.EndsWith(".bphysics", StringComparison.OrdinalIgnoreCase)))
         {
@@ -135,7 +140,7 @@ internal sealed class BotwActorCatalog
             { warnings.Add(System.IO.Path.GetFileName(entry ?? path) + ": " + UserFacingExceptionFormatter.Format(ex)); }
         }
         if (cloth || support)
-            result.Add(new(System.IO.Path.GetFileNameWithoutExtension(entry ?? path), path, entry, root, pack.LittleEndian, cloth, support));
+            result.Add(new(path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileName(path)[..^8] : System.IO.Path.GetFileNameWithoutExtension(entry ?? path), path, entry, root, pack.LittleEndian, cloth, support));
     }
 
     private static IReadOnlyList<string> FindResourceRoots(IEnumerable<string> folders, List<string> warnings, CancellationToken cancellation)

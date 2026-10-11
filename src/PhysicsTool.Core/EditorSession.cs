@@ -19,7 +19,15 @@ public sealed class EditorSession
     public bool CanRemoveEntry => HasSelectedEntry && !Document.IsHkrg;
     public bool CanEditClothSettings => HasSelectedEntry && !Document.IsReadOnlyExternal;
     public bool CanScaleMass => CanManageCloth && Document.CanEditParticleValues;
-    public bool CanSimulate => HasSelectedEntry && !Document.IsReadOnlyExternal && Document.GetParticleRows(ClothIndex).Any(p => !p.Fixed);
+    public bool CanSimulate => HasSelectedEntry &&
+        (!Document.IsReadOnlyExternal || Document.IsBphcl && Document.GetTotkSimulationSupport(ClothIndex).Supported) &&
+        Document.GetParticleRows(ClothIndex).Any(p => !p.Fixed);
+
+    public HkclPreviewSimulator CreateSimulator()
+    {
+        if (!CanSimulate) throw new InvalidOperationException("The selected cloth cannot be simulated with the available kernels.");
+        return new(Document.IsBphcl ? Document.GetTotkSimulationPreview(ClothIndex) : Document.GetParticlePreview(ClothIndex));
+    }
 
     public void New(string name, int format)
     {
@@ -83,12 +91,20 @@ public sealed class EditorSession
             return Document.IsBphhb && source.IsBphhb || Document.IsBphyssb && source.IsBphyssb
                 ? (true, "Import this helper group, remapping its bones, curves, outputs, and base poses? The donor is not changed.")
                 : (false, "Helper-group merging requires matching sidecar formats. Convert the donor first.");
-        if (Document.IsBphcl && !source.IsBphcl) return (false, "HKCL cannot be merged directly into BPHCL. Convert the donor first.");
-        if (!Document.IsBphcl && source.IsBphcl)
+        if (Document.IsBphcl != source.IsBphcl)
         {
-            if (!HasSelectedEntry) return (false, "Select an HKCL cloth as the conversion template first.");
-            var report = Document.GetBphclToHkclConversionPreflight(source, donor.ClothIndex, ClothIndex);
-            return (report.IsEligible, report.ToDisplayText());
+            try
+            {
+                var converted = PhysicsConversion.ConvertSelectedCloth(source, donor.ClothIndex, Platform);
+                if (Document.IsBphcl)
+                {
+                    var report = Document.GetBphclMergePreflight(converted, 0);
+                    if (!report.CanAttemptExperimentalTypeUnion) return (false, report.ToDisplayText());
+                }
+                return (true, $"Convert the selected donor cloth to {(Document.IsBphcl ? "BPHCL" : "HKCL")} and add it to the current file?\n\nExisting cloths and the donor stay unchanged. Conversion uses the same defaults as File > Convert; game-specific behavior may still need tuning.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException or NotSupportedException or ArgumentException)
+            { return (false, "This cloth could not be converted for merging. " + ex.Message); }
         }
         if (Document.IsBphcl)
         {
@@ -105,7 +121,9 @@ public sealed class EditorSession
         var result = "";
         Edit((doc, index) =>
         {
-            result = doc.MergeClothFrom(donor.Document, donor.ClothIndex, index);
+            var crossCloth = !doc.IsHelperBoneSidecar && !donor.Document.IsHelperBoneSidecar && doc.IsBphcl != donor.Document.IsBphcl;
+            var source = crossCloth ? PhysicsConversion.ConvertSelectedCloth(donor.Document, donor.ClothIndex, Platform) : donor.Document;
+            result = doc.MergeClothFrom(source, crossCloth ? 0 : donor.ClothIndex, index);
             if (doc.GetClothSummaries().Count > count) ClothIndex = doc.GetClothSummaries().Count - 1;
         });
         return result;

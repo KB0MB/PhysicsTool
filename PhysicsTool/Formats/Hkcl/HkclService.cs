@@ -223,6 +223,9 @@ public sealed partial class HkclService
         }
         return BphhbBridge.ExportWithParents(_bphyssb, path, parents);
     }
+
+    public IReadOnlyList<string> GetBphhbConversionWarnings() => _bphyssb == null
+        ? Array.Empty<string>() : BphhbBridge.GetConversionWarnings(_bphyssb);
     public string CaptureState()
     {
         if (_bphcl?.NativeDocument is { } bphcl)
@@ -381,12 +384,13 @@ public sealed partial class HkclService
     public SidecarPreviewEvaluation EvaluateSidecarDriverGroup(
         int groupIndex,
         IReadOnlyList<VisualModelBone> currentBones,
-        IReadOnlyList<VisualModelBone> restBones)
+        IReadOnlyList<VisualModelBone> restBones,
+        IReadOnlyList<SidecarDriverGroup>? preparedGroups = null)
     {
         if (_bphhb != null)
-            return SidecarPreviewEvaluator.Evaluate(_bphhb, groupIndex, currentBones, restBones);
+            return SidecarPreviewEvaluator.Evaluate(_bphhb, groupIndex, currentBones, restBones, preparedGroups);
         if (_bphyssb != null)
-            return SidecarPreviewEvaluator.Evaluate(_bphyssb, groupIndex, currentBones, restBones);
+            return SidecarPreviewEvaluator.Evaluate(_bphyssb, groupIndex, currentBones, restBones, preparedGroups);
         return new SidecarPreviewEvaluation(
             Array.Empty<SidecarBonePreviewPose>(),
             Array.Empty<string>());
@@ -2270,6 +2274,9 @@ public sealed partial class HkclService
         var used = group.DriverBoneIndices.Concat(group.DrivenBoneIndices).ToHashSet();
         return rows.Where(row => used.Contains(row.Index)).ToArray();
     }
+
+    public IReadOnlyList<BoneEditRow> GetSidecarBoneRows() => _bphhb != null ? GetBphhbBoneRows(_bphhb)
+        : _bphyssb != null ? GetBphyssbBoneRows(_bphyssb) : Array.Empty<BoneEditRow>();
     private static IReadOnlyList<BoneEditRow> GetBphhbBoneRows(BphhbDocumentSummary helper)
     {
         var graph = helper.Graph;
@@ -2306,16 +2313,20 @@ public sealed partial class HkclService
             row.RotationW = driver.Rotation.W;
         }
 
-        // TotK stores a pose-driven record beside each driven-bone record.
-        // The base transform is therefore the best available viewport anchor
-        // until the complete actor skeleton is supplied alongside the helper.
-        for (var index = 0; index < Math.Min(graph.Driven.Count, graph.PoseDriven.Count); index++)
+        var nativeDriven = helper.Archive?.Root.Children.Single().FindChild("driven_bone_list");
+        for (var index = 0; index < graph.Driven.Count; index++)
         {
             var driven = graph.Driven[index];
             if (driven.BoneId < 0 || driven.BoneId >= rows.Length)
                 continue;
 
-            var pose = graph.PoseDriven[index];
+            var record = nativeDriven?.Objects.ElementAtOrDefault(index);
+            var poseIndex = record == null ? -1 : new[] { "translate", "rotate", "aim" }
+                .Where(channel => (record.Find(channel + "_driven_type")?.AsInt32() ?? -1) is -1 or 0)
+                .Select(channel => record.Find(channel + "_driven_id")?.AsInt32() ?? -1)
+                .FirstOrDefault(id => id >= 0 && id < graph.PoseDriven.Count, -1);
+            if (poseIndex < 0) continue;
+            var pose = graph.PoseDriven[poseIndex];
             var row = rows[driven.BoneId];
             row.ParentIndex = pose.BaseBoneId;
             row.X = pose.Translation.X;
@@ -3036,6 +3047,13 @@ public sealed partial class HkclService
 
             var collidable = collidables[row.Index];
             var previousBoneIndex = ToInt(GetValue(collidable, "transformIndex"), -1);
+            if (row.ClothIndex >= 0)
+            {
+                var storedTransform = GetValue(collidable, "transform") is Matrix4x4 stored ? stored : Matrix4x4.Identity;
+                var binding = GetCollidableRuntimeBinding(root, row.ClothIndex, collidable, storedTransform);
+                if (binding.HasMapEntry)
+                    previousBoneIndex = binding.BoneIndex;
+            }
             if (row.BoneIndex >= 0 && row.BoneIndex != previousBoneIndex && !string.IsNullOrWhiteSpace(row.BoneName))
                 row.Name = GetUniqueColliderName(collidables, row.Index, row.BoneName);
 
@@ -3238,6 +3256,8 @@ public sealed partial class HkclService
                             preview.BendStiffnessConstraints.Add(new ParticlePreviewBendStiffness
                             {
                                 UseRestPoseConfig = constraintSet.Values.GetValueOrDefault("useRestPoseConfig") != 0,
+                                ClampBendStiffness = constraintSet.Values.GetValueOrDefault("clampBendStiffness") != 0,
+                                MaxRestPoseHeightSq = (float)constraintSet.Values.GetValueOrDefault("maxRestPoseHeightSq"),
                                 ConstraintSetIndex = constraintSet.Index,
                                 ParticleA = link.ParticleA!.Value,
                                 ParticleB = link.ParticleB!.Value,
@@ -3400,9 +3420,10 @@ public sealed partial class HkclService
         var cloth = GetClothDatas(root).ElementAtOrDefault(clothIndex)
             ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
         var simulations = GetList(GetValue(cloth, "simClothDatas")) ?? Array.Empty<object>();
-        foreach (var simulation in simulations)
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach (var simulation in simulations.Concat(GetList(GetValue(cloth, "bufferDefinitions")) ?? Array.Empty<object>()))
         {
-            if (GetValue(simulation, "triangleIndices") is not IList triangles)
+            if (GetValue(simulation, "triangleIndices") is not IList triangles || !visited.Add(triangles))
                 continue;
 
             for (var offset = 0; offset + 2 < triangles.Count; offset += 3)
@@ -3925,36 +3946,7 @@ public sealed partial class HkclService
 
     public void DeleteBone(int clothIndex, int boneIndex)
     {
-        if (IsBphcl) throw new InvalidOperationException("BPHCL bone deletion requires remapping packed skin weights and transform trackers; it is not supported yet. No changes were made.");
-        var root = RequireRoot();
-        var skeleton = GetSkeletons(root).ElementAtOrDefault(clothIndex) ?? throw new ArgumentOutOfRangeException(nameof(clothIndex));
-        var bones = GetMutableList(GetValue(skeleton, "bones"), "bones");
-        var parents = GetValue(skeleton, "parentIndices") as IList ?? throw new InvalidOperationException("Skeleton parent list is not editable.");
-        var poses = GetValue(skeleton, "referencePose") as IList ?? throw new InvalidOperationException("Skeleton reference pose list is not editable.");
-        if (boneIndex < 0 || boneIndex >= bones.Count)
-            throw new ArgumentOutOfRangeException(nameof(boneIndex));
-
-        for (var i = 0; i < parents.Count; i++)
-        {
-            if (ToInt(parents[i], -1) == boneIndex)
-                throw new InvalidOperationException("That bone has child bones. Delete or reparent the child bones first.");
-        }
-
-        foreach (var collider in GetColliderRows(clothIndex))
-        {
-            if (collider.BoneIndex == boneIndex)
-                throw new InvalidOperationException("That bone has a collider bound to it. Delete or move the collider first.");
-        }
-
-        bones.RemoveAt(boneIndex);
-        parents.RemoveAt(boneIndex);
-        poses.RemoveAt(boneIndex);
-        for (var i = 0; i < parents.Count; i++)
-        {
-            var parent = ToInt(parents[i], -1);
-            if (parent > boneIndex)
-                SetListItem(parents, i, parent - 1);
-        }
+        DeleteBones(clothIndex, new[] { boneIndex });
     }
 
     public void DeleteCollider(int clothIndex, int colliderIndex)
@@ -5028,6 +5020,15 @@ public sealed partial class HkclService
         // constraint-execution references remain intact, while these solver
         // controls are safe one-to-one values.
         var sourceConfig = source.SimulateConfigs[0];
+        if (source.SimulateConfigs.Skip(1).Any(config =>
+            config.SubSteps != sourceConfig.SubSteps ||
+            config.NumberOfSolveIterations != sourceConfig.NumberOfSolveIterations ||
+            config.AdaptConstraintStiffness != sourceConfig.AdaptConstraintStiffness ||
+            config.UseAllInstanceCollidables != sourceConfig.UseAllInstanceCollidables ||
+            !config.InstanceCollidablesUsed.SequenceEqual(sourceConfig.InstanceCollidablesUsed) ||
+            !config.ConstraintExecution.SequenceEqual(sourceConfig.ConstraintExecution)))
+            throw new InvalidOperationException("This cloth has distinct per-state simulation configurations. " +
+                "HKCL conversion cannot yet represent them without losing solver behavior.");
         SetValue(target, "subSteps", sourceConfig.SubSteps);
         SetValue(target, "numberOfSolveIterations", sourceConfig.NumberOfSolveIterations);
         SetValue(target, "adaptConstraintStiffness", sourceConfig.AdaptConstraintStiffness);
@@ -6237,6 +6238,7 @@ public sealed partial class HkclService
             antiPinchTargetSets.Clear();
         }
 
+        var assignedTargets = new HashSet<object>(ReferenceEqualityComparer.Instance);
         foreach (var sourceSet in source.ConstraintSets)
         {
             var targetSets = sourceSet.IsAntiPinch ? antiPinchTargetSets : staticTargetSets;
@@ -6259,7 +6261,8 @@ public sealed partial class HkclService
 
             var createdTargetSet = false;
             var targetSet = targetSets.Cast<object?>().FirstOrDefault(set =>
-                set != null && string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal));
+                set != null && !assignedTargets.Contains(set) &&
+                string.Equals(set.GetType().Name, sourceSet.ClassName, StringComparison.Ordinal));
             if (targetSet == null)
             {
                 // BotW's generated HKX2 classes support this set even when
@@ -6281,6 +6284,7 @@ public sealed partial class HkclService
                 createdTargetSet = true;
                 notes.Add($"Added {sourceBucket} {sourceSet.ClassName} from the BPHCL source.");
             }
+            assignedTargets.Add(targetSet);
             SetValue(targetSet, "name", string.IsNullOrWhiteSpace(sourceSet.Name) ? sourceSet.ClassName : sourceSet.Name);
             // The concrete C# class identifies the broad constraint family,
             // but Havok also serializes these source-owned identifiers on the
@@ -6297,6 +6301,7 @@ public sealed partial class HkclService
             }
             var usesLocalConstraints = string.Equals(sourceSet.ClassName, "hclLocalRangeConstraintSet", StringComparison.Ordinal);
             var usesTransitionParticles = string.Equals(sourceSet.ClassName, "hclTransitionConstraintSet", StringComparison.Ordinal);
+            var usesBonePlanes = string.Equals(sourceSet.ClassName, "hclBonePlanesConstraintSet", StringComparison.Ordinal);
             var sourceRecords = usesLocalConstraints
                 ? GetBphclLocalRangeRecordsForHkcl(sourceSet, notes)
                 : usesTransitionParticles
@@ -6306,7 +6311,7 @@ public sealed partial class HkclService
                 ? "localConstraints"
                 : usesTransitionParticles
                     ? "perParticleData"
-                    : "links";
+                    : usesBonePlanes ? "bonePlanes" : "links";
             var targetLinks = EnsureMutableObjectList(targetSet, recordMember, $"{sourceSet.ClassName}.{recordMember}");
 
             if (preserveTemplateLayout && !createdTargetSet && targetLinks.Count != sourceRecords.Count)
@@ -6324,6 +6329,7 @@ public sealed partial class HkclService
                         ? "hclLocalRangeConstraintSetLocalConstraint"
                         : usesTransitionParticles
                             ? "hclTransitionConstraintSetPerParticle"
+                        : usesBonePlanes ? "hclBonePlanesConstraintSetBonePlane"
                         : sourceSet.ClassName + "Link");
                 if (linkType == null)
                 {
@@ -6351,6 +6357,9 @@ public sealed partial class HkclService
                     SetValue(targetLink, "particleA", particleA);
                 if (sourceLink.ParticleB is int particleB)
                     SetValue(targetLink, "particleB", particleB);
+                if (usesBonePlanes)
+                    SetValue(targetLink, "planeEquationBone", sourceLink.PlaneEquationBone
+                        ?? throw new InvalidOperationException("The BPHCL bone-plane record has no plane equation."));
 
                 foreach (var value in sourceLink.Values)
                 {
@@ -6396,6 +6405,7 @@ public sealed partial class HkclService
                     value.Value);
         }
 
+        PreserveBphclLocalRangeStiffness(cloth, source, notes);
         return notes;
     }
 
@@ -6484,22 +6494,8 @@ public sealed partial class HkclService
         if (sourceSet.LocalConstraints.Count == 0)
             return sourceSet.LocalStiffnessConstraints;
 
-        // TotK can retain both arrays. BotW only has a single local-constraint
-        // array and one set-wide stiffness value, so keep every range record
-        // rather than silently dropping one source array. In the rare case of
-        // different per-record stiffness values, the parent-set value remains
-        // the closest representable BotW approximation.
-        var stiffnessValues = sourceSet.LocalStiffnessConstraints
-            .Select(link => link.Values.TryGetValue("stiffness", out var stiffness) ? stiffness : double.NaN)
-            .Where(double.IsFinite)
-            .Distinct()
-            .ToArray();
-        if (stiffnessValues.Length > 1)
-        {
-            notes.Add(
-                $"{sourceSet.Name} has multiple per-record local-range stiffness values; BotW supports only the set-wide stiffness value.");
-        }
-
+        // Preserve array order here; the completed set is split into ordered
+        // stiffness runs before its execution indices are translated.
         notes.Add(
             $"Merged {sourceSet.LocalConstraints.Count} local-range and {sourceSet.LocalStiffnessConstraints.Count} local-stiffness record(s) into BotW's single local-range list.");
         return sourceSet.LocalConstraints.Concat(sourceSet.LocalStiffnessConstraints).ToArray();
@@ -6537,22 +6533,23 @@ public sealed partial class HkclService
         string sourceClothName,
         IReadOnlyList<NativeBphclOperatorLayout> sourceOperators)
     {
-        var sourceOperator = sourceOperators.FirstOrDefault(op =>
-            string.Equals(op.ClassName, "hclSimulateOperator", StringComparison.Ordinal));
-        var sourceExecution = sourceOperator?.SimulateConfigs.FirstOrDefault()?.ConstraintExecution;
-        if (sourceExecution is null || sourceExecution.Count == 0)
+        var simulateOperators = sourceOperators.Where(op =>
+            string.Equals(op.ClassName, "hclSimulateOperator", StringComparison.Ordinal)).ToArray();
+        if (simulateOperators.Length == 0)
             return Array.Empty<string>();
 
-        var targetOperator = (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
-            .FirstOrDefault(op => string.Equals(op.GetType().Name, "hclSimulateOperator", StringComparison.Ordinal));
-        if (targetOperator is null)
-            throw new InvalidOperationException("The HKCL template has no hclSimulateOperator to receive BPHCL constraint execution.");
+        var targetOperators = (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
+            .Where(op => string.Equals(op.GetType().Name, "hclSimulateOperator", StringComparison.Ordinal)).ToArray();
+        if (targetOperators.Length != simulateOperators.Length)
+            throw new InvalidOperationException("The HKCL template cannot preserve every BPHCL simulation operator.");
 
         var targetSets = GetMutableConstraintSets(cloth).Cast<object>().ToList();
         var targetByClass = targetSets
             .Select((set, index) => (set, index))
-            .ToDictionary(entry => entry.set.GetType().Name, entry => entry.index, StringComparer.Ordinal);
-        var sourceToTarget = new Dictionary<int, int>();
+            .GroupBy(entry => entry.set.GetType().Name, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Select(entry => entry.index).ToArray(), StringComparer.Ordinal);
+        var sourceToTarget = new Dictionary<int, int[]>();
+        var consumedByClass = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var sourceSet in sourceSimulation.ConstraintSets.Where(set => !set.IsAntiPinch))
         {
             if (BphclConversionProfileCatalog.ShouldOmitConstraintSet(sourceClothName, sourceSet.ClassName))
@@ -6571,7 +6568,12 @@ public sealed partial class HkclService
 
             if (targetByClass.TryGetValue(sourceSet.ClassName, out var targetIndex))
             {
-                sourceToTarget[sourceSet.Index] = targetIndex;
+                var consumed = consumedByClass.GetValueOrDefault(sourceSet.ClassName);
+                var count = GetBphclLocalRangeRunCount(sourceSet);
+                if (consumed + count > targetIndex.Length)
+                    throw new InvalidOperationException($"Cannot map source constraint set {sourceSet.Index} ({sourceSet.ClassName}) without losing records.");
+                sourceToTarget[sourceSet.Index] = targetIndex.Skip(consumed).Take(count).ToArray();
+                consumedByClass[sourceSet.ClassName] = consumed + count;
                 continue;
             }
 
@@ -6579,37 +6581,42 @@ public sealed partial class HkclService
 
         // Both runtimes execute collision solving at every -1 and then continue.
         // Preserve interleaving and repeated passes while remapping set indices.
-        var translated = new List<int>(sourceExecution.Count);
-        foreach (var sourceValue in sourceExecution)
+        List<int> Translate(IReadOnlyList<int> sourceExecution)
         {
-            if (sourceValue == -1)
+            var translated = new List<int>(sourceExecution.Count);
+            foreach (var sourceValue in sourceExecution)
             {
-                translated.Add(-1);
-                continue;
-            }
-
-            if (!sourceToTarget.TryGetValue(sourceValue, out var targetValue))
-            {
-                var sourceSet = sourceSimulation.ConstraintSets
-                    .FirstOrDefault(set => set.Index == sourceValue);
-                if (sourceSet != null && BphclConversionProfileCatalog.ShouldOmitConstraintSet(
-                        sourceClothName,
-                        sourceSet.ClassName))
+                if (sourceValue == -1)
                 {
+                    translated.Add(-1);
                     continue;
                 }
 
-                throw new InvalidOperationException(
-                    $"The BPHCL solver executes constraint set {sourceValue}, but the HKCL template has no compatible set for it.");
+                if (!sourceToTarget.TryGetValue(sourceValue, out var targetValue))
+                {
+                    var sourceSet = sourceSimulation.ConstraintSets
+                        .FirstOrDefault(set => set.Index == sourceValue);
+                    if (sourceSet != null && BphclConversionProfileCatalog.ShouldOmitConstraintSet(
+                            sourceClothName, sourceSet.ClassName))
+                        continue;
+                    throw new InvalidOperationException(
+                        $"The BPHCL solver executes constraint set {sourceValue}, but the HKCL template has no compatible set for it.");
+                }
+                translated.AddRange(targetValue);
             }
-            translated.Add(targetValue);
+            return translated;
         }
 
-        ReplaceList(EnsureMutableObjectList(targetOperator, "constraintExecution", "constraint execution"), translated);
-        return new[]
+        var notes = new List<string>();
+        for (var index = 0; index < simulateOperators.Length; index++)
         {
-            $"Preserved BPHCL constraint/collision execution order: [{string.Join(", ", translated)}]."
-        };
+            var execution = simulateOperators[index].SimulateConfigs.FirstOrDefault()?.ConstraintExecution;
+            if (execution == null) continue;
+            var translated = Translate(execution);
+            ReplaceList(EnsureMutableObjectList(targetOperators[index], "constraintExecution", "constraint execution"), translated);
+            notes.Add($"Preserved BPHCL operator {simulateOperators[index].Index} constraint/collision execution order: [{string.Join(", ", translated)}].");
+        }
+        return notes;
     }
 
     private static IReadOnlyList<string> ApplyBphclSimpleMeshBoneDeform(
@@ -6620,14 +6627,22 @@ public sealed partial class HkclService
         if (sourceDeformers.Count == 0)
             return Array.Empty<string>();
 
-        var target = (GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>())
-            .FirstOrDefault(op => string.Equals(op.GetType().Name, "hclSimpleMeshBoneDeformOperator", StringComparison.Ordinal));
-        if (target == null)
-            throw new InvalidOperationException("The HKCL template has no hclSimpleMeshBoneDeformOperator to receive the BPHCL bone-output mapping.");
+        var operators = GetList(GetValue(cloth, "operators")) ?? Array.Empty<object>();
+        var notes = new List<string>();
+        foreach (var source in sourceDeformers)
+        {
+            var target = operators.ElementAtOrDefault(source.OperatorIndex);
+            if (target?.GetType().Name != "hclSimpleMeshBoneDeformOperator")
+                throw new InvalidOperationException($"The HKCL template has no bone-output operator at index {source.OperatorIndex}.");
+            ApplyBphclSimpleMeshBoneDeformOperator(cloth, target, source, sourceToTargetBone);
+            notes.Add($"Rebuilt SimpleMeshBoneDeform {source.OperatorIndex} with {source.TriangleBonePairs.Count} triangle-to-bone pair(s) and {source.LocalBoneTransforms.Count} local bone transform(s).");
+        }
+        return notes;
+    }
 
-        // BotW's simple bone deform stage is singular for the bone-chain
-        // cloths currently supported by the converter.
-        var source = sourceDeformers[0];
+    private static void ApplyBphclSimpleMeshBoneDeformOperator(object cloth, object target,
+        NativeBphclSimpleMeshBoneDeform source, IReadOnlyDictionary<int, int> sourceToTargetBone)
+    {
         SetValue(target, "inputBufferIdx", source.InputBufferIndex);
         SetValue(target, "outputTransformSetIdx", source.OutputTransformSetIndex);
         SetValue(target, "boneAxis", source.BoneAxis);
@@ -6664,10 +6679,6 @@ public sealed partial class HkclService
         foreach (var sourceTransform in source.LocalBoneTransforms)
             AddListItem(localTransforms, sourceTransform);
 
-        return new[]
-        {
-            $"Rebuilt SimpleMeshBoneDeform with {source.TriangleBonePairs.Count} triangle-to-bone pair(s) and {source.LocalBoneTransforms.Count} local bone transform(s)."
-        };
     }
 
     private static IList GetMutableConstraintSets(object cloth)
@@ -7572,6 +7583,8 @@ public sealed partial class HkclService
         var bindFrames = preview.Bones.ToDictionary(b => b.Index, b => new Matrix4x4(
             b.AxisX.X, b.AxisX.Y, b.AxisX.Z, 0, b.AxisY.X, b.AxisY.Y, b.AxisY.Z, 0,
             b.AxisZ.X, b.AxisZ.Y, b.AxisZ.Z, 0, b.Position.X, b.Position.Y, b.Position.Z, 1));
+        if (_bphcl != null)
+            bindFrames = BoneEditGeometry.WorldTransforms(GetBoneRows(clothIndex)).ToDictionary(pair => pair.Key, pair => pair.Value);
         if (_bphcl == null)
         {
             var skeleton = GetSkeletons(RequireRoot()).ElementAtOrDefault(clothIndex);
@@ -7633,6 +7646,11 @@ public sealed partial class HkclService
         var positionBlocks = skin.LocalPositionBlocks.Count > 0
             ? skin.LocalPositionBlocks
             : skin.LocalUnpackedPositionBlocks;
+        if (skin.ClassName == "hclObjectSpaceSkinPOperator" &&
+            positionBlocks.Any(block => block.Positions.Count == 0 && block.NativePackedValues is { Count: > 0 }))
+            positionBlocks = positionBlocks.Select(block => block.Positions.Count > 0 || block.NativePackedValues is not { Count: > 0 } ? block :
+                new SkinPositionBlockData(UnpackBphclObjectSpacePositions(
+                    new[] { new NativeBphclPackedPositionBlock(block.NativePackedValues) })[0].Positions)).ToArray();
         foreach (var (blendArray, blockIndex, positionBlockIndex) in GetSkinBlockOrder(skin.BlendArrays, skin.ControlBytes))
         {
             var block = blendArray.Blocks[blockIndex];

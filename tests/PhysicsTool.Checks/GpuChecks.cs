@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
+using Avalonia.Styling;
 using PhysicsTool.Desktop;
 using SkiaSharp;
 using System.Runtime.InteropServices;
@@ -12,7 +13,7 @@ internal sealed class GpuChecks : Application
 {
     public static string ModelPath = "", Output = "";
     public static int Result = 1;
-    public override void Initialize() => Styles.Add(new FluentTheme());
+    public override void Initialize() { Styles.Add(new FluentTheme()); RequestedThemeVariant = ThemeVariant.Dark; }
     public override void OnFrameworkInitializationCompleted()
     {
         var lifetime = (IClassicDesktopStyleApplicationLifetime)ApplicationLifetime!;
@@ -26,7 +27,7 @@ internal sealed class GpuChecks : Application
         window.ModelSurface!.RenderFailed += Finish;
         window.Opened += async (_, _) =>
         {
-            try { await window.LoadModelPathAsync(ModelPath); loaded = window.Viewport.Model; Request(); }
+            try { await FixtureImports.Model(window, ModelPath); loaded = window.Viewport.Model; Request(); }
             catch (Exception ex) { Finish(ex.ToString()); }
         };
         window.ModelSurface.FrameCaptured += (pixels, width, height) =>
@@ -57,13 +58,21 @@ internal sealed class GpuChecks : Application
                     if (colors is < 2 or > 4) throw new Exception("Cleared model should leave only the world grid.");
                     window.Viewport.SetModel(loaded);
                 }
-                if (stage == 5) window.Viewport.SetView(CameraView.Top);
-                if (stage == 6) window.Viewport.SetView(CameraView.Bottom);
+                if (stage == 5) window.Viewport.SetView(CameraView.Top, false);
+                if (stage == 6) window.Viewport.SetView(CameraView.Bottom, false);
                 if (stage == 7)
                 {
                     window.Viewport.ResetView(); window.ShowOverview(); window.ShowEditor();
                 }
-                if (stage == 8) { Result = 0; Console.WriteLine("PASS: real GPU shader, texture/model pixels, orbit, mesh hiding, compact resize, clear/reload, axis views, and overview/editor context recreation."); Finish(null); return; }
+                if (stage == 8) RequestedThemeVariant = ThemeVariant.Light;
+                if (stage is 9 or 10)
+                {
+                    var color = window.Viewport.ViewportBackground;
+                    var matches = Enumerable.Range(0, pixels.Length / 4).Count(i => pixels[i * 4] == color.R && pixels[i * 4 + 1] == color.G && pixels[i * 4 + 2] == color.B);
+                    if (matches < width * height / 10) throw new Exception("GPU viewport did not repaint the theme background.");
+                    if (stage == 9) RequestedThemeVariant = ThemeVariant.Dark;
+                    else { Result = 0; Console.WriteLine("PASS: real GPU shader, texture/model pixels, orbit, mesh hiding, compact resize, clear/reload, axis views, context recreation and light/dark viewport pixels."); Finish(null); return; }
+                }
                 stage++; Dispatcher.UIThread.Post(Request, DispatcherPriority.Background);
             }
             catch (Exception ex) { Finish(ex.ToString()); }

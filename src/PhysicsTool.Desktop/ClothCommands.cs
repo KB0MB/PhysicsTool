@@ -33,6 +33,7 @@ public sealed partial class MainWindow
         {
             options.Validate(); SimulationOptions = options;
             if (_solver != null) options.ApplyTo(_solver);
+            if (_ragdollSolver != null) options.ApplyTo(_ragdollSolver);
         }).ShowDialog(this);
     }
     private void RefreshKeepingSelection(int[] indices)

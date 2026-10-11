@@ -1701,7 +1701,11 @@ public sealed class MainForm : LocalizedForm
         _helperVisualModelSettingsButton.Click += (_, _) => ShowVisualModelSettings();
         _visualMaterialButton.Click += (_, _) => ShowVisualMaterials();
         _helperVisualMaterialButton.Click += (_, _) => ShowVisualMaterials();
-        _simulationTimer.Tick += (_, _) => AdvanceSimulation();
+        _simulationTimer.Tick += (_, _) => RunGuarded(() =>
+        {
+            try { AdvanceSimulation(); }
+            catch { StopSimulation(resetPreview: false); throw; }
+        });
         FormClosed += (_, _) =>
         {
             _animationToolTip.Dispose();

@@ -411,8 +411,11 @@ public sealed class HkrgConstraintEditRow
     public float? HingeDamping { get; set; }
     public float? AngularFriction { get; set; }
 }
+public enum ClothSolverProfile { BotwPreview, TotkExperimental }
+
 public sealed class ParticlePreviewData
 {
+    public ClothSolverProfile SolverProfile { get; set; }
     public List<ParticlePreviewPoint> Particles { get; } = new();
     public List<ParticlePreviewAttachment> ParticleAttachments { get; } = new();
     public List<ParticlePreviewConstraintSet> ConstraintSets { get; } = new();
@@ -533,6 +536,8 @@ public sealed class ParticlePreviewLink
 public sealed class ParticlePreviewBendStiffness
 {
     public bool UseRestPoseConfig { get; set; }
+    public bool ClampBendStiffness { get; set; }
+    public float MaxRestPoseHeightSq { get; set; }
     public int ConstraintSetIndex { get; set; } = -1;
     public int ParticleA { get; set; }
     public int ParticleB { get; set; }

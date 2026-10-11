@@ -1818,9 +1818,17 @@ public static class NativeBphclStandaloneGraphWriter
 
 	private static int WriteSimulateOperator(DataBuilder builder, StandaloneBphclClothGraph cloth, int constraintSetCount, int operatorId, IReadOnlyList<ClothStateTransformTrackerData>? transformTrackers = null, IReadOnlyList<ClothStateTransformSetAccessData>? transformSetAccesses = null)
 	{
+		if (cloth.GeneratedSimulateConfig is { } config)
+		{
+			var source = new ClothOperatorData(operatorId, "hclSimulateOperator", null, null, null, null, null, null,
+				Array.Empty<short>(), false, false, Array.Empty<ClothVertexParticlePairData>(), 0, null, new[] { config });
+			return WriteSimulateOperator(builder, cloth, source, constraintSetCount, operatorId, transformTrackers, transformSetAccesses, true);
+		}
 		NativeBphclTypeLayout typeLayout = NativeBphclGameReadyReflectionCatalog.GetTypeLayout("hclSimulateOperator");
 		DataBuilder.Allocation allocation = builder.AllocateObject(typeLayout.TypeIndex, RequireSize(typeLayout, 96), 16);
-		IReadOnlyList<ClothStateTransformSetAccessData> transformSetAccesses2 = (IReadOnlyList<ClothStateTransformSetAccessData>)(transformSetAccesses ?? ((cloth.Colliders.Count == 0) ? ((object)Array.Empty<ClothStateTransformSetAccessData>()) : ((object)new ClothStateTransformSetAccessData[1] { CreateOperatorTransformAccess(0, 9, transformTrackers) })));
+		IReadOnlyList<ClothStateTransformSetAccessData> transformSetAccesses2 = transformSetAccesses ??
+			(cloth.Colliders.Count == 0 && cloth.BonePlaneSets.Count == 0 ? Array.Empty<ClothStateTransformSetAccessData>() :
+			new[] { CreateOperatorTransformAccess(0, 9, transformTrackers) });
 		WriteOperatorBase(builder, allocation.DataOffset, operatorId, "Simulate", CreateSimulateBufferAccesses(), transformSetAccesses2);
 		NativeBphclTypeLayout typeLayout2 = NativeBphclGameReadyReflectionCatalog.GetTypeLayout("hclSimulateOperator::Config");
 		DataBuilder.Allocation allocation2 = builder.AllocateArray(typeLayout2.TypeIndex, 1, RequireSize(typeLayout2, 48));
@@ -1843,7 +1851,9 @@ public static class NativeBphclStandaloneGraphWriter
 	{
 		NativeBphclTypeLayout typeLayout = NativeBphclGameReadyReflectionCatalog.GetTypeLayout("hclSimulateOperator");
 		DataBuilder.Allocation allocation = builder.AllocateObject(typeLayout.TypeIndex, RequireSize(typeLayout, 96), 16);
-		IReadOnlyList<ClothStateTransformSetAccessData> transformSetAccesses2 = (IReadOnlyList<ClothStateTransformSetAccessData>)(transformSetAccesses ?? ((cloth.Colliders.Count == 0) ? ((object)Array.Empty<ClothStateTransformSetAccessData>()) : ((object)new ClothStateTransformSetAccessData[1] { CreateOperatorTransformAccess(0, 9, transformTrackers) })));
+		IReadOnlyList<ClothStateTransformSetAccessData> transformSetAccesses2 = transformSetAccesses ??
+			(cloth.Colliders.Count == 0 && cloth.BonePlaneSets.Count == 0 ? Array.Empty<ClothStateTransformSetAccessData>() :
+			new[] { CreateOperatorTransformAccess(0, 9, transformTrackers) });
 		WriteOperatorBase(builder, allocation.DataOffset, operatorId, "Simulate", CreateSimulateBufferAccesses(), transformSetAccesses2);
 		IReadOnlyList<ClothSimulateConfigData> readOnlyList2;
 		if (source.SimulateConfigs.Count <= 0)
@@ -1892,6 +1902,8 @@ public static class NativeBphclStandaloneGraphWriter
 
 	private static int[] ConvertHkclConstraintExecutionToBphcl(StandaloneBphclClothGraph cloth, IReadOnlyList<int> sourceExecution, int constraintSetCount, bool preservesNativeBphclSchedule)
 	{
+		if (preservesNativeBphclSchedule && sourceExecution.Count == 0)
+			return Array.Empty<int>();
 		HashSet<int> availableConstraintSetIndices = cloth.ConstraintSets.Select((StandaloneBphclConstraintSetMetadata constraintSet) => constraintSet.Index).ToHashSet();
 		int[] array = sourceExecution.Where((int index) => index == -1 || availableConstraintSetIndices.Contains(index)).ToArray();
 		if (array.Length != 0)
