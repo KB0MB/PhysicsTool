@@ -144,7 +144,8 @@ internal static class TransformPreviewChecks
         Require(view.TransformActive, "Rigged bone drag did not start");
         for (int i = 1; i <= 100; i++) window.MouseMove(start + new Point(i, 0));
         Dispatcher.UIThread.RunJobs(); Thread.Sleep(30); Dispatcher.UIThread.RunJobs();
-        Require(updates > 0 && updates < 100 && updates <= Math.Ceiling(elapsed.Elapsed.TotalSeconds * 60) + 1,
+        // Slow runners may spend more than one frame on each input, legitimately updating every time.
+        Require(updates > 0 && updates <= 100 && updates <= Math.Ceiling(elapsed.Elapsed.TotalSeconds * 60) + 1,
             $"Model skinning was not throttled during bone drag ({updates} updates in {elapsed.Elapsed.TotalSeconds:0.000}s)");
         Require(!ReferenceEquals(view.Model, rest), "Coalesced bone drag did not update visual skin");
         window.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null);
