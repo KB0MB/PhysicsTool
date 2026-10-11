@@ -109,7 +109,7 @@ if (-not $SkipSource) {
     $sourceStage = Join-Path $work 'source'
     $sourceRoot = Join-Path $sourceStage "PhysicsTool-$Version-source"
     Push-Location $root
-    try { $files = @(git -c core.quotepath=false ls-files -c -o --exclude-standard) | Sort-Object -Unique }
+    try { $files = @(git -c core.quotepath=false ls-files -c --exclude-standard) | Sort-Object -Unique }
     finally { Pop-Location }
     foreach ($relative in $files) {
         if ($relative -match '^(artifacts/|PhysicsTool/NativeFbx/|PhysicsTool/ThirdParty/VCRuntime/)' -or

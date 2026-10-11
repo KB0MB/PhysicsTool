@@ -18,6 +18,7 @@ internal static class Program
     {
         try
         {
+            if (args.Length >= 4 && args[0] == "--actor-animation") { ActorAnimationChecks.Run(args[1], args[2], args[3]); return 0; }
             if (args.Length >= 2 && args[0] == "--documentation")
             {
                 AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
@@ -51,6 +52,7 @@ internal static class Program
             {
                 DressAuditChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(DressAuditChecks.Output);
                 DressAuditChecks.ActorPath = args[2];
+                DressAuditChecks.ClipName = args.ElementAtOrDefault(3);
                 AppBuilder.Configure<DressAuditChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
                 return DressAuditChecks.Result;
             }
@@ -158,6 +160,7 @@ internal static class Program
             ClothConversionAudit.Synthetic();
             TotkSimulationChecks.Equations();
             ActorParticleChecks.Synthetic();
+            ActorAnimationChecks.Synthetic();
             MeshCodecChecks.Run();
             TotkMaterialChecks.Run();
             ClothSimulationChecks.Run(Path.Combine(output, "simulation"));

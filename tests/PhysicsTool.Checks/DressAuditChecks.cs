@@ -15,6 +15,7 @@ using System.Text.Json;
 internal sealed class DressAuditChecks : Application
 {
     public static string Output = "", ActorPath = "";
+    public static string? ClipName;
     public static int Result = 1;
     public override void Initialize() { Styles.Add(new FluentTheme()); RequestedThemeVariant = ThemeVariant.Dark; }
     public override void OnFrameworkInitializationCompleted()
@@ -33,7 +34,7 @@ internal sealed class DressAuditChecks : Application
             {
                 VisualModelImporter.EyeGlint = () => ModelTextures.Resource("EyeGlint.png");
                 using var scene = BotwActorScene.Load(ActorPath);
-                var clip = scene.Animations.FirstOrDefault(a => a.Name.Equals("Act_Hello", StringComparison.OrdinalIgnoreCase))
+                var clip = scene.Animations.FirstOrDefault(a => a.Name.Equals(ClipName ?? "Act_Hello", StringComparison.OrdinalIgnoreCase))
                     ?? scene.Animations.First(a => a.Name.Contains("Hello", StringComparison.OrdinalIgnoreCase));
                 Console.WriteLine($"CLIP {clip.Name} {clip.FrameCount} frames");
                 var supports = (List<HkclService>)typeof(BotwActorScene).GetField("_supports", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(scene)!;

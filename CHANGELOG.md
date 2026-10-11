@@ -34,6 +34,8 @@
 
 ### Simulation and Conversion
 
+- Fixed actor animations changing when simulation was enabled, including Kass's body and foot movement.
+- Fixed BotW cloth particles and colliders drifting out of alignment with animated models when simulation was off.
 - Greatly improved cloth and helper-bone simulation, bringing their behavior closer to the games.
 - Added TotK cloth simulation previews for supported BPHCL files.
 - Improved capsule collisions and fixed gaps between the displayed collider shape and its simulated surface.
