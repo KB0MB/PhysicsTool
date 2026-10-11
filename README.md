@@ -14,19 +14,9 @@ Version 2.0 brings an updated Avalonia interface, improved simulation and conver
 
 Open **Documentation** in the tool for editing guides, constraints, colliders and shortcuts. Keep an original copy of your files as a backup!
 
-## Download and Run
-
-Choose the ZIP for your operating system and processor, extract the entire folder, and launch PhysicsTool. Release ZIPs include .NET; no separate runtime installation is needed.
-
-- **Windows:** x64 for most PCs, or ARM64 for Windows on ARM.
-- **Linux:** x64 or ARM64 on a glibc-based desktop distribution. Desktop libraries and OpenGL drivers are required.
-- **macOS 15+:** ARM64 for Apple silicon, or x64 for Intel. Launch `PhysicsTool.app`.
-
-Windows x64 and Linux x64/WSLg have been tested. macOS and ARM64 builds still need native testing. Packages are unsigned, and macOS builds are not notarized.
-
 You need your own game resources for actor/model viewing. No game files are included. Simulation and material previews can still differ from the games, and some editing operations remain unsupported.
 
-See the [2.0 release notes](docs/RELEASE_2.0.md) for platform details and the [changelog](CHANGELOG.md) for major changes.
+See the [changelog](CHANGELOG.md) for major changes.
 
 ## Build from Source
 
@@ -37,7 +27,7 @@ dotnet build PhysicsTool.slnx -c Release
 dotnet run --project src/PhysicsTool.Desktop -c Release
 ```
 
-Build, test, packaging and native-dependency details are in [Building and Releasing](docs/RELEASING.md).
+Build, test and native-dependency details are in the [build guide](docs/RELEASING.md).
 
 ## Credits
 
