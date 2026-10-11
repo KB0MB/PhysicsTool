@@ -1,11 +1,27 @@
 .vs/
+.idea/
 artifacts/
 **/bin/
 **/obj/
 **/__pycache__/
+TestResults/
+*.trx
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
 *.user
 /PhysicsTool.RegressionTests/PhysicsTool.RegressionTests.csproj
 /PhysicsTool/NativeFbx/build/
+
+# Local native-build intermediates (keep vendored runtime dependencies)
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# Local commit drafts, not project documentation
+/docs/COMMIT_MESSAGE_*.txt
 
 # Local settings, secrets and diagnostic output
 .env
