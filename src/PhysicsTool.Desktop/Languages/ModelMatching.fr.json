@@ -1,0 +1,10 @@
+{
+  "Cloth bone": "Os du tissu",
+  "Model bone": "Os du modèle",
+  "Match bones to model": "Adapter les os au modèle",
+  "Match selected bones": "Adapter les os sélectionnés",
+  "No matching model bone": "Aucun os correspondant dans le modèle",
+  "Matched cloth bones to the model.": "Les os du tissu ont été adaptés au modèle.",
+  "Choose cloth bones to match to the loaded BFRES. Updates particles and constraint rest data without changing the model. HKCL only.": "Choisissez les os du tissu à adapter au BFRES chargé. Met à jour les particules et les contraintes au repos sans modifier le modèle. HKCL uniquement.",
+  "Copy model rest poses to the selected cloth bones and reshape particles, constraints and attached colliders. The BFRES is not changed. Undo restores the cloth. HKCL only.": "Copie les poses de repos du modèle vers les os sélectionnés et adapte les particules, les contraintes et les colliders liés. Le BFRES reste inchangé. Annuler rétablit le tissu. HKCL uniquement."
+}

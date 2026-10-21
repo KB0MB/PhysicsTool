@@ -1,0 +1,7 @@
+{
+  "Fit cloth to bones": "クロスをボーンに合わせる",
+  "Cloth already matches its bones.": "クロスはすでにボーンと一致しています。",
+  "Fitted cloth to the edited bones.": "編集したボーンにクロスを合わせました。",
+  "After applying bone edits with Particles follow bones off, rebuild the cloth rest shape to match. HKCL only; unsupported layouts are left unchanged.": "パーティクルのボーン追従を無効にしてボーンを編集した後、クロスの静止形状を合わせます。HKCLのみ対応。未対応の構造は変更しません。",
+  "Reshape this cloth to the applied bone positions? This updates particles, radii, constraint rest data and simulation bone bindings. Masses and colliders stay unchanged. Undo restores the previous shape.": "適用済みのボーン位置にクロスを合わせますか？パーティクル、半径、制約の静止データ、シミュレーションのボーン関連付けを更新します。質量とコライダーは変更しません。「元に戻す」で以前の形状に戻せます。"
+}

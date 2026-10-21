@@ -24,7 +24,7 @@ internal static class BphysicsRuntimeProfileCatalog
                 return true;
             default:
                 frequency = 5.0f;
-                speed = 50.0f;
+                speed = 25.0f;
                 return false;
         }
     }
@@ -49,7 +49,7 @@ internal static class BphysicsRuntimeProfileCatalog
         return profile != null;
     }
 
-    private static string GetResourceName(string hkclPath) => Path.GetFileNameWithoutExtension(hkclPath.Replace('/', '\\'));
+    private static string GetResourceName(string hkclPath) => Path.GetFileNameWithoutExtension(hkclPath.Replace('\\', '/'));
 
     private static string StripLinkPrefix(string value) => value.StartsWith("Link:", StringComparison.OrdinalIgnoreCase)
         ? value[5..]

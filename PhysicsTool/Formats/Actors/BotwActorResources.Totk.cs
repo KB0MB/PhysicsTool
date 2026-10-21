@@ -6,6 +6,26 @@ namespace HKCLTool;
 internal sealed partial class BotwActorResources
 {
     private readonly TotkResourceCompression _totkCompression = new();
+    private Dictionary<string, byte[]>? _totkSharedParameters;
+
+    private byte[]? ReadTotkParameter(string path)
+    {
+        if (Read(path) is { } direct) return direct;
+        if (_totkSharedParameters == null)
+        {
+            _totkSharedParameters = new(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in _roots)
+            foreach (var name in new[] { "ResidentCommon.pack.zs", "Bootup.Nin_NX_NVN.pack.zs" })
+            {
+                var file = Path.Combine(root, "Pack", name);
+                if (!File.Exists(file)) continue;
+                var archive = BotwSarcArchive.Parse(_totkCompression.Decode(File.ReadAllBytes(file), _roots));
+                foreach (var entry in archive.Entries.Where(e => e.Name.EndsWith(".bgyml", StringComparison.OrdinalIgnoreCase)))
+                    _totkSharedParameters.TryAdd(entry.Name, archive.Read(entry).ToArray());
+            }
+        }
+        return _totkSharedParameters.GetValueOrDefault(path);
+    }
 
     private static string ReferencePath(string path)
     {
@@ -22,7 +42,7 @@ internal sealed partial class BotwActorResources
         if (chain.Count >= 64 || !chain.Add(path)) throw new InvalidDataException("TotK actor parameters contain an inheritance cycle.");
         try
         {
-            var bytes = Read(path) ?? throw new InvalidDataException($"Missing actor parameter {Path.GetFileName(path)}.");
+            var bytes = ReadTotkParameter(path) ?? throw new InvalidDataException($"Missing actor parameter {Path.GetFileName(path)}.");
             var map = Byml.FromBinary(bytes).GetMap();
             var result = map.TryGetValue("$parent", out var parent) ? TotkParameters(parent.GetString(), chain) : new();
             Merge(result, map);
@@ -69,8 +89,48 @@ internal sealed partial class BotwActorResources
                     if (!AnimationResources.Contains(resource)) AnimationResources.Add(resource);
                 }
         }
-        foreach (var path in _entries.Keys.Where(p => p.EndsWith(".bphcl") || p.EndsWith(".bphhb"))) PhysicsFiles.Add(path);
+        ReadTotkPhysicsReferences(components);
         Warnings.Add("TotK preview uses approximate lighting and cloth reactions; animation state machines and generated material expressions are not reproduced.");
+    }
+
+    private void ReadTotkPhysicsReferences(IDictionary<string, Byml> components)
+    {
+        if (!components.TryGetValue("PhysicsRef", out var physicsRef) || string.IsNullOrWhiteSpace(physicsRef.GetString())) return;
+        var physics = TotkParameters(physicsRef.GetString());
+        if (!physics.TryGetValue("ControllerSetPath", out var controllerPath) || string.IsNullOrWhiteSpace(controllerPath.GetString())) return;
+        var controller = TotkParameters(controllerPath.GetString());
+        PhysicsFiles.AddRange(ResolveTotkPhysicsFiles(controller, TotkParametersForReference));
+    }
+
+    private Dictionary<string, Byml> TotkParametersForReference(string path) => TotkParameters(path);
+
+    internal static IReadOnlyList<string> ResolveTotkPhysicsFiles(Dictionary<string, Byml> controller,
+        Func<string, Dictionary<string, Byml>> parameters)
+    {
+        var files = new List<string>();
+        void Add(string path, string extension)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            path = Path.ChangeExtension(ReferencePath(path), extension).Replace('\\', '/');
+            if (!files.Contains(path, StringComparer.OrdinalIgnoreCase)) files.Add(path);
+        }
+        // Inherited packs contain alternate forms too. Only the resolved controller's
+        // lists are active; an explicit empty list disables that component.
+        if (controller.TryGetValue("ClothList", out var cloths))
+        {
+            foreach (var item in cloths.GetArray())
+                if (item.GetMap().TryGetValue("Path", out var path)) Add(path.GetString(), ".bphcl");
+        }
+        else if (controller.TryGetValue("Cloth", out var clothParameters))
+        {
+            foreach (var item in clothParameters.GetArray())
+                if (item.GetMap().TryGetValue("FilePath", out var file) && !string.IsNullOrWhiteSpace(file.GetString()) &&
+                    parameters(file.GetString()).TryGetValue("HktPath", out var path)) Add(path.GetString(), ".bphcl");
+        }
+        if (controller.TryGetValue("HelperBoneList", out var helpers))
+            foreach (var item in helpers.GetArray())
+                if (item.GetMap().TryGetValue("FilePath", out var path)) Add(path.GetString(), ".bphhb");
+        return files;
     }
 
     public void PrepareTotkStrings()

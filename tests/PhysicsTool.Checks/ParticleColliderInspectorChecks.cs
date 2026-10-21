@@ -1,16 +1,47 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using HKCLTool;
+using PhysicsTool.Core;
 using PhysicsTool.Desktop;
 using System.Numerics;
 
 internal static class ParticleColliderInspectorChecks
 {
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }
+
+    internal static void RunShortcuts(string path)
+    {
+        var window = new MainWindow(graphics: false);
+        window.Show();
+        try
+        {
+            window.LoadPath(path);
+            window.ShowEditor();
+            Dispatcher.UIThread.RunJobs();
+            var tabs = window.GetVisualDescendants().OfType<TabStrip>().Single();
+            var items = window.GetVisualDescendants().OfType<ListBox>()
+                .Single(list => list.SelectionMode.HasFlag(SelectionMode.Multiple));
+            foreach (var tab in new[] { 0, 1, 2 })
+            {
+                tabs.SelectedIndex = tab;
+                Dispatcher.UIThread.RunJobs();
+                Require(items.ItemCount >= 2, "The shortcut fixture needs at least two items in every editor tab");
+                CheckListTransformShortcuts(window, items);
+            }
+        }
+        finally
+        {
+            window.Session.Clear();
+            window.Close();
+        }
+    }
+
     public static void Run(string output)
     {
         var paths = Enumerable.Range(0, 3).Select(f => Path.Combine(output, $"manual-{f}." + (f == 2 ? "bphcl" : "hkcl")))
@@ -57,6 +88,8 @@ internal static class ParticleColliderInspectorChecks
             if (colliders.Count > 0)
             {
                 tabs.SelectedIndex = 2; items.SelectedIndex = 0; Dispatcher.UIThread.RunJobs();
+                if (!doc.IsBphcl)
+                    CheckListTransformShortcuts(window, items);
                 var c = colliders[0]; var snapshot = doc.CaptureState();
                 Require(Find<ComboBox>("EditorColliderBone").IsEnabled == !doc.IsBphcl, "Collider binding policy incorrect");
                 Find<TextBox>("EditorColliderName").Text = "Inspector collider";
@@ -98,5 +131,60 @@ internal static class ParticleColliderInspectorChecks
             window.Session.Clear(); window.Close();
         }
         Console.WriteLine("PASS: particle mass/inverse policy, collision slots/reserved bits, Fixed, validation, collider local coordinates/name/binding, undo and native save/reload.");
+    }
+
+    private static void CheckListTransformShortcuts(MainWindow window, ListBox items)
+    {
+        var viewport = window.Viewport;
+        var kind = viewport.SelectionKind;
+        HashSet<int> Selected() => kind switch
+        {
+            PhysicsSelectionKind.Bones => viewport.SelectedBones,
+            PhysicsSelectionKind.Colliders => viewport.SelectedColliders,
+            _ => viewport.Selected
+        };
+        var original = window.Session.Document.CaptureState();
+        var pointer = viewport.TranslatePoint(new Point(viewport.Bounds.Width / 2, viewport.Bounds.Height / 2), window)!.Value;
+
+        foreach (var key in new[] { Key.G, Key.R, Key.S })
+        {
+            items.ScrollIntoView(0);
+            Dispatcher.UIThread.RunJobs();
+            var row = (Control)items.ContainerFromIndex(0)!;
+            var click = row.TranslatePoint(new Point(20, row.Bounds.Height / 2), window)!.Value;
+            window.MouseDown(click, MouseButton.Left);
+            window.MouseUp(click, MouseButton.Left);
+            if (items.Items.Count > 1)
+                items.SelectedItems!.Add(items.Items[1]);
+            Dispatcher.UIThread.RunJobs();
+            Require(items.IsKeyboardFocusWithin, $"{kind} list click did not establish keyboard focus");
+            var selection = Selected().ToHashSet();
+            Require(selection.Count > 0, $"{kind} list selection did not reach the viewport");
+
+            window.MouseMove(pointer);
+            window.KeyPress(key, RawInputModifiers.None, PhysicalKey.None, null);
+            Require(viewport.TransformActive && viewport.IsFocused, $"{key} required a viewport click after selecting {kind}");
+            Require(Selected().SetEquals(selection), $"{key} lost {kind} multi-selection");
+            window.KeyPress(Key.X, RawInputModifiers.None, PhysicalKey.None, null);
+            window.MouseMove(pointer + new Point(30, -20));
+            Require(viewport.TransformGuideAxes.SequenceEqual(new[] { Key.X }), "List-started transform lost axis shortcuts");
+            window.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.None, null);
+            Require(!viewport.TransformActive && window.Session.Document.CaptureState() == original,
+                "Canceling a list-started transform changed the document");
+        }
+
+        ((Control)items.ContainerFromIndex(0)!).Focus();
+        Require(items.IsKeyboardFocusWithin, "Could not focus a list item for the modified-shortcut check");
+        window.KeyPress(Key.G, RawInputModifiers.Control, PhysicalKey.None, null);
+        Require(!viewport.TransformActive && items.IsKeyboardFocusWithin, "Modified shortcut unexpectedly started a transform");
+
+        var field = window.GetVisualDescendants().OfType<TextBox>().First(control => control.IsEffectivelyVisible && control.IsEffectivelyEnabled);
+        field.Focus();
+        window.KeyPress(Key.G, RawInputModifiers.None, PhysicalKey.None, null);
+        Require(!viewport.TransformActive && field.IsFocused, "Editing a text field started a viewport transform");
+        items.SelectedItems!.Clear();
+        items.SelectedIndex = 0;
+        Dispatcher.UIThread.RunJobs();
+        Console.WriteLine($"PASS: {kind} list G/R/S focus transfer, multi-selection, axis shortcuts, cancellation and text-field isolation.");
     }
 }

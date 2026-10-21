@@ -526,6 +526,7 @@ public sealed class ParticlePreviewLink
     public int ParticleB { get; set; }
     public string Kind { get; set; } = string.Empty;
     public float? RestLength { get; set; }
+    public float? CompressionLength { get; set; }
     public float? BendMinLength { get; set; }
     public float? StretchMaxLength { get; set; }
     public float? Stiffness { get; set; }

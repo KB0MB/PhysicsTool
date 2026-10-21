@@ -1,4 +1,4 @@
-param([string]$Version = '2.0')
+param([string]$Version = '2.1.0', [switch]$SkipSource)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zip-unix.ps1')
 $root = Split-Path $PSScriptRoot
@@ -70,6 +70,7 @@ foreach ($rid in @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','os
         Write-Output "PASS: $rid architecture, executable permissions, license/source notices and privacy checks."
     } finally { $zip.Dispose() }
 }
+if (-not $SkipSource) {
 $source = [IO.Compression.ZipFile]::OpenRead((Join-Path $directory "PhysicsTool-$Version-source.zip"))
 try {
     foreach ($entry in $source.Entries) {
@@ -77,8 +78,9 @@ try {
     }
     if (-not $source.GetEntry("PhysicsTool-$Version-source/PhysicsTool.slnx")) { throw 'Primary solution missing from source archive.' }
 } finally { $source.Dispose() }
+}
 foreach ($line in Get-Content (Join-Path $directory 'SHA256SUMS.txt')) {
     $hash, $name = $line -split '  ', 2
     if ((Get-FileHash (Join-Path $directory $name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) { throw "Checksum mismatch: $name" }
 }
-Write-Output 'PASS: source archive exclusions and all SHA-256 checksums.'
+Write-Output 'PASS: all SHA-256 checksums and requested source archive checks.'

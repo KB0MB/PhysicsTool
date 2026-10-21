@@ -26,10 +26,10 @@ public sealed partial class MainWindow
         try
         {
             var conversion = new PhysicsConversion(Session.Document, Session.Path, _importedModel?.Rest.Bones);
-            var options = await new ConversionWindow(conversion, Session.Platform).ShowDialog<PhysicsConversionOptions?>(this);
+            var options = await new ConversionWindow(conversion, DesktopPreferences.Load().ConversionPlatform).ShowDialog<PhysicsConversionOptions?>(this);
             if (options == null) return;
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions {
-                Title = "Convert to " + conversion.Format, SuggestedFileName = (System.IO.Path.GetFileNameWithoutExtension(Session.Path) ?? "Physics") + "_converted" + conversion.Extension,
+                Title = "Convert to " + conversion.Format, SuggestedFileName = conversion.SuggestedFileName,
                 DefaultExtension = conversion.Extension.TrimStart('.'), ShowOverwritePrompt = true,
                 FileTypeChoices = [new FilePickerFileType(conversion.Format) { Patterns = ["*" + conversion.Extension] }] });
             if (file?.TryGetLocalPath() is not { } path) return;
@@ -40,6 +40,12 @@ public sealed partial class MainWindow
             {
                 var result = await Task.Run(() => conversion.Export(path, options));
                 _status.Text = $"Converted and reopened {System.IO.Path.GetFileName(path)} ({result.Entries} {(conversion.Target is PhysicsConversionTarget.Hkcl or PhysicsConversionTarget.Bphcl ? "cloths" : "helper groups")}).";
+                if (conversion.Target == PhysicsConversionTarget.Hkcl)
+                {
+                    try { (DesktopPreferences.Load() with { ConversionPlatform = options.Platform }).Save(); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                    { _status.Text += " The platform preference could not be saved."; }
+                }
             }
             finally { _conversionBusy = false; IsEnabled = true; UpdateActions(); }
         }

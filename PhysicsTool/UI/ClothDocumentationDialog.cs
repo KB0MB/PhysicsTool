@@ -127,7 +127,7 @@ internal sealed class ClothDocumentationDialog : LocalizedForm
                 "hclBonePlanesConstraintSet" => "Typical use: restrict a particle relative to a plane that moves with a bone. The transform-set binding and plane orientation determine which region is allowed. This is a constraint, not a general body collider.",
                 "hclTransitionConstraintSet" => "Typical use: coordinate animation/simulation transitions using runtime state. It is not an ordinary spring and cannot be made functional by inserting an isolated per-particle record.",
                 "hclVolumeConstraint" => "Typical use: retain the shape of a multi-particle volume through a weighted frame. This requires a coherent frame/apply configuration, not a two-point length.",
-                "hclCompressibleLinkConstraintSet" => "The reflected layout contains rest and compression lengths. Its creation and preview behavior are not validated; use existing authored records as reference rather than treating it as an interchangeable standard link.",
+                "hclCompressibleLinkConstraintSet" => "Allows particles to move freely between compression and rest lengths, correcting movement beyond either limit. Existing records work in the preview; creating new ones is not yet supported.",
                 _ => "Specialized recovery for pinched contacts. The surrounding detection and temporal runtime state are essential; it is not a replacement for fixing badly intersecting colliders."
             };
             topics.Add(new ClothHelpTopic(kind.Name, kind.Description + "\n\n" + use + "\n\nCreation: " +

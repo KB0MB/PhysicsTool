@@ -1,0 +1,7 @@
+{
+  "Resize bone branch": "Redimensionar rama de huesos",
+  "Resize attached colliders": "Redimensionar colisionadores vinculados",
+  "Resize collision shapes bound to this branch. Other body colliders are not resized.": "Redimensiona las formas de colisión vinculadas a esta rama. Los demás colisionadores del cuerpo mantienen su tamaño.",
+  "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. HKCL only.": "Redimensiona la rama y su tela alrededor del hueso seleccionado. Actualiza posiciones y dimensiones de restricciones sin cambiar la escala de los huesos. Solo HKCL.",
+  "Enter a scale factor.": "Introduce un factor de escala."
+}

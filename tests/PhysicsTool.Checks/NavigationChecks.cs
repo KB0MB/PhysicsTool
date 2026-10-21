@@ -91,5 +91,6 @@ internal static class NavigationChecks
         Require(view.Selected.Contains(0), "Read-only selection was not blocked");
         view.CanSelect = true; view.ResetView(); Dispatcher.UIThread.RunJobs();
         Console.WriteLine("PASS: original camera gestures, anchored zoom, axis views, box selection, and frame selected.");
+        ClothDropdownCameraChecks.Run();
     }
 }

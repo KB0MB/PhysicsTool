@@ -1,0 +1,6 @@
+{
+  "Selected cloth as FBX": "Tissu sélectionné en FBX",
+  "Export cloth FBX": "Exporter le tissu en FBX",
+  "Cloth FBX export": "Export du tissu en FBX",
+  "Export the edited rest pose: skeleton, particle vertices, cloth triangles and collider meshes. Does not export Havok simulation settings or the loaded BFRES.": "Exporte la pose de repos modifiée : squelette, particules, triangles et maillages des colliders. Les paramètres Havok et le BFRES chargé ne sont pas inclus."
+}

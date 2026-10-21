@@ -24,6 +24,13 @@ internal sealed class BotwActorScene : IDisposable
     private readonly HashSet<string> _clothDriven = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _temporaryDirectory = Path.Combine(Path.GetTempPath(), "PhysicsTool-ActorViewer", Guid.NewGuid().ToString("N"));
     public BotwActorResources Resources { get; }
+    public PlayerArmorCatalog? ArmorCatalog { get; private set; }
+    public Dictionary<PlayerArmorSlot, string> EquippedArmor { get; } = new();
+    public PlayerWeaponCatalog? WeaponCatalog { get; private set; }
+    public Dictionary<PlayerWeaponKind, PlayerWeaponSelection> Weapons { get; } = new();
+    internal Dictionary<int, PlayerEquipmentAttachment> EquipmentAttachments { get; } = new();
+    private readonly List<BotwActorResources> _outfitResources = new();
+    private readonly List<BotwActorModelReference> _modelReferences = new();
     public List<ToolboxActorAnimation> Animations { get; } = new();
     public ParticlePreviewData Overlay { get; } = new();
     public VisualModelData RestModel { get; private set; } = new();
@@ -47,46 +54,32 @@ internal sealed class BotwActorScene : IDisposable
     {
         foreach (var layer in _layers) configure(layer.Solver);
     }
-    public static BotwActorScene Load(string path, IEnumerable<string>? roots = null, IProgress<string>? progress = null, CancellationToken cancellation = default, string? actorEntry = null)
+    public static BotwActorScene Load(string path, IEnumerable<string>? roots = null, IProgress<string>? progress = null, CancellationToken cancellation = default, string? actorEntry = null,
+        IReadOnlyDictionary<PlayerArmorSlot, string>? armor = null, IReadOnlyDictionary<PlayerWeaponKind, PlayerWeaponSelection>? weapons = null)
     {
         var scene = new BotwActorScene(new BotwActorResources(path, roots, actorEntry));
-        try { scene.Load(progress, cancellation); return scene; }
+        try
+        {
+            scene.PrepareOutfit(armor, cancellation);
+            if (weapons != null && scene.WeaponCatalog != null)
+                foreach (var (kind, choice) in weapons)
+                {
+                    var entry = scene.WeaponCatalog.Find(kind, choice.Name);
+                    scene.Weapons.Add(kind, choice with { Name = entry.Name });
+                }
+            scene.Load(progress, cancellation); return scene;
+        }
         catch { scene.Dispose(); throw; }
     }
     private void Load(IProgress<string>? progress, CancellationToken cancellation)
     {
-        var documents = new Dictionary<string, ToolboxBfresDocument>();
-        Resources.PrepareTotkStrings();
-        var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
-        foreach (var name in Resources.Models.Select(m => m.Resource).Distinct())
-        {
-            cancellation.ThrowIfCancellationRequested();
-            progress?.Report($"Loading {name}");
-            var bytes = Resources.ReadModel(name) ?? throw new FileNotFoundException(Resources.IsTotk
-                ? $"Missing Model/{name}.bfres.mc. Select the matching TOTK romfs in the Actor browser."
-                : $"Missing Model/{name}.sbfres. Add the matching game resource folder.");
-            var document = new ToolboxBfresDocument(bytes); documents[name] = document;
-            document.ReadTextures(textures, Resources.Warnings);
-            if (Resources.IsTotk) TexToGoTexture.Load(document, Resources, textures, cancellation);
-            foreach (var suffix in document.IsSwitch ? new[] { ".Tex" } : new[] { ".Tex1" })
-                if (Resources.ReadModel(name, suffix) is { } textureData) new ToolboxBfresDocument(textureData).ReadTextures(textures, Resources.Warnings);
-            AddAnimations(document, name);
-        }
-        TextureCount = textures.Count;
-        var hasAppearance = false;
-        foreach (var reference in Resources.Models)
-        {
-            cancellation.ThrowIfCancellationRequested();
-            var document = documents[reference.Resource];
-            var appearance = ToolboxActorAppearance.Read(document, Resources.VariationMatAnim, Resources.VariationMatAnimFrame, Resources.Warnings);
-            hasAppearance |= appearance.Count > 0;
-            _models.Add(new ToolboxActorModel(document, reference.Model, textures, appearance, Resources.Warnings));
-        }
-        if (!hasAppearance && !string.IsNullOrWhiteSpace(Resources.VariationMatAnim) && Resources.VariationMatAnim != "Dummy")
-            Resources.Warnings.Add($"Texture variation {Resources.VariationMatAnim} could not be resolved; default material textures are shown.");
+        var visibility = _outfitResources.Select(r => ArmorCatalog == null ? new ActorEquipmentVisibility() : r.ReadEquipmentVisibility()).ToArray();
+        for (int i = 0; i < _outfitResources.Count; i++)
+            LoadModels(_outfitResources[i], visibility[i].HiddenBy(visibility.Where((_, n) => n != i)), progress, cancellation);
+        LoadWeapons(progress, cancellation);
         for (var i = 0; i < _models.Count; i++)
         {
-            var bone = Resources.Models[i].BindBone;
+            var bone = _modelReferences[i].BindBone;
             var owner = string.IsNullOrEmpty(bone) ? -1 : _models.FindIndex(m => m != _models[i] && m.RestPose.Bones.Any(b => b.Name == bone));
             if (owner < 0 && !string.IsNullOrEmpty(bone)) Resources.Warnings.Add($"Model {_models[i].Name}: attachment bone '{bone}' was not found.");
             _attachments.Add((owner, bone));
@@ -94,6 +87,120 @@ internal sealed class BotwActorScene : IDisposable
         RestModel = Pose(null, 0, null, false);
         _meshes.AddRange(RestModel.Meshes.Select((m, i) => new BotwActorMesh(i, m.Name, m.Indices.Length / 3)));
         foreach (var mesh in RestModel.Meshes.Where(m => m.Texture == null)) Resources.Warnings.Add($"No albedo texture found for {mesh.Name}.");
+        var referenced = Resources.Animations.Select(a => a.Clip).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Animations.Sort((a, b) => { var order = referenced.Contains(b.Name).CompareTo(referenced.Contains(a.Name)); return order != 0 ? order : StringComparer.OrdinalIgnoreCase.Compare(a.Name, b.Name); });
+        Directory.CreateDirectory(_temporaryDirectory);
+        foreach (var resources in _outfitResources) LoadPhysics(resources, progress, cancellation);
+        foreach (var warning in _outfitResources.Skip(1).SelectMany(r => r.Warnings).Distinct())
+            if (!Resources.Warnings.Contains(warning)) Resources.Warnings.Add(warning);
+        var displayedNames = Overlay.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().Index, StringComparer.OrdinalIgnoreCase);
+        var nextBone = Next(Overlay.Bones.Select(b => b.Index));
+        var additional = RestModel.Bones.Where(b => !displayedNames.ContainsKey(b.Name)).DistinctBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        foreach (var bone in additional) displayedNames.TryAdd(bone.Name, nextBone++);
+        var restByIndex = RestModel.Bones.ToDictionary(b => b.Index);
+        foreach (var bone in additional)
+            Overlay.Bones.Add(new() { Index = displayedNames[bone.Name],
+                ParentIndex = restByIndex.TryGetValue(bone.ParentIndex, out var parent) ? displayedNames[parent.Name] : -1, Name = bone.Name,
+                Position = bone.Position, AxisX = bone.AxisX, AxisY = bone.AxisY, AxisZ = bone.AxisZ, IsSelectable = false });
+        CurrentModel = Update(null, 0, false, 0, true);
+    }
+    private void PrepareOutfit(IReadOnlyDictionary<PlayerArmorSlot, string>? armor, CancellationToken cancellation)
+    {
+        _outfitResources.Add(Resources);
+        if (!PlayerArmorCatalog.Supports(Resources)) return;
+        ArmorCatalog = new(Resources);
+        WeaponCatalog = new(Resources);
+        if (Resources.Models.Any(m => m.Model == "Link_RaulSkin"))
+        {
+            if (ArmorCatalog.RightHandPath is { } hand) _outfitResources.Add(new BotwActorResources(hand, Resources.Roots));
+            else Resources.Warnings.Add("Missing PlayerRaulHand actor; Link's right arm could not be loaded.");
+        }
+        foreach (var slot in Enum.GetValues<PlayerArmorSlot>())
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var entry = armor != null && armor.TryGetValue(slot, out var name) ? ArmorCatalog.Find(slot, name) : ArmorCatalog.Default(slot);
+            if (entry == null) { Resources.Warnings.Add($"Missing default armor actor {PlayerArmorCatalog.DefaultName(slot)}."); continue; }
+            _outfitResources.Add(new BotwActorResources(entry.Path, Resources.Roots));
+            EquippedArmor.Add(slot, entry.Name);
+        }
+    }
+    private void LoadWeapons(IProgress<string>? progress, CancellationToken cancellation)
+    {
+        if (WeaponCatalog == null) return;
+        void Add(string actor, string bone, Matrix4x4 offset, BotwActorResources? resources = null)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var path = WeaponCatalog.ActorPath(actor);
+            if (path == null) { Resources.Warnings.Add($"Missing equipment actor {actor}."); return; }
+            resources ??= new BotwActorResources(path, Resources.Roots);
+            var first = _models.Count;
+            LoadModels(resources, new HashSet<string>(), progress, cancellation);
+            for (int i = first; i < _models.Count; i++)
+            {
+                _modelReferences[i] = _modelReferences[i] with { BindBone = bone };
+                EquipmentAttachments.Add(i, new(actor, bone, offset));
+            }
+            foreach (var warning in resources.Warnings.Where(w => !w.StartsWith("TotK preview")))
+                if (!Resources.Warnings.Contains(warning)) Resources.Warnings.Add(warning);
+        }
+        foreach (var (kind, choice) in Weapons.OrderBy(p => p.Key))
+        {
+            var entry = WeaponCatalog.Find(kind, choice.Name);
+            var resources = new BotwActorResources(entry.Path, Resources.Roots);
+            var parameters = PlayerWeaponParameters.Read(resources.EquipmentParameters(kind switch
+                { PlayerWeaponKind.Bow => "BowRef", PlayerWeaponKind.Shield => "ShieldRef", _ => "WeaponRef" }));
+            Add(entry.Name, PlayerWeaponParameters.Bone(kind, choice.Equipped), parameters.Offset(choice.Equipped), resources);
+            if (!string.IsNullOrEmpty(parameters.Sheath))
+                Add(parameters.Sheath, "Pod_A", parameters.Offset(false));
+            if (kind != PlayerWeaponKind.Bow) continue;
+            if (!string.IsNullOrEmpty(parameters.Quiver))
+            {
+                var path = WeaponCatalog.ActorPath(parameters.Quiver);
+                if (path == null) Resources.Warnings.Add($"Missing equipment actor {parameters.Quiver}.");
+                else
+                {
+                    var quiver = new BotwActorResources(path, Resources.Roots);
+                    var p = quiver.EquipmentParameters("SheathRef");
+                    Add(parameters.Quiver, p.TryGetValue("BindBoneName", out var bone) ? bone.GetString() : "Pod_B",
+                        PlayerWeaponParameters.Read(p).Offset(false), quiver);
+                }
+            }
+            if (choice.Equipped) Add("NormalArrow", "Weapon_R", Matrix4x4.Identity);
+        }
+    }
+    private void LoadModels(BotwActorResources resources, IReadOnlySet<string> hiddenMaterials, IProgress<string>? progress, CancellationToken cancellation)
+    {
+        var documents = new Dictionary<string, ToolboxBfresDocument>();
+        resources.PrepareTotkStrings();
+        var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in resources.Models.Select(m => m.Resource).Distinct())
+        {
+            cancellation.ThrowIfCancellationRequested();
+            progress?.Report($"Loading {name}");
+            var bytes = resources.ReadModel(name) ?? throw new FileNotFoundException(resources.IsTotk
+                ? $"Missing Model/{name}.bfres.mc. Select the matching TOTK romfs in the Actor browser."
+                : $"Missing Model/{name}.sbfres. Add the matching game resource folder.");
+            var document = new ToolboxBfresDocument(bytes); documents[name] = document;
+            document.ReadTextures(textures, resources.Warnings);
+            if (resources.IsTotk) TexToGoTexture.Load(document, resources, textures, cancellation);
+            foreach (var suffix in document.IsSwitch ? new[] { ".Tex" } : new[] { ".Tex1" })
+                if (resources.ReadModel(name, suffix) is { } textureData) new ToolboxBfresDocument(textureData).ReadTextures(textures, resources.Warnings);
+            if (ReferenceEquals(resources, Resources)) AddAnimations(document, name);
+        }
+        TextureCount += textures.Count;
+        var hasAppearance = false;
+        foreach (var reference in resources.Models)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var document = documents[reference.Resource];
+            var appearance = ToolboxActorAppearance.Read(document, resources.VariationMatAnim, resources.VariationMatAnimFrame, resources.Warnings);
+            hasAppearance |= appearance.Count > 0;
+            _models.Add(new ToolboxActorModel(document, reference.Model, textures, appearance, resources.Warnings, hiddenMaterials));
+            _modelReferences.Add(reference);
+        }
+        if (!hasAppearance && !string.IsNullOrWhiteSpace(resources.VariationMatAnim) && resources.VariationMatAnim != "Dummy")
+            resources.Warnings.Add($"Texture variation {resources.VariationMatAnim} could not be resolved; default material textures are shown.");
+        if (!ReferenceEquals(resources, Resources)) return;
         foreach (var name in Resources.AnimationResources.Except(documents.Keys))
         {
             cancellation.ThrowIfCancellationRequested();
@@ -103,24 +210,22 @@ internal sealed class BotwActorScene : IDisposable
             try { AddAnimations(new ToolboxBfresDocument(bytes), name); }
             catch (Exception ex) { Resources.Warnings.Add($"Animation resource {name}: {ex.GetType().Name}"); }
         }
-        // BAS states can reference the same clip many times. Keep each playable
-        // clip once, with referenced clips first and names stable across reloads.
-        var referenced = Resources.Animations.Select(a => a.Clip).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        Animations.Sort((a, b) => { var order = referenced.Contains(b.Name).CompareTo(referenced.Contains(a.Name)); return order != 0 ? order : StringComparer.OrdinalIgnoreCase.Compare(a.Name, b.Name); });
-        Directory.CreateDirectory(_temporaryDirectory);
+    }
+    private void LoadPhysics(BotwActorResources resources, IProgress<string>? progress, CancellationToken cancellation)
+    {
         BphysicsDocument? profile = null;
-        if (Resources.PhysicsParameters != null)
+        if (resources.PhysicsParameters != null)
         {
-            var temp = Path.Combine(_temporaryDirectory, "actor.bphysics"); File.WriteAllBytes(temp, Resources.PhysicsParameters);
+            var temp = Path.Combine(_temporaryDirectory, resources.ActorName + ".bphysics"); File.WriteAllBytes(temp, resources.PhysicsParameters);
             profile = BphysicsService.Load(temp);
         }
         var index = 0;
-        foreach (var resource in Resources.PhysicsFiles)
+        foreach (var resource in resources.PhysicsFiles)
         {
             cancellation.ThrowIfCancellationRequested(); progress?.Report($"Loading {Path.GetFileName(resource)}");
-            var bytes = Resources.Read(resource);
+            var bytes = resources.Read(resource);
             if (bytes == null) { Resources.Warnings.Add($"Missing {resource}"); continue; }
-            var path = Path.Combine(_temporaryDirectory, $"physics-{index++}{Path.GetExtension(resource)}");
+            var path = Path.Combine(_temporaryDirectory, $"{resources.ActorName}-{index++}{Path.GetExtension(resource)}");
             File.WriteAllBytes(path, bytes);
             try
             {
@@ -141,16 +246,6 @@ internal sealed class BotwActorScene : IDisposable
             }
             catch (Exception ex) { Resources.Warnings.Add($"Physics {Path.GetFileName(resource)}: {UserFacingExceptionFormatter.Format(ex)}"); }
         }
-        var displayedNames = Overlay.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().Index, StringComparer.OrdinalIgnoreCase);
-        var nextBone = Next(Overlay.Bones.Select(b => b.Index));
-        var additional = RestModel.Bones.Where(b => !displayedNames.ContainsKey(b.Name)).DistinctBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-        foreach (var bone in additional) displayedNames.TryAdd(bone.Name, nextBone++);
-        var restByIndex = RestModel.Bones.ToDictionary(b => b.Index);
-        foreach (var bone in additional)
-            Overlay.Bones.Add(new() { Index = displayedNames[bone.Name],
-                ParentIndex = restByIndex.TryGetValue(bone.ParentIndex, out var parent) ? displayedNames[parent.Name] : -1, Name = bone.Name,
-                Position = bone.Position, AxisX = bone.AxisX, AxisY = bone.AxisY, AxisZ = bone.AxisZ, IsSelectable = false });
-        CurrentModel = Update(null, 0, false, 0, true);
     }
     private void AddAnimations(ToolboxBfresDocument document, string name)
     {
@@ -162,6 +257,7 @@ internal sealed class BotwActorScene : IDisposable
     }
     private void AddLayer(ParticlePreviewData source, BphysicsClothProfile? profile)
     {
+        BindPreviewBoneNames(source, RestModel.Bones);
         var ownershipSolver = new HkclPreviewSimulator(source);
         var bones = source.Bones.ToDictionary(b => b.Index);
         var owners = ownershipSolver.DrivenBoneIndices.ToHashSet();
@@ -193,6 +289,17 @@ internal sealed class BotwActorScene : IDisposable
             BoneB = c.BoneB < 0 ? -1 : c.BoneB + layer.BoneOffset, Name = c.Name, Kind = c.Kind });
     }
     private static int Next(IEnumerable<int> values) => values.DefaultIfEmpty(-1).Max() + 1;
+    internal static void BindPreviewBoneNames(ParticlePreviewData source, IEnumerable<VisualModelBone> modelBones)
+    {
+        var names = modelBones.Select(b => b.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var exact = names.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var aliases = names.GroupBy(n => n[(n.LastIndexOf(':') + 1)..], StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() == 1).ToDictionary(g => g.Key, g => g.Single(), StringComparer.OrdinalIgnoreCase);
+        // Resolve only unambiguous aliases; indices and authored bind frames stay intact.
+        foreach (var bone in source.Bones)
+            if (!exact.Contains(bone.Name) && aliases.TryGetValue(bone.Name[(bone.Name.LastIndexOf(':') + 1)..], out var name))
+                bone.Name = name;
+    }
     internal static void AddParticlePoseReferences(ParticlePreviewData source, IEnumerable<ParticlePreviewAttachment> authored)
     {
         var attached = source.ParticleAttachments.Select(a => a.ParticleIndex).ToHashSet();
@@ -230,6 +337,22 @@ internal sealed class BotwActorScene : IDisposable
             visiting[index] = true;
             var attachment = _attachments[index];
             Matrix4x4? parent = attachment.Model >= 0 ? Matrix(Visit(attachment.Model).Bones.First(b => b.Name == attachment.Bone)) : null;
+            if (EquipmentAttachments.TryGetValue(index, out var equipment))
+            {
+                if (parent == null) throw new InvalidDataException($"Equipment {equipment.Actor}: attachment bone '{equipment.Bone}' was not found.");
+                var transform = equipment.Offset * parent.Value;
+                // Equipment follows the attachment, not same-named character animation
+                // tracks or cloth overrides. Keep its skeleton out of Link's name map.
+                var pose = skeletonOnly ? _models[index].SkeletonPose(null, 0, null, null, transform)
+                    : _models[index].Pose(null, 0, null, null, transform);
+                for (int b = 0; b < pose.Bones.Count; b++)
+                {
+                    var bone = pose.Bones[b];
+                    pose.Bones[b] = new() { Index = bone.Index, ParentIndex = bone.ParentIndex, Name = $"Equipment_{index}_{bone.Name.Replace(':', '_').Replace('|', '_')}",
+                        Position = bone.Position, Rotation = bone.Rotation, Scale = bone.Scale, Sources = bone.Sources };
+                }
+                return poses[index] = pose;
+            }
             return poses[index] = skeletonOnly
                 ? _models[index].SkeletonPose(animation, frame, overrides, suppressCloth ? _clothDriven : null, parent)
                 : _models[index].Pose(animation, frame, overrides, suppressCloth ? _clothDriven : null, parent);
@@ -244,10 +367,11 @@ internal sealed class BotwActorScene : IDisposable
         var overrides = new Dictionary<string, VisualBoneOverride>(StringComparer.OrdinalIgnoreCase);
         var clean = Skeleton(animation, frame, null, simulate);
         foreach (var service in _supports)
-        for (var g = 0; g < _supportGroups[service].Count; g++)
         {
-            var evaluation = service.EvaluateSidecarDriverGroup(g, clean.Bones, RestModel.Bones, _supportGroups[service]);
-            foreach (var pose in evaluation.Poses.Where(p => p.IsDriven && !(simulate && _clothDriven.Contains(p.Name))))
+            var evaluation = service.EvaluateSidecarPose(clean.Bones, RestModel.Bones, _supportGroups[service]);
+            // Helpers provide the input pose even for bones later written by
+            // cloth. Cloth overrides replace these only after the solve.
+            foreach (var pose in evaluation.Poses.Where(p => p.IsDriven))
                 overrides[pose.Name] = new(pose.Name, pose.Position, pose.Rotation, pose.Scale);
             if (evaluation.Poses.Any(p => p.IsDriven)) clean = Skeleton(animation, frame, overrides, simulate);
         }

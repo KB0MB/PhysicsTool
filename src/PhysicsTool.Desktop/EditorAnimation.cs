@@ -58,6 +58,7 @@ public sealed partial class MainWindow
     private void ConfigureEditorTimeline()
     {
         if (IsActorMode) return;
+        CancelTimelineScrub();
         _updatingTimeline = true;
         _animations.ItemsSource = new[] { "Rest pose" }.Concat(_editorClips.Select(c => c.Name)).ToArray();
         _animations.SelectedIndex = _editorClipIndex + 1;
@@ -84,8 +85,9 @@ public sealed partial class MainWindow
     internal void SeekEditorAnimation(double frame)
     {
         if (EditorClip == null || IsActorMode) return;
-        PauseEditorAnimation(); _editorFrame = Math.Clamp(frame, 0, EditorClip.EndFrame);
-        PoseEditorAnimation(0, true, false); UpdateEditorPlayback();
+        if (!_timelineScrubbing) PauseEditorAnimation();
+        _editorFrame = Math.Clamp(frame, 0, EditorClip.EndFrame);
+        PoseEditorAnimation(0, true, false); ResetTimelineClocks(); UpdateEditorPlayback();
     }
     internal void ToggleEditorPlayback()
     {
@@ -111,12 +113,14 @@ public sealed partial class MainWindow
         _timeline.Maximum = Math.Max(1, EditorClip?.EndFrame ?? 1); _timeline.Value = _editorFrame;
         _frameLabel.Text = $"{_editorFrame:0.0} / {EditorClip?.EndFrame ?? 0:0.0}";
         _updatingTimeline = false;
+        if (_timelineScrubbing) { _timer.Stop(); return; }
         if ((_editorPlaying || _solver != null || _ragdollSolver != null) && !_timer.IsEnabled)
         { _clock.Restart(); _lastTick = 0; _previewStepClock.Reset(); _timer.Start(); }
         else if (!_editorPlaying && _solver == null && _ragdollSolver == null) _timer.Stop();
     }
     internal void AdvanceEditorPreview(float seconds)
     {
+        if (_timelineScrubbing) return;
         if (_ragdollSolver != null)
         {
             _ragdollSolver.WindEnabled = _wind.IsChecked == true; _ragdollSolver.Step(seconds);
@@ -153,6 +157,7 @@ public sealed partial class MainWindow
                 return;
             }
             var source = _viewport.Data;
+            var rig = BoundImportedModel;
             if (!ReferenceEquals(source, _animationSource))
             {
                 _animationSource = source;
@@ -161,8 +166,8 @@ public sealed partial class MainWindow
             var solver = _solver ?? _animationPoseSolver;
             var suppressed = source.Bones.Where(b => solver?.DrivenBoneIndices.Contains(b.Index) == true)
                 .Select(b => ModelAnimationClip.Normalize(b.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var clean = _importedModel.AnimationSkeleton(EditorClip, _editorFrame, suppressed);
-            var rest = _importedModel.Rest.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var clean = rig.AnimationSkeleton(EditorClip, _editorFrame, suppressed);
+            var rest = rig.Rest.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
             var animated = clean.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
             Matrix4x4 Matrix(VisualModelBone b) => Matrix4x4.CreateScale(b.Scale) * Matrix4x4.CreateFromQuaternion(b.Rotation) * Matrix4x4.CreateTranslation(b.Position);
             if (solver != null)
@@ -187,12 +192,12 @@ public sealed partial class MainWindow
                 }
                 _viewport.Simulated = solver.GetPositions(); _viewport.SimulatedBones = solver.GetBonePoses(); _viewport.SimulatedColliders = solver.GetColliderPoses();
             }
-            var visual = _solver != null ? clean : _importedModel.AnimationSkeleton(EditorClip, _editorFrame);
+            var visual = _solver != null ? clean : rig.AnimationSkeleton(EditorClip, _editorFrame);
             var overrides = visual.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key,
                 g => new VisualBoneOverride(g.Key, g.First().Position, g.First().Rotation, g.First().Scale), StringComparer.OrdinalIgnoreCase);
-            var cloth = _modelBinding.Overrides(_solver != null ? _importedModel.Rest : visual, source, _solver != null ? _viewport.SimulatedBones : null);
-            foreach (var pose in cloth) overrides[pose.Name] = pose;
-            _viewport.SetModelPose(_importedModel.Sample(overrides.Values.ToArray()));
+            if (_solver != null)
+                foreach (var pose in _modelBinding.Overrides(rig.Rest, source, _viewport.SimulatedBones, MatchedModelReferences)) overrides[pose.Name] = pose;
+            _viewport.SetModelPose(rig.Sample(overrides.Values.ToArray()));
             if (_solver == null)
             {
                 var displayed = _viewport.Model!.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);

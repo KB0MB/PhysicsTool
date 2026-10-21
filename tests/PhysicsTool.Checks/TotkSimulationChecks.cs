@@ -60,6 +60,24 @@ internal static class TotkSimulationChecks
         contact.Particles[0].CollisionMask = 0;
         solver = new(contact); solver.Step(dt);
         Require(solver.GetPositions()[0] == contact.Particles[0].Position, "Disabled collision mask");
+        foreach (var profile in new[] { ClothSolverProfile.TotkExperimental, ClothSolverProfile.BotwPreview })
+        foreach (var distance in new[] { .5f, 1f, 1.5f, 2f, 3f, 0f })
+        foreach (var fixedA in new[] { false, true })
+        {
+            var links = new ParticlePreviewData { SolverProfile = profile, Gravity = Vector3.Zero, SimulationSubSteps = 1, SimulationSolveIterations = 1 };
+            const string kind = "hclCompressibleLinkConstraintSet";
+            links.ConstraintSets.Add(new() { Index = 0, Kind = kind });
+            links.ConstraintExecution.Add(0);
+            links.Particles.Add(new() { Index = 0, Position = Vector3.Zero, Mass = 4, InverseMass = .25f, Fixed = fixedA });
+            links.Particles.Add(new() { Index = 1, Position = new(distance, 0, 0), Mass = 4f / 3, InverseMass = .75f });
+            links.Links.Add(new() { ConstraintSetIndex = 0, ParticleA = 0, ParticleB = 1, Kind = kind, RestLength = 2, CompressionLength = 1, Stiffness = .5f });
+            var pair = new HkclPreviewSimulator(links); pair.Step(dt);
+            var correction = distance == 0 ? 0 : .5f * (distance - Math.Clamp(distance, 1, 2));
+            Require(Vector3.Distance(pair.GetPositions()[0], new(fixedA ? 0 : correction * .25f, 0, 0)) < 1e-6f &&
+                Vector3.Distance(pair.GetPositions()[1], new(distance - correction * .75f, 0, 0)) < 1e-6f,
+                $"Compressible link limits/mass coefficient/fixed endpoint: {profile}, length {distance}");
+        }
+        Console.WriteLine("PASS: compressible-link free interval, both limits, unequal inverse masses, fixed endpoints and coincident particles.");
         Console.WriteLine("PASS: TotK mass/inverse-mass, damping, variable timestep, native slot masks, and BotW isolation.");
     }
 

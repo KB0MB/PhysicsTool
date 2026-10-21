@@ -41,6 +41,7 @@ public sealed partial class MainWindow
         Grid.SetColumn(_timeline, 1); time.Children.Add(_timeline); Grid.SetColumn(_frameLabel, 2); time.Children.Add(_frameLabel);
         Grid.SetRow(time, 1); _actorBar.Children.Add(time);
         DockPanel.SetDock(_actorBar, Dock.Bottom); center.Children.Add(_actorBar);
+        ConfigureTimelineScrubbing();
         _animations.SelectionChanged += (_, _) =>
         {
             if (_updatingTimeline) return;
@@ -52,7 +53,7 @@ public sealed partial class MainWindow
         {
             try
             {
-            if (_actorScene == null) return;
+            if (_actorScene == null || _timelineScrubbing) return;
             var now = _actorClock.Elapsed.TotalSeconds;
             var count = _actorSteps.Advance(now - _actorLastTick, SimulationOptions.PlaybackSpeed); _actorLastTick = now;
             for (int i = 0; i < count; i++)
@@ -105,6 +106,7 @@ public sealed partial class MainWindow
             _animations.ItemsSource = new[] { "Rest pose" }.Concat(scene.Animations.Select(a => a.Name)).ToArray();
             _animations.SelectedIndex = 0; _updatingTimeline = false;
             _viewport.Data = scene.Overlay; _viewport.Selected.Clear(); _viewport.Simulated = null;
+            _viewport.ReadOnlyActorView = true;
             _viewport.SetModel(scene.CurrentModel); _bonesToggle.IsChecked = false;
             _inspector.IsVisible = _workspaceSplit.IsVisible = _editorActions.IsVisible = false;
             _workspace.ColumnDefinitions[1].Width = new GridLength(0);
@@ -119,9 +121,11 @@ public sealed partial class MainWindow
     }
     private void ExitActor()
     {
+        CancelTimelineScrub();
         _actorLoad?.Cancel(); _actorTimer.Stop();
         if (_actorScene == null) return;
         _actorScene.Dispose(); _actorScene = null; _actorPlaying = _actorSimulating = false;
+        _viewport.ReadOnlyActorView = false;
         _actorBar.IsVisible = false; _inspector.IsVisible = _workspaceSplit.IsVisible = _editorActions.IsVisible = true;
         _workspace.ColumnDefinitions[1].Width = new GridLength(5);
         _workspace.ColumnDefinitions[2].MinWidth = 300; _workspace.ColumnDefinitions[2].Width = _inspectorWidth;
@@ -132,7 +136,7 @@ public sealed partial class MainWindow
     {
         if (_actorScene == null) { SeekEditorAnimation(frame); return; }
         _actorFrame = Math.Clamp(frame, 0, ActorAnimation?.FrameCount ?? 0);
-        PoseActor(true, 0); UpdateActorPlayback();
+        PoseActor(true, 0); ResetTimelineClocks(); UpdateActorPlayback();
     }
     private void PoseActor(bool reset, float seconds)
     {
@@ -159,6 +163,7 @@ public sealed partial class MainWindow
         if (_actorPlay.Content is not Lucide.Avalonia.LucideIcon icon || icon.Kind != kind)
             _actorPlay.Content = new Lucide.Avalonia.LucideIcon { Kind = kind, Size = 18 };
         _actorPlay.IsEnabled = ActorAnimation != null; _timeline.IsEnabled = ActorAnimation != null;
+        if (_timelineScrubbing) { _actorTimer.Stop(); return; }
         if ((_actorPlaying || _actorSimulating) && !_actorTimer.IsEnabled)
         { _actorSteps.Reset(); _actorClock.Restart(); _actorLastTick = 0; _actorTimer.Start(); }
         else if (!_actorPlaying && !_actorSimulating) _actorTimer.Stop();

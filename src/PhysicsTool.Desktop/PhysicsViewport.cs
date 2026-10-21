@@ -7,14 +7,33 @@ using System.Numerics;
 
 namespace PhysicsTool.Desktop;
 
+public enum ModelDisplayMode { Textured, Wireframe, EdgedFaces }
+
 public sealed partial class PhysicsViewport : Control
 {
     public VisualModelData? Model { get; private set; }
     public HashSet<int> HiddenMeshes { get; } = new();
     public bool GpuReady { get; set; }
-    public bool Wireframe { get; set; }
+    private ModelDisplayMode _displayMode;
+    public ModelDisplayMode DisplayMode
+    {
+        get => _displayMode;
+        set
+        {
+            if (_displayMode == value) return;
+            _displayMode = value;
+            Changed();
+        }
+    }
+    public bool Wireframe
+    {
+        get => DisplayMode == ModelDisplayMode.Wireframe;
+        set => DisplayMode = value ? ModelDisplayMode.Wireframe : ModelDisplayMode.Textured;
+    }
     public bool ShowPhysics { get; set; } = true;
+    public bool ShowParticles { get; set; } = true;
     public bool ShowEmission { get; set; }
+    public bool ReadOnlyActorView { get; set; }
     public event Action? CameraChanged;
     public void SetModel(VisualModelData? model) { Model = model; HiddenMeshes.Clear(); Fit(); }
     public void SetModelPose(VisualModelData model) { Model = model; Changed(); }
@@ -66,22 +85,33 @@ public sealed partial class PhysicsViewport : Control
     }
     public Point Project(Vector3 p)
     {
-        var v = Vector3.Transform(p - _center, Matrix4x4.CreateRotationY(_yaw) * Matrix4x4.CreateRotationX(_pitch));
-        var scale = Math.Min(Bounds.Width, Bounds.Height) * .78 / _extent * _zoom;
+        var v = Vector3.Transform(p - _center, _renderingOverlay ? _renderRotation : Rotation);
+        var scale = _renderingOverlay ? _renderScale : Math.Min(Bounds.Width, Bounds.Height) * .78 / _extent * _zoom;
         return new Point(Bounds.Width / 2 + v.X * scale + _pan.X, Bounds.Height / 2 - v.Y * scale + _pan.Y);
     }
     private Vector3 Position(ParticlePreviewPoint p) => Simulated?.GetValueOrDefault(p.Index, p.Position) ?? p.Position;
     public override void Render(DrawingContext context)
     {
-        if (Model == null || !GpuReady || Wireframe) context.FillRectangle(new SolidColorBrush(ViewportBackground), Bounds.WithX(0).WithY(0));
+        _renderRotation = Rotation;
+        _renderScale = Math.Min(Bounds.Width, Bounds.Height) * .78 / _extent * _zoom;
+        _renderingOverlay = true;
+        try { RenderOverlay(context); }
+        finally { _renderingOverlay = false; }
+    }
+    private bool _renderingOverlay;
+    private Matrix4x4 _renderRotation;
+    private double _renderScale;
+    private void RenderOverlay(DrawingContext context)
+    {
+        if (Model == null || !GpuReady) context.FillRectangle(new SolidColorBrush(ViewportBackground), Bounds.WithX(0).WithY(0));
         else context.FillRectangle(Brushes.Transparent, Bounds.WithX(0).WithY(0));
-        if (Model == null || !GpuReady || Wireframe)
+        if (Model == null || !GpuReady)
         foreach (var line in GridLines)
         {
             var color = Color.FromRgb((byte)(line.Color.X * 255), (byte)(line.Color.Y * 255), (byte)(line.Color.Z * 255));
             context.DrawLine(new Pen(new SolidColorBrush(color), 1), Project(line.Start), Project(line.End));
         }
-        if (Model != null && (!GpuReady || Wireframe))
+        if (Model != null && !GpuReady)
         {
             var wire = new Pen(new SolidColorBrush(ViewportColor("#8CADA6", "#4B6B65")), .7);
             var stride = Math.Max(1, (int)Math.Ceiling(Model.TriangleCount / 30000d)) * 3;
@@ -96,14 +126,18 @@ public sealed partial class PhysicsViewport : Control
         }
         if (_selecting && _selectionRect.Width > 3 && _selectionRect.Height > 3)
             context.DrawRectangle(new SolidColorBrush(Color.FromArgb(35, 98, 174, 235)), new Pen(new SolidColorBrush(Color.Parse("#78B7E8")), 1), _selectionRect);
-        if (!ShowPhysics) return;
-        if (ShowColliders) DrawColliderSurfaces(context);
-        var points = Data.Particles.ToDictionary(p => p.Index, Position);
-        void Edge(int a, int b, IPen pen) { if (points.TryGetValue(a, out var x) && points.TryGetValue(b, out var y)) context.DrawLine(pen, Project(x), Project(y)); }
-        var face = new Pen(new SolidColorBrush(ViewportColor("#59656A", "#87959C")), 1);
-        foreach (var t in Data.Triangles) { Edge(t.ParticleA, t.ParticleB, face); Edge(t.ParticleB, t.ParticleC, face); Edge(t.ParticleC, t.ParticleA, face); }
-        var link = new Pen(new SolidColorBrush(ViewportColor("#92AAB6", "#506E7E")), 1.3);
-        foreach (var l in Data.Links) Edge(l.ParticleA, l.ParticleB, link);
+        if (!ShowPhysics) { ClearColliderDrawing(); return; }
+        if (ShowColliders) { PrepareColliderDrawing(); DrawColliderSurfaces(context); }
+        else ClearColliderDrawing();
+        _projectedParticles.Clear();
+        if (ShowParticles)
+        {
+            foreach (var p in Data.Particles) _projectedParticles[p.Index] = Project(Position(p));
+            var face = new Pen(new SolidColorBrush(ViewportColor("#59656A", "#87959C")), 1);
+            DrawParticleEdges(context, face, true);
+            var link = new Pen(new SolidColorBrush(ViewportColor("#92AAB6", "#506E7E")), 1.3);
+            DrawParticleEdges(context, link, false);
+        }
         if (ShowColliders)
         {
             if (Data.RagdollConstraints.Count > 0)
@@ -115,16 +149,30 @@ public sealed partial class PhysicsViewport : Control
                             Project((a.Start + a.End) * .5f), Project((b.Start + b.End) * .5f));
             }
             var pen = new Pen(new SolidColorBrush(ViewportColor("#55C8AE", "#147D69")), 1);
-            foreach (var c in VisibleColliders)
-                foreach (var line in ColliderGeometry.Create(c))
-                    context.DrawLine(SelectedColliders.Contains(c.Index) ? new Pen(SelectionBrush, 1.5) : pen, Project(line.Start), Project(line.End));
+            var selectedPen = new Pen(SelectionBrush, 1.5);
+            foreach (var (shape, mesh) in _drawColliders)
+            {
+                var points = new SkiaSharp.SKPoint[mesh.Lines.Count * 2];
+                for (int i = 0; i < mesh.Lines.Count; i++)
+                {
+                    var a = Project(mesh.Lines[i].Start); var b = Project(mesh.Lines[i].End);
+                    points[i * 2] = new((float)a.X, (float)a.Y); points[i * 2 + 1] = new((float)b.X, (float)b.Y);
+                }
+                var wirePen = SelectedColliders.Contains(shape.Index) ? selectedPen : pen;
+                context.Custom(new Rendering.OverlayPrimitiveBatch(new Rect(Bounds.Size), points, ((ISolidColorBrush)wirePen.Brush!).Color, (float)wirePen.Thickness));
+            }
         }
         if (ShowBones) DrawBones(context);
-        foreach (var p in Data.Particles)
+        if (ShowParticles)
         {
-            var selected = Selected.Contains(p.Index);
-            context.DrawEllipse(selected ? SelectionBrush : p.Fixed ? new SolidColorBrush(ViewportColor("#EF7C81", "#B33745")) : new SolidColorBrush(ViewportColor("#70B6EC", "#226EAC")), null,
-                Project(Position(p)), selected ? 5 : 3.5, selected ? 5 : 3.5);
+            var fixedBrush = new SolidColorBrush(ViewportColor("#EF7C81", "#B33745"));
+            var dynamicBrush = new SolidColorBrush(ViewportColor("#70B6EC", "#226EAC"));
+            foreach (var p in Data.Particles)
+            {
+                var selected = Selected.Contains(p.Index);
+                context.DrawEllipse(selected ? SelectionBrush : p.Fixed ? fixedBrush : dynamicBrush, null,
+                    _projectedParticles[p.Index], selected ? 5 : 3.5, selected ? 5 : 3.5);
+            }
         }
         DrawTransformGuides(context);
     }

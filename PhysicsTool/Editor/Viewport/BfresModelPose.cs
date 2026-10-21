@@ -9,6 +9,7 @@ internal sealed class BfresModelPose
     private readonly List<string> _warnings = new();
     private readonly int _embedded;
     private readonly int _external;
+    private readonly Dictionary<string, VisualModelBone> _canonicalBones = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<VisualModelBone>? _bones;
     public IReadOnlyList<VisualModelBone> Bones => _bones ??= Sample(null, null).Bones;
 
@@ -30,19 +31,40 @@ internal sealed class BfresModelPose
         _external = textures.Count - _embedded;
         foreach (var model in document.Models) _models.Add(new ToolboxActorModel(document, (string)model.Name, textures));
         if (_models.Count == 0) throw new InvalidDataException("This BFRES contains no models. Select the model resource, not a texture or animation resource.");
+        foreach (var model in _models)
+            foreach (var bone in model.RestPose.Bones) _canonicalBones.TryAdd(BoneName(bone.Name), bone);
     }
 
     public VisualModelData Sample(VisualModelData? appearance, IReadOnlyList<VisualBoneOverride>? overrides,
         ToolboxActorAnimation? animation = null, double frame = 0, ISet<string>? suppressed = null, bool skeletonOnly = false)
     {
-        var mapped = overrides?.GroupBy(p => p.Name[(p.Name.LastIndexOf(':') + 1)..], StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, Matrix4x4>? deltas = null;
+        if (overrides != null)
+        {
+            deltas = new(StringComparer.OrdinalIgnoreCase);
+            foreach (var pose in overrides)
+            {
+                var name = BoneName(pose.Name);
+                if (!_canonicalBones.TryGetValue(name, out var rest)) continue;
+                if (pose.Position == rest.Position && pose.Rotation == rest.Rotation && pose.Scale == rest.Scale)
+                    deltas[name] = Matrix4x4.Identity;
+                else
+                {
+                    if (!Matrix4x4.Invert(Matrix(rest.Position, rest.Rotation, rest.Scale), out var inverse))
+                        throw new InvalidDataException($"BFRES bone '{name}' has a singular bind transform.");
+                    deltas[name] = inverse * Matrix(pose.Position, pose.Rotation, pose.Scale);
+                }
+            }
+        }
         var result = new VisualModelData { SourcePath = _path, BoundsMinimum = new(float.MaxValue), BoundsMaximum = new(float.MinValue),
             EmbeddedTextureCount = _embedded, ExternalTextureCount = _external };
         result.Warnings.AddRange(_warnings);
         foreach (var model in _models)
         {
-            var pose = skeletonOnly ? model.SkeletonPose(animation, frame, mapped, suppressed) : model.Pose(animation, frame, mapped, suppressed);
+            // Editor names refer to the first occurrence, but every FMDL owns its bind pose.
+            // Broadcast the requested motion, never another skeleton's absolute world matrix.
+            var pose = skeletonOnly ? model.SkeletonPose(animation, frame, null, suppressed, restDeltas: deltas)
+                : model.Pose(animation, frame, null, suppressed, restDeltas: deltas);
             var offset = result.Bones.Count;
             result.Bones.AddRange(pose.Bones.Select(b => new VisualModelBone { Index = b.Index + offset,
                 ParentIndex = b.ParentIndex < 0 ? -1 : b.ParentIndex + offset, Name = b.Name,
@@ -69,4 +91,7 @@ internal sealed class BfresModelPose
         result.DefaultTextureMeshCount = result.Meshes.Count(m => m.Texture == null);
         return result;
     }
+    private static string BoneName(string name) => name[(name.LastIndexOf(':') + 1)..];
+    private static Matrix4x4 Matrix(Vector3 position, Quaternion rotation, Vector3 scale) =>
+        Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rotation) * Matrix4x4.CreateTranslation(position);
 }

@@ -11,29 +11,26 @@ public sealed partial class PhysicsViewport
     {
         if (!ShowColliderSurfaces) return;
         var view = ViewDirection;
-        var light = Vector3.Normalize(new Vector3(-.4f, 1, .6f));
         // Translucent x-ray overlay, like the existing guides: keep volumes visible inside the model.
-        foreach (var shape in VisibleColliders.OrderBy(c => Vector3.Dot(c.Start + c.End, view)))
+        foreach (var (shape, mesh) in _drawColliders.OrderBy(c => Vector3.Dot(c.Shape.Start + c.Shape.End, view)))
         {
-            var surfaces = ColliderGeometry.Surface(shape)
-                .Select(t => (Triangle: t, Normal: Vector3.Normalize(Vector3.Cross(t.B - t.A, t.C - t.A))))
-                .Where(item => shape.Kind == ColliderPreviewKind.Plane || Vector3.Dot(item.Normal, view) > 0)
-                .GroupBy(item => (int)(Math.Max(0, Vector3.Dot(item.Normal, light)) * 7));
+            var bands = mesh.GetBands(shape);
             // Batch lighting bands to avoid one draw call and brush per triangle.
-            foreach (var band in surfaces)
+            for (int band = 0; band < bands.Length; band++)
             {
-                var shade = .65f + .35f * band.Key / 7;
+                var shade = .65f + .35f * band / 7;
                 var selected = SelectedColliders.Contains(shape.Index);
                 var brush = new SolidColorBrush(selected ? IsLightViewport ? Color.FromArgb(55, 35, 100, 140) : Color.FromArgb(65, 180, 224, 245)
                     : Color.FromArgb(48, (byte)(75 * shade), (byte)(205 * shade), (byte)(173 * shade)));
-                var geometry = new StreamGeometry();
-                using (var path = geometry.Open())
-                    foreach (var item in band)
+                var points = new List<SkiaSharp.SKPoint>();
+                    foreach (var item in bands[band])
                     {
+                        if (shape.Kind != ColliderPreviewKind.Plane && Vector3.Dot(item.Normal, view) <= 0) continue;
                         var t = item.Triangle;
-                        path.BeginFigure(Project(t.A), true); path.LineTo(Project(t.B)); path.LineTo(Project(t.C)); path.EndFigure(true);
+                        var a = Project(t.A); var b = Project(t.B); var c = Project(t.C);
+                        points.Add(new((float)a.X, (float)a.Y)); points.Add(new((float)b.X, (float)b.Y)); points.Add(new((float)c.X, (float)c.Y));
                     }
-                context.DrawGeometry(brush, null, geometry);
+                if (points.Count > 0) context.Custom(new Rendering.OverlayPrimitiveBatch(new Avalonia.Rect(Bounds.Size), points.ToArray(), brush.Color));
             }
         }
     }

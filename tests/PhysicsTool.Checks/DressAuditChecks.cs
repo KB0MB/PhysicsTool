@@ -33,7 +33,10 @@ internal sealed class DressAuditChecks : Application
             try
             {
                 VisualModelImporter.EyeGlint = () => ModelTextures.Resource("EyeGlint.png");
-                using var scene = BotwActorScene.Load(ActorPath);
+                var armor = Path.GetFileName(ActorPath) == "Player.pack.zs" ? new Dictionary<PlayerArmorSlot, string>
+                { [PlayerArmorSlot.Head] = "Armor_1151_Head", [PlayerArmorSlot.Upper] = "Armor_116_Upper", [PlayerArmorSlot.Lower] = "Armor_001_Lower" } : null;
+                PortableModelImporter.ConfigureBfres();
+                using var scene = await Task.Run(() => BotwActorScene.Load(ActorPath, armor: armor));
                 var clip = scene.Animations.FirstOrDefault(a => a.Name.Equals(ClipName ?? "Act_Hello", StringComparison.OrdinalIgnoreCase))
                     ?? scene.Animations.First(a => a.Name.Contains("Hello", StringComparison.OrdinalIgnoreCase));
                 Console.WriteLine($"CLIP {clip.Name} {clip.FrameCount} frames");
@@ -44,13 +47,14 @@ internal sealed class DressAuditChecks : Application
                 var layers = ((System.Collections.IEnumerable)typeof(BotwActorScene).GetField("_layers", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(scene)!)
                     .Cast<object>().Select(l => (ParticlePreviewData)l.GetType().GetProperty("Source")!.GetValue(l)!).ToArray();
                 File.WriteAllText(Path.Combine(Output, "inputs.json"), JsonSerializer.Serialize(new {
+                    clip = clip.Name, animations = scene.Animations.Select(a => a.Name).ToArray(),
                     helpers = saved.SelectMany(s => s.GetSidecarDriverGroups()).ToArray(), layers,
                     meshes = scene.RestModel.Meshes.Select(m => new { m.Name, vertices = m.Vertices.Length / 8 }) }, options));
                 var results = new List<object>();
                 var checks = new List<string>();
                 view.Data = scene.Overlay;
                 view.SetModel(scene.CurrentModel); view.SetView(CameraView.Front, false); view.Orbit(.12f, .2f);
-                foreach (var frame in new[] { 0d, clip.FrameCount * .25, clip.FrameCount * .5, clip.FrameCount * .75 })
+                foreach (var frame in new[] { 0d, clip.FrameCount * .25, clip.FrameCount * .5, clip.FrameCount * .75, clip.FrameCount * .8 })
                 {
                     VisualModelBone[]? helperRoots = null;
                     foreach (var mode in new[] { "animation", "helpers", "simulation" })
@@ -60,6 +64,12 @@ internal sealed class DressAuditChecks : Application
                         if (mode == "simulation")
                             for (var f = 0d; f < frame; f += .5) scene.Update(clip, f, true, 1f / 60);
                         var model = scene.Update(clip, frame, mode == "simulation", mode == "simulation" ? 1f / 60 : 0);
+                        if (mode == "helpers")
+                        foreach (var service in saved)
+                        {
+                            var evaluation = service.EvaluateSidecarPose(model.Bones, scene.RestModel.Bones);
+                            foreach (var name in evaluation.MissingDriverBones) Console.WriteLine("MISSING DRIVER " + name);
+                        }
                         var roots = model.Bones.Where(b => b.Name is "Skirt_1_L" or "Skirt_1_R").OrderBy(b => b.Name).ToArray();
                         if (mode == "helpers") helperRoots = roots;
                         if (mode == "simulation" && roots.Length == 2 && helperRoots?.Length == 2)

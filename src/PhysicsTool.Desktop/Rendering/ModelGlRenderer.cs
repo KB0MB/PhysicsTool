@@ -9,13 +9,13 @@ namespace PhysicsTool.Desktop.Rendering;
 public sealed unsafe class ModelGlRenderer : IDisposable
 {
     private readonly GL _gl;
-    private readonly uint _standardProgram, _botwProgram, _totkProgram;
+    private readonly uint _standardProgram, _botwProgram, _totkProgram, _wireProgram;
     private uint _program;
     private readonly GridGlRenderer _grid;
     private readonly Dictionary<(uint Program, string Name), int> _locations = new();
     private readonly Dictionary<VisualModelTexture, uint> _textures = new();
     private readonly List<GpuMesh> _meshes = new();
-    private sealed record GpuMesh(uint Vao, uint Vbo, uint Ebo, VisualModelMesh Source, uint[] Textures);
+    private sealed record GpuMesh(uint Vao, uint Vbo, uint Ebo, VisualModelMesh Source, uint[] Textures, uint WireEbo = 0, int WireIndexCount = 0);
     private VisualModelData? _model;
     public ModelGlRenderer(GL gl, bool es)
     {
@@ -25,6 +25,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         {
             _botwProgram = CreateProgram("BOTW.frag", es);
             _totkProgram = CreateProgram("TOTK.frag", es);
+            _wireProgram = CreateProgram("Wireframe.frag", es);
             _grid = new GridGlRenderer(gl, es);
         }
         catch
@@ -32,6 +33,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             gl.DeleteProgram(_standardProgram);
             if (_botwProgram != 0) gl.DeleteProgram(_botwProgram);
             if (_totkProgram != 0) gl.DeleteProgram(_totkProgram);
+            if (_wireProgram != 0) gl.DeleteProgram(_wireProgram);
             throw;
         }
     }
@@ -75,7 +77,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     private void V(string name, Vector3 value) => _gl.Uniform3(Location(name), value.X, value.Y, value.Z);
     private void M(string name, Matrix4x4 value) => _gl.UniformMatrix4(Location(name), 1, false, (float*)&value);
 
-    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false)
+    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false, ModelDisplayMode displayMode = ModelDisplayMode.Textured)
     {
         var gl = _gl;
         gl.Viewport(0, 0, (uint)width, (uint)height); gl.Disable(EnableCap.ScissorTest);
@@ -91,6 +93,11 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         }
         if (model == null) return;
         gl.Enable(EnableCap.DepthTest); gl.Disable(EnableCap.CullFace); gl.Disable(EnableCap.Blend);
+        if (displayMode == ModelDisplayMode.Wireframe)
+        {
+            DrawWireframe(hidden, camera, clear);
+            return;
+        }
         var right = Vector3.Cross(Vector3.UnitY, direction);
         right = right.LengthSquared() > 1e-8f ? Vector3.Normalize(right) : Vector3.UnitX;
         var up = Vector3.Cross(direction, right);
@@ -98,11 +105,31 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         var fillLight = Vector3.Normalize(direction * .45f - right * .72f + up * .22f);
         _program = 0;
         // Match the original complete-model depth prepass to avoid hair/cloth shell artifacts.
-        gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
-        DrawMeshes();
-        gl.ColorMask(true, true, true, true); gl.DepthMask(false); gl.DepthFunc(DepthFunction.Lequal);
-        gl.Enable(EnableCap.Blend); gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-        DrawMeshes();
+        var edgedFaces = displayMode == ModelDisplayMode.EdgedFaces;
+        if (edgedFaces)
+        {
+            // Bias filled surfaces behind their edges to avoid flicker. Unlike
+            // polygon line mode, fill offset also works on OpenGL ES.
+            gl.Enable(EnableCap.PolygonOffsetFill);
+            gl.PolygonOffset(1f, 1f);
+        }
+        try
+        {
+            gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
+            DrawMeshes();
+            gl.ColorMask(true, true, true, true); gl.DepthMask(false); gl.DepthFunc(DepthFunction.Lequal);
+            gl.Enable(EnableCap.Blend); gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            DrawMeshes();
+        }
+        finally
+        {
+            if (edgedFaces) gl.Disable(EnableCap.PolygonOffsetFill);
+        }
+        if (edgedFaces)
+        {
+            gl.Disable(EnableCap.Blend);
+            DrawWireframe(hidden, camera, clear, overlay: true);
+        }
         gl.DepthMask(true); gl.Disable(EnableCap.Blend); gl.Disable(EnableCap.DepthTest); gl.BindVertexArray(0); gl.UseProgram(0);
 
         void DrawMeshes()
@@ -147,6 +174,44 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                 gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
             }
         }
+    }
+
+    private void DrawWireframe(ISet<int> hidden, Matrix4x4 camera, Vector3 background, bool overlay = false)
+    {
+        var gl = _gl;
+        _program = _wireProgram;
+        gl.UseProgram(_program);
+        M("uMvp", camera);
+        M("uModel", Matrix4x4.Identity);
+        V("uWireColor", overlay ? new Vector3(.06f, .08f, .1f) :
+            background.X > .5f ? new Vector3(.2f, .38f, .34f) : new Vector3(.55f, .75f, .7f));
+        gl.DepthFunc(DepthFunction.Lequal);
+
+        for (var index = 0; index < _meshes.Count; index++)
+        {
+            if (hidden.Contains(index)) continue;
+            var gpu = _meshes[index];
+            gl.BindVertexArray(gpu.Vao);
+            if (gpu.WireEbo == 0)
+            {
+                // Cache topology separately from the vertex buffer so animation
+                // updates reuse the same edges on desktop OpenGL and OpenGL ES.
+                var edges = ModelWireframe.Edges(gpu.Source.Indices);
+                gpu = gpu with { WireEbo = gl.GenBuffer(), WireIndexCount = edges.Length };
+                _meshes[index] = gpu;
+                gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, gpu.WireEbo);
+                fixed (uint* data = edges)
+                    gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(edges.Length * sizeof(uint)), data, BufferUsageARB.StaticDraw);
+            }
+            else gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, gpu.WireEbo);
+
+            gl.DrawElements(PrimitiveType.Lines, (uint)gpu.WireIndexCount, DrawElementsType.UnsignedInt, null);
+            gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, gpu.Ebo);
+        }
+
+        gl.Disable(EnableCap.DepthTest);
+        gl.BindVertexArray(0);
+        gl.UseProgram(0);
     }
 
     private bool CanUpdatePose(VisualModelData model) => _meshes.Count == model.Meshes.Count &&
@@ -198,9 +263,9 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     }
     private void ReleaseMeshes()
     {
-        foreach (var m in _meshes) { _gl.DeleteVertexArray(m.Vao); _gl.DeleteBuffer(m.Vbo); _gl.DeleteBuffer(m.Ebo); }
+        foreach (var m in _meshes) { _gl.DeleteVertexArray(m.Vao); _gl.DeleteBuffer(m.Vbo); _gl.DeleteBuffer(m.Ebo); if (m.WireEbo != 0) _gl.DeleteBuffer(m.WireEbo); }
         foreach (var t in _textures.Values) _gl.DeleteTexture(t);
         _meshes.Clear(); _textures.Clear();
     }
-    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); }
+    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); _gl.DeleteProgram(_wireProgram); }
 }

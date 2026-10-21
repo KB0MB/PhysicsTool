@@ -81,7 +81,7 @@ internal static class TotkActorChecks
         foreach (var entry in pack.Entries)
         {
             Console.WriteLine(entry.Name);
-            if (entry.Name.EndsWith(".bgyml") && (entry.Name.Contains("Model") || entry.Name.Contains("Animation") || entry.Name.Contains("Actor/") || entry.Name.Contains("Cloth")))
+            if (entry.Name.EndsWith(".bgyml") && (entry.Name.Contains("Model") || entry.Name.Contains("Animation") || entry.Name.Contains("Actor/") || entry.Name.Contains("Cloth") || entry.Name.Contains("Physics") || entry.Name.Contains("ControllerSet")))
                 Console.WriteLine(Byml.FromBinary(pack.Read(entry).ToArray()).ToYaml());
         }
     }

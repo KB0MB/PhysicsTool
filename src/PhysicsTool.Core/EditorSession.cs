@@ -4,7 +4,30 @@ namespace PhysicsTool.Core;
 
 public sealed class EditorSession
 {
-    private sealed record Snapshot(string State, int ClothIndex);
+    private const int UndoLimit = 50;
+
+    public sealed record ModelBoneReference(string ModelPath, IReadOnlyDictionary<string, System.Numerics.Matrix4x4> Bones);
+    // Immutable preview references travel with undo, but never enter a physics file.
+    public IReadOnlyDictionary<Guid, ModelBoneReference> ModelBoneReferences { get; set; } = new Dictionary<Guid, ModelBoneReference>();
+    private sealed record Snapshot(string State, int ClothIndex, Guid[] EntryIds, IReadOnlyDictionary<Guid, ModelBoneReference> ModelReferences);
+    private List<Guid> _entryIds = new();
+    // UI binding state follows an entry through rename, deletion of neighbors and undo.
+    public Guid SelectedEntryId
+    {
+        get
+        {
+            SynchronizeEntryIds();
+            return HasSelectedEntry ? _entryIds[ClothIndex] : Guid.Empty;
+        }
+    }
+    private void SynchronizeEntryIds()
+    {
+        var count = Document.GetClothSummaries().Count;
+        while (_entryIds.Count < count)
+            _entryIds.Add(Guid.NewGuid());
+        if (_entryIds.Count > count)
+            _entryIds.RemoveRange(count, _entryIds.Count - count);
+    }
     private Stack<Snapshot> _undo = new(), _redo = new();
     private string? _savedState;
     public HkclService Document { get; private set; } = new();
@@ -25,40 +48,77 @@ public sealed class EditorSession
 
     public HkclPreviewSimulator CreateSimulator()
     {
-        if (!CanSimulate) throw new InvalidOperationException("The selected cloth cannot be simulated with the available kernels.");
+        if (!CanSimulate)
+            throw new InvalidOperationException("The selected cloth cannot be simulated with the available kernels.");
         return new(Document.IsBphcl ? Document.GetTotkSimulationPreview(ClothIndex) : Document.GetParticlePreview(ClothIndex));
     }
 
     public void New(string name, int format)
     {
         var document = HkclService.CreateBlankCloth(name, format == 2);
-        Document = document; Platform = format == 0 ? HkclPlatform.WiiU : HkclPlatform.Switch;
-        Path = null; ClothIndex = 0; _savedState = null; _undo.Clear(); _redo.Clear();
+        Document = document;
+        Platform = format == 0 ? HkclPlatform.WiiU : HkclPlatform.Switch;
+        ModelBoneReferences = new Dictionary<Guid, ModelBoneReference>();
+        _entryIds = new();
+        SynchronizeEntryIds();
+        Path = null;
+        ClothIndex = 0;
+        ResetHistory(savedState: null);
     }
+
     public void Load(string path)
     {
-        var document = new HkclService(); document.Load(path);
-        var platform = document.IsBphcl || document.IsHelperBoneSidecar ? HkclPlatform.Switch : HkclService.DetectHkclPlatform(path);
-        Document = document; Platform = platform; Path = path; ClothIndex = 0;
-        _undo.Clear(); _redo.Clear(); _savedState = document.CaptureState();
+        var document = new HkclService();
+        document.Load(path);
+        var platform = document.IsBphcl || document.IsHelperBoneSidecar
+            ? HkclPlatform.Switch
+            : HkclService.DetectHkclPlatform(path);
+
+        Document = document;
+        Platform = platform;
+        Path = path;
+        ClothIndex = 0;
+        ModelBoneReferences = new Dictionary<Guid, ModelBoneReference>();
+        _entryIds = new();
+        SynchronizeEntryIds();
+        ResetHistory(document.CaptureState());
     }
+
     public void Save(string path)
     {
-        Document.SaveHkcl(path, Platform); Path = path; _savedState = Document.CaptureState();
+        Document.SaveHkcl(path, Platform);
+        Path = path;
+        _savedState = Document.CaptureState();
     }
+
     public void Clear()
     {
-        Document = new(); Path = null; ClothIndex = 0; Platform = HkclPlatform.WiiU;
-        _savedState = null; _undo.Clear(); _redo.Clear();
+        Document = new();
+        Path = null;
+        ClothIndex = 0;
+        Platform = HkclPlatform.WiiU;
+        ModelBoneReferences = new Dictionary<Guid, ModelBoneReference>();
+        _entryIds.Clear();
+        ResetHistory(savedState: null);
     }
+
+    private void ResetHistory(string? savedState)
+    {
+        _savedState = savedState;
+        _undo.Clear();
+        _redo.Clear();
+    }
+
     public void SwapWith(EditorSession other)
     {
         if (ReferenceEquals(this, other) || !Document.HasDocument || !other.Document.HasDocument)
             throw new InvalidOperationException("Load both a current file and a donor before swapping.");
         (Document, other.Document) = (other.Document, Document);
+        (ModelBoneReferences, other.ModelBoneReferences) = (other.ModelBoneReferences, ModelBoneReferences);
         (Path, other.Path) = (other.Path, Path);
         (Platform, other.Platform) = (other.Platform, Platform);
         (ClothIndex, other.ClothIndex) = (other.ClothIndex, ClothIndex);
+        (_entryIds, other._entryIds) = (other._entryIds, _entryIds);
         (_savedState, other._savedState) = (other._savedState, _savedState);
         (_undo, other._undo) = (other._undo, _undo);
         (_redo, other._redo) = (other._redo, _redo);
@@ -78,7 +138,11 @@ public sealed class EditorSession
         if (!CanRemoveEntry) throw new InvalidOperationException("Select a cloth or helper group to remove.");
         Edit((doc, index) =>
         {
-            if (doc.IsHelperBoneSidecar) doc.RemoveHelperGroup(index); else doc.RemoveCloth(index);
+            if (doc.IsHelperBoneSidecar)
+                doc.RemoveHelperGroup(index);
+            else
+                doc.RemoveCloth(index);
+            _entryIds.RemoveAt(index);
             ClothIndex = Math.Clamp(index, 0, Math.Max(0, doc.GetClothSummaries().Count - 1));
         });
     }
@@ -130,9 +194,12 @@ public sealed class EditorSession
     }
     public void ExportCopy(string path, HkclPlatform? platform = null)
     {
-        var copy = new HkclService(); copy.RestoreState(Document.CaptureState());
-        if (System.IO.Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase)) copy.ExportReadableJson(path);
-        else copy.SaveHkcl(path, platform ?? Platform);
+        var copy = new HkclService();
+        copy.RestoreState(Document.CaptureState());
+        if (System.IO.Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase))
+            copy.ExportReadableJson(path);
+        else
+            copy.SaveHkcl(path, platform ?? Platform);
     }
     public int ScaleParticleMass(float scale, IReadOnlyCollection<int> selection)
     {
@@ -159,25 +226,60 @@ public sealed class EditorSession
     }
     public void Edit(Action<HkclService, int> action)
     {
-        var before = new Snapshot(Document.CaptureState(), ClothIndex);
-        try { action(Document, ClothIndex); }
-        catch { Document.RestoreState(before.State); ClothIndex = before.ClothIndex; throw; }
-        if (Document.CaptureState() == before.State) return;
-        _undo.Push(before); _redo.Clear();
-        if (_undo.Count > 50)
+        SynchronizeEntryIds();
+        var before = CaptureSnapshot();
+        try
         {
-            var keep = _undo.Take(50).Reverse().ToArray(); _undo.Clear();
-            foreach (var snapshot in keep) _undo.Push(snapshot);
+            action(Document, ClothIndex);
+        }
+        catch
+        {
+            Document.RestoreState(before.State);
+            ClothIndex = before.ClothIndex;
+            _entryIds = before.EntryIds.ToList();
+            ModelBoneReferences = before.ModelReferences;
+            throw;
+        }
+
+        SynchronizeEntryIds();
+        if (Document.CaptureState() == before.State && ReferenceEquals(ModelBoneReferences, before.ModelReferences))
+            return;
+
+        _undo.Push(before);
+        _redo.Clear();
+        TrimUndoHistory();
+    }
+
+    private Snapshot CaptureSnapshot() =>
+        new(Document.CaptureState(), ClothIndex, _entryIds.ToArray(), ModelBoneReferences);
+
+    private void TrimUndoHistory()
+    {
+        if (_undo.Count > UndoLimit)
+        {
+            var keep = _undo.Take(UndoLimit).Reverse().ToArray();
+            _undo.Clear();
+            foreach (var snapshot in keep)
+                _undo.Push(snapshot);
         }
     }
+
     public void Undo() => Restore(_undo, _redo);
     public void Redo() => Restore(_redo, _undo);
+
     private void Restore(Stack<Snapshot> source, Stack<Snapshot> target)
     {
-        if (source.Count == 0) return;
-        var before = new Snapshot(Document.CaptureState(), ClothIndex);
-        var snapshot = source.Peek(); Document.RestoreState(snapshot.State);
-        source.Pop(); target.Push(before);
+        if (source.Count == 0)
+            return;
+
+        SynchronizeEntryIds();
+        var before = CaptureSnapshot();
+        var snapshot = source.Peek();
+        Document.RestoreState(snapshot.State);
+        source.Pop();
+        target.Push(before);
+        _entryIds = snapshot.EntryIds.ToList();
+        ModelBoneReferences = snapshot.ModelReferences;
         ClothIndex = Math.Clamp(snapshot.ClothIndex, 0, Math.Max(0, Document.GetClothSummaries().Count - 1));
     }
 }

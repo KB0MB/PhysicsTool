@@ -81,7 +81,7 @@ internal static class SidecarPreviewEvaluator
         IReadOnlyList<SidecarDriverGroup>? preparedGroups = null)
     {
         var archive = document.Archive;
-        var group = (preparedGroups ?? BphhbBridge.GetDriverGroups(document)).ElementAtOrDefault(groupIndex);
+        var group = EvaluationGroup(preparedGroups ?? BphhbBridge.GetDriverGroups(document), groupIndex);
         var data = archive?.Root.Children.SingleOrDefault();
         if (group == null || data == null)
             return Empty;
@@ -100,7 +100,7 @@ internal static class SidecarPreviewEvaluator
         var rest = IndexBones(restBones);
         var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<SidecarBonePreviewPose>();
-        var driverValues = new Dictionary<int, DriverValues>();
+        var driverValues = new Dictionary<int, (Lazy<DriverValues> Rotation, Lazy<DriverValues> Translation)>();
 
         foreach (var driverIndex in group.DriverIndices)
         {
@@ -116,14 +116,26 @@ internal static class SidecarPreviewEvaluator
                 continue;
             }
 
-            var values = MeasureDriver(
-                currentBone,
-                restBone,
-                GetBone(current, boneNames, baseIndex),
-                GetBone(rest, boneNames, baseIndex),
-                GetVector3(source, AimAxisHash, Vector3.UnitZ),
-                GetVector3(source, UpAxisHash, Vector3.UnitY));
-            driverValues[driverIndex] = values;
+            if (baseIndex >= 0 && GetBone(current, boneNames, baseIndex) == null)
+            {
+                missing.Add(BoneName(boneNames, baseIndex));
+                continue;
+            }
+            // TotK caches rotation and translation separately on first use.
+            // Earlier helper outputs may have changed this driver or its base.
+            DriverValues Sample()
+            {
+                var sampled = current[NormalizeBoneName(name)];
+                var space = baseIndex == -2 ? current.Values.FirstOrDefault(b => b.Index == sampled.ParentIndex)
+                    : GetBone(current, boneNames, baseIndex);
+                Matrix4x4.Decompose(RelativeMatrix(sampled, space), out _, out var rotation, out var translation);
+                var angles = MeasureBotwRotation(
+                    Quaternion.Normalize(Quaternion.Inverse(GetQuaternion(source, BaseRotationHash)) * rotation),
+                    GetVector3(source, AimAxisHash, Vector3.UnitZ), GetVector3(source, UpAxisHash, Vector3.UnitY));
+                return new DriverValues(angles.Z, angles.X, angles.Y,
+                    translation - GetVector3(source, BaseTranslationHash, Vector3.Zero));
+            }
+            driverValues[driverIndex] = (new Lazy<DriverValues>(Sample), new Lazy<DriverValues>(Sample));
             result.Add(new SidecarBonePreviewPose(
                 name,
                 currentBone.Position,
@@ -132,22 +144,24 @@ internal static class SidecarPreviewEvaluator
                 false));
         }
 
-        var curveValues = curves.Objects.Select(curve =>
+        float ReadCurve(int curveIndex)
         {
+            if ((uint)curveIndex >= (uint)curves.Objects.Count) return 0f;
+            var curve = curves.Objects[curveIndex];
             var driverIndex = GetInt(curve, CurveDriverHash);
             var attribute = GetInt(curve, CurveAttributeHash);
-            return driverValues.TryGetValue(driverIndex, out var values)
-                ? EvaluateCurve(ReadKeys(curve), values.GetAttribute(attribute))
-                : 0f;
-        }).ToArray();
+            if (attribute < 0 || attribute > 5 || !driverValues.TryGetValue(driverIndex, out var values)) return 0f;
+            return EvaluateTotkCurve(ReadKeys(curve),
+                (attribute < 3 ? values.Rotation : values.Translation).Value.GetAttribute(attribute));
+        }
 
         float ReadOutput(int outputIndex)
         {
             if ((uint)outputIndex >= (uint)outputs.Objects.Count)
                 return 0f;
             var output = outputs.Objects[outputIndex];
-            return ReadCurveValue(curveValues, GetInt(output, OutputConnection0Hash)) +
-                ReadCurveValue(curveValues, GetInt(output, OutputConnection1Hash));
+            return ReadCurve(GetInt(output, OutputConnection0Hash)) +
+                ReadCurve(GetInt(output, OutputConnection1Hash));
         }
 
         for (var index = 0; index < driven.Objects.Count; index++)
@@ -161,7 +175,7 @@ internal static class SidecarPreviewEvaluator
                 continue;
             var pose = poses.Objects[poseIndex];
             var name = BoneName(boneNames, drivenBoneIndex);
-            result.Add(BuildDrivenPose(
+            var drivenPose = BuildDrivenPose(
                 name,
                 drivenBoneIndex,
                 GetInt(pose, BaseBoneIdHash),
@@ -178,10 +192,14 @@ internal static class SidecarPreviewEvaluator
                 ReadOutput(GetInt(pose, BendVOutputHash)),
                 boneNames,
                 current,
-                rest));
+                rest);
+            result.Add(drivenPose);
+            ApplyDrivenPose(current, drivenPose);
         }
 
-        return new SidecarPreviewEvaluation(result, missing.OrderBy(name => name).ToArray());
+        return new SidecarPreviewEvaluation(result.Select(p => p.IsDriven && TryGetBone(current, p.Name, out var bone)
+            ? new SidecarBonePreviewPose(p.Name, bone!.Position, bone.Rotation, bone.Scale, true) : p).ToArray(),
+            missing.OrderBy(name => name).ToArray());
     }
 
     private static int GetPoseDrivenIndex(AampReadObject driven, int poseCount, int legacyFallback)
@@ -211,7 +229,7 @@ internal static class SidecarPreviewEvaluator
         IReadOnlyList<VisualModelBone> restBones,
         IReadOnlyList<SidecarDriverGroup>? preparedGroups = null)
     {
-        var group = (preparedGroups ?? BphyssbBridge.GetDriverGroups(document)).ElementAtOrDefault(groupIndex);
+        var group = EvaluationGroup(preparedGroups ?? BphyssbBridge.GetDriverGroups(document), groupIndex);
         var data = document.Archive?.Root.Children.FirstOrDefault(child =>
             child.FindChild(BphyssbBoneListHash) != null &&
             child.FindChild(BphyssbMainListHash) != null &&
@@ -371,6 +389,15 @@ internal static class SidecarPreviewEvaluator
             missing.OrderBy(name => name).ToArray());
     }
 
+    private static SidecarDriverGroup? EvaluationGroup(IReadOnlyList<SidecarDriverGroup> groups, int index)
+    {
+        if (index != -1) return groups.ElementAtOrDefault(index);
+        // UI groups are not execution batches. A whole-file preview must retain
+        // resource order and one driver cache across every driven bone.
+        return new SidecarDriverGroup(0, groups.SelectMany(g => g.DriverIndices).Distinct().ToArray(), [],
+            groups.SelectMany(g => g.DrivenBoneIndices).Distinct().ToArray(), [], [], [], [], 0, 0);
+    }
+
     private static void ApplyDrivenPose(Dictionary<string, VisualModelBone> current, SidecarBonePreviewPose pose)
     {
         if (!TryGetBone(current, pose.Name, out var previous) || !Matrix4x4.Invert(ToMatrix(previous!), out var inverse)) return;
@@ -412,7 +439,7 @@ internal static class SidecarPreviewEvaluator
         var currentBase = GetBone(current, boneNames, baseBoneIndex);
         var restBase = GetBone(rest, boneNames, baseBoneIndex);
 
-        if (currentBase == null && (!botw || baseBoneIndex == -1) && restDriven != null && restDriven.ParentIndex >= 0)
+        if (currentBase == null && baseBoneIndex == (botw ? -1 : -2) && restDriven != null && restDriven.ParentIndex >= 0)
         {
             var parentName = rest.Values.FirstOrDefault(bone => bone.Index == restDriven.ParentIndex)?.Name;
             if (!string.IsNullOrWhiteSpace(parentName))
@@ -442,12 +469,9 @@ internal static class SidecarPreviewEvaluator
             : Quaternion.Identity;
         var localTranslation = storedTranslation;
 
-        var frame = BuildFrame(aim, up);
-        var outputRotation = botw ? BuildBotwRotation(bendH, bendV, roll, aim, up) : Quaternion.Normalize(
-            Quaternion.CreateFromAxisAngle(frame.Aim, roll) *
-            Quaternion.CreateFromAxisAngle(frame.Up, bendH) *
-            Quaternion.CreateFromAxisAngle(frame.Right, bendV));
-        localRotation = Quaternion.Normalize(botw ? localRotation * outputRotation : outputRotation * localRotation);
+        // Both games use the same stereographic swing/twist convention.
+        var outputRotation = BuildBotwRotation(bendH, bendV, roll, aim, up);
+        localRotation = Quaternion.Normalize(localRotation * outputRotation);
         localTranslation += translationOutput;
 
         var world = Matrix4x4.CreateScale(localScale) *
@@ -461,29 +485,6 @@ internal static class SidecarPreviewEvaluator
             Quaternion.Normalize(worldRotation),
             worldScale,
             true);
-    }
-
-    private static DriverValues MeasureDriver(
-        VisualModelBone current,
-        VisualModelBone rest,
-        VisualModelBone? currentBase,
-        VisualModelBone? restBase,
-        Vector3 aim,
-        Vector3 up)
-    {
-        var currentRelative = RelativeMatrix(current, currentBase);
-        var restRelative = RelativeMatrix(rest, restBase);
-        Matrix4x4.Decompose(currentRelative, out _, out var currentRotation, out var currentTranslation);
-        Matrix4x4.Decompose(restRelative, out _, out var restRotation, out var restTranslation);
-        var deltaRotation = Quaternion.Normalize(currentRotation * Quaternion.Inverse(restRotation));
-        var rotationVector = QuaternionToRotationVector(deltaRotation);
-        var frame = BuildFrame(aim, up);
-        var deltaTranslation = currentTranslation - restTranslation;
-        return new DriverValues(
-            Vector3.Dot(rotationVector, frame.Aim),
-            Vector3.Dot(rotationVector, frame.Up),
-            Vector3.Dot(rotationVector, frame.Right),
-            deltaTranslation);
     }
 
     private static Matrix4x4 RelativeMatrix(VisualModelBone bone, VisualModelBone? baseBone)
@@ -549,16 +550,13 @@ internal static class SidecarPreviewEvaluator
         return float.IsNaN(result) ? 0f : result;
     }
 
-    private static Vector3 QuaternionToRotationVector(Quaternion value)
+    internal static float EvaluateTotkCurve(IReadOnlyList<Vector4> keys, float input)
     {
-        var rotation = Quaternion.Normalize(value);
-        if (rotation.W < 0f)
-            rotation = new Quaternion(-rotation.X, -rotation.Y, -rotation.Z, -rotation.W);
-        var sinHalf = MathF.Sqrt(MathF.Max(0f, 1f - rotation.W * rotation.W));
-        if (sinHalf < 0.00001f)
-            return new Vector3(rotation.X, rotation.Y, rotation.Z) * 2f;
-        var angle = 2f * MathF.Atan2(sinHalf, rotation.W);
-        return new Vector3(rotation.X, rotation.Y, rotation.Z) * (angle / sinHalf);
+        if (keys.Count == 0) return 0f;
+        // Native BPHHB extrapolates with the endpoint key's incoming slope.
+        if (input <= keys[0].X) return keys[0].Y + (input - keys[0].X) * keys[0].Z;
+        if (input > keys[^1].X) return keys[^1].Y + (input - keys[^1].X) * keys[^1].Z;
+        return EvaluateCurve(keys, input);
     }
 
     private static (Vector3 Aim, Vector3 Up, Vector3 Right) BuildFrame(Vector3 aim, Vector3 up)
@@ -614,11 +612,8 @@ internal static class SidecarPreviewEvaluator
         };
         var available = values.TakeWhile(value => value.HasValue).Select(value => value!.Value).ToArray();
         var declared = curve.Find(CurveKeyCountHash)?.AsInt32() ?? available.Length;
-        return available.Take(Math.Clamp(declared, 0, available.Length)).OrderBy(key => key.X).ToArray();
+        return available.Take(Math.Clamp(declared, 0, available.Length)).ToArray();
     }
-
-    private static float ReadCurveValue(IReadOnlyList<float> values, int index) =>
-        (uint)index < (uint)values.Count ? values[index] : 0f;
 
     private static string[] ReadBoneNames(AampReadList bones) => bones.Objects
         .Select((bone, index) => bone.Find(NameHash)?.AsString() ?? $"bone_{index}")
@@ -627,9 +622,24 @@ internal static class SidecarPreviewEvaluator
     private static string BoneName(IReadOnlyList<string> names, int index) =>
         (uint)index < (uint)names.Count ? names[index] : $"bone_{index}";
 
-    private static Dictionary<string, VisualModelBone> IndexBones(IEnumerable<VisualModelBone> bones) => bones
-        .GroupBy(bone => NormalizeBoneName(bone.Name), StringComparer.OrdinalIgnoreCase)
-        .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<string, VisualModelBone> IndexBones(IEnumerable<VisualModelBone> bones)
+    {
+        var source = bones.ToArray();
+        var byIndex = source.ToDictionary(b => b.Index);
+        var result = source.GroupBy(b => NormalizeBoneName(b.Name), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        // Equipped models repeat the base skeleton with different indices. Keep
+        // their unique children connected to the selected copy of each parent.
+        foreach (var entry in result.ToArray())
+        {
+            var b = entry.Value;
+            if (byIndex.TryGetValue(b.ParentIndex, out var parent) &&
+                result.TryGetValue(NormalizeBoneName(parent.Name), out var canonical) && canonical.Index != b.ParentIndex)
+                result[entry.Key] = new VisualModelBone { Index = b.Index, ParentIndex = canonical.Index, Name = b.Name,
+                    Sources = b.Sources, Position = b.Position, Rotation = b.Rotation, Scale = b.Scale };
+        }
+        return result;
+    }
 
     private static bool TryGetBone(
         IReadOnlyDictionary<string, VisualModelBone> bones,

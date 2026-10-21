@@ -33,6 +33,7 @@ public sealed class PhysicsConversion
     public PhysicsConversionTarget Target { get; }
     public string Format => Target.ToString().ToUpperInvariant();
     public string Extension => "." + Target.ToString().ToLowerInvariant();
+    public string SuggestedFileName => (string.IsNullOrWhiteSpace(_sourcePath) ? "Physics" : Path.GetFileNameWithoutExtension(_sourcePath)) + Extension;
     public IReadOnlyList<BphclConversionScale> Scales { get; }
     public IReadOnlyList<string> FidelityWarnings { get; }
     public static bool CanConvert(HkclService document) => document.HasDocument && !document.IsHkrg;

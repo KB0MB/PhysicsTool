@@ -1,0 +1,10 @@
+{
+  "Cloth bone": "クロスのボーン",
+  "Model bone": "モデルのボーン",
+  "Match bones to model": "ボーンをモデルに合わせる",
+  "Match selected bones": "選択したボーンを合わせる",
+  "No matching model bone": "対応するモデルボーンなし",
+  "Matched cloth bones to the model.": "クロスのボーンをモデルに合わせました。",
+  "Choose cloth bones to match to the loaded BFRES. Updates particles and constraint rest data without changing the model. HKCL only.": "読み込んだBFRESに合わせるクロスのボーンを選択します。モデルを変更せず、パーティクルと拘束の静止データを更新します。HKCLのみ対応。",
+  "Copy model rest poses to the selected cloth bones and reshape particles, constraints and attached colliders. The BFRES is not changed. Undo restores the cloth. HKCL only.": "モデルの静止ポーズを選択したクロスボーンにコピーし、パーティクル、拘束、関連コライダーを調整します。BFRESは変更しません。元に戻す操作でクロスを復元できます。HKCLのみ対応。"
+}

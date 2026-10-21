@@ -38,7 +38,7 @@ public sealed class ModelGlControl : OpenGlControlBase
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             var background = _view.ViewportBackground;
             _renderer.Draw(_view.Model, _view.HiddenMeshes, _view.CameraMatrix, _view.ViewDirection, width, height, _view.GridLines,
-                new System.Numerics.Vector3(background.R / 255f, background.G / 255f, background.B / 255f), _view.ShowEmission);
+                new System.Numerics.Vector3(background.R / 255f, background.G / 255f, background.B / 255f), _view.ShowEmission, _view.DisplayMode);
             if (!_view.GpuReady) Dispatcher.UIThread.Post(() => { _view.GpuReady = true; _view.InvalidateVisual(); });
             if (CaptureNextFrame)
             {

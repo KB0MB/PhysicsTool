@@ -8,10 +8,33 @@ public sealed class ImportedModelRig(VisualModelData rest, Func<IReadOnlyList<Vi
     public VisualModelData Rest { get; } = rest;
     internal float UnitScale { get; init; } = 1;
     internal Func<ToolboxActorAnimation, double, ISet<string>?, VisualModelData>? NativeSkeleton { get; init; }
+    private Func<ModelAnimationClip, double, ISet<string>?, VisualModelData>? AlignedSkeleton { get; init; }
     public VisualModelData Sample(IReadOnlyList<VisualBoneOverride> overrides) => overrides.Count == 0 ? Rest : sample(overrides);
+    internal ImportedModelRig Translate(Vector3 offset)
+    {
+        if (offset.LengthSquared() < 1e-12f) return this;
+        var roots = Rest.Bones.Where(b => b.ParentIndex < 0)
+            .Select(b => new VisualBoneOverride(b.Name, b.Position + offset, b.Rotation, b.Scale)).ToArray();
+        VisualModelData Pose(IReadOnlyList<VisualBoneOverride> overrides) => Sample(roots.Concat(overrides).ToArray());
+        return new(Pose([]), Pose)
+        {
+            UnitScale = UnitScale,
+            AlignedSkeleton = (clip, frame, suppressed) =>
+            {
+                var source = AnimationSkeleton(clip, frame, suppressed);
+                var result = new VisualModelData { SourcePath = source.SourcePath,
+                    AnimationSourcePath = source.AnimationSourcePath, AnimationFrame = source.AnimationFrame };
+                foreach (var bone in source.Bones)
+                    result.Bones.Add(new() { Index = bone.Index, ParentIndex = bone.ParentIndex, Name = bone.Name,
+                        Position = bone.Position + offset, Rotation = bone.Rotation, Scale = bone.Scale, Sources = bone.Sources });
+                return result;
+            }
+        };
+    }
     internal VisualModelData AnimationSkeleton(ModelAnimationClip clip, double frame, ISet<string>? suppressed = null)
     {
         frame = Math.Clamp(frame, 0, clip.EndFrame);
+        if (AlignedSkeleton != null) return AlignedSkeleton(clip, frame, suppressed);
         if (clip.Native != null && NativeSkeleton != null) return NativeSkeleton(clip.Native, frame, suppressed);
         var result = new VisualModelData { SourcePath = Rest.SourcePath, AnimationFrame = frame };
         var bones = Rest.Bones.ToDictionary(b => b.Index);

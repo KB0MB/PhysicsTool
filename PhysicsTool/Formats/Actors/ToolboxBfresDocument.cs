@@ -66,7 +66,8 @@ internal sealed class ToolboxActorModel
     public VisualModelData RestPose { get; }
 
     public ToolboxActorModel(ToolboxBfresDocument document, string name, Dictionary<string, VisualModelTexture> textures,
-        IReadOnlyDictionary<(string Material, string Sampler), string>? textureOverrides = null, List<string>? warnings = null)
+        IReadOnlyDictionary<(string Material, string Sampler), string>? textureOverrides = null, List<string>? warnings = null,
+        IReadOnlySet<string>? hiddenMaterials = null)
     {
         dynamic model = document.Models.FirstOrDefault(m => (string)m.Name == name)
             ?? throw new InvalidDataException($"BFRES does not contain the referenced model '{name}'. Available: {string.Join(", ", document.Models.Select(m => (string)m.Name))}");
@@ -76,10 +77,12 @@ internal sealed class ToolboxActorModel
             b.FlagsRotation.ToString().Contains("Euler"), b.FlagsTransform.ToString().Contains("SegmentScaleCompensate"), (int)b.RigidMatrixIndex >= 0)).ToArray();
         _restWorld = WorldMatrices(null, 0, null, null);
         _inverseRest = _restWorld.Select(m => Matrix4x4.Invert(m, out var inv) ? inv : Matrix4x4.Identity).ToArray();
-        var matrixBones = ((IEnumerable)model.Skeleton.MatrixToBoneList).Cast<object>().Select(Convert.ToInt32).ToArray();
+        // Rigid equipment can omit the palette entirely and use shape.BoneIndex.
+        var matrixBones = ((IEnumerable?)model.Skeleton.MatrixToBoneList)?.Cast<object>().Select(Convert.ToInt32).ToArray() ?? [];
         var materials = ToolboxBfresDocument.Items((object)model.Materials);
         foreach (dynamic shape in ToolboxBfresDocument.Items((object)model.Shapes))
         {
+            if (hiddenMaterials?.Contains((string)materials[(int)shape.MaterialIndex].Name) == true) continue;
             dynamic buffer = model.VertexBuffers[(int)shape.VertexBufferIndex];
             dynamic helper = document.IsSwitch
                 ? new ResS.Helpers.VertexBufferHelper((ResS.VertexBuffer)buffer)
@@ -191,9 +194,10 @@ internal sealed class ToolboxActorModel
         };
     }
 
-    public VisualModelData Pose(ToolboxActorAnimation? animation, double frame, IReadOnlyDictionary<string, VisualBoneOverride>? overrides = null, ISet<string>? unanimatedBones = null, Matrix4x4? attachment = null)
+    public VisualModelData Pose(ToolboxActorAnimation? animation, double frame, IReadOnlyDictionary<string, VisualBoneOverride>? overrides = null, ISet<string>? unanimatedBones = null, Matrix4x4? attachment = null,
+        IReadOnlyDictionary<string, Matrix4x4>? restDeltas = null)
     {
-        var world = WorldMatrices(animation, frame, overrides, unanimatedBones, attachment);
+        var world = WorldMatrices(animation, frame, overrides, unanimatedBones, attachment, restDeltas);
         var delta = world.Select((m, i) => _inverseRest[i] * m).ToArray();
         var pose = new VisualModelData { SourcePath = Name + ".bfres", AnimationFrame = frame, AnimationSourcePath = animation?.Name ?? "",
             BoundsMinimum = new Vector3(float.MaxValue), BoundsMaximum = new Vector3(float.MinValue) };
@@ -233,9 +237,10 @@ internal sealed class ToolboxActorModel
         return pose;
     }
 
-    public VisualModelData SkeletonPose(ToolboxActorAnimation? animation, double frame, IReadOnlyDictionary<string, VisualBoneOverride>? overrides, ISet<string>? unanimatedBones, Matrix4x4? attachment = null)
+    public VisualModelData SkeletonPose(ToolboxActorAnimation? animation, double frame, IReadOnlyDictionary<string, VisualBoneOverride>? overrides, ISet<string>? unanimatedBones, Matrix4x4? attachment = null,
+        IReadOnlyDictionary<string, Matrix4x4>? restDeltas = null)
     {
-        var world = WorldMatrices(animation, frame, overrides, unanimatedBones, attachment);
+        var world = WorldMatrices(animation, frame, overrides, unanimatedBones, attachment, restDeltas);
         var pose = new VisualModelData();
         for (var i = 0; i < world.Length; i++)
         {
@@ -245,7 +250,8 @@ internal sealed class ToolboxActorModel
         return pose;
     }
 
-    private Matrix4x4[] WorldMatrices(ToolboxActorAnimation? animation, double frame, IReadOnlyDictionary<string, VisualBoneOverride>? overrides, ISet<string>? unanimated, Matrix4x4? attachment = null)
+    private Matrix4x4[] WorldMatrices(ToolboxActorAnimation? animation, double frame, IReadOnlyDictionary<string, VisualBoneOverride>? overrides, ISet<string>? unanimated, Matrix4x4? attachment = null,
+        IReadOnlyDictionary<string, Matrix4x4>? restDeltas = null)
     {
         var matrices = new Matrix4x4[_bones.Length]; var visited = new byte[_bones.Length];
         Matrix4x4 Visit(int i)
@@ -257,6 +263,8 @@ internal sealed class ToolboxActorModel
             var parent = bone.Parent >= 0 && bone.Parent < _bones.Length ? Visit(bone.Parent) : attachment ?? Matrix4x4.Identity;
             if (overrides != null && overrides.TryGetValue(bone.Name, out var pose))
                 matrices[i] = Matrix4x4.CreateScale(pose.Scale) * Matrix4x4.CreateFromQuaternion(pose.Rotation) * Matrix4x4.CreateTranslation(pose.Position);
+            else if (restDeltas != null && restDeltas.TryGetValue(bone.Name, out var delta))
+                matrices[i] = _restWorld[i] * delta;
             else
             {
                 var position = bone.Position; var scale = bone.Scale; var rotation = bone.Rotation; var euler = bone.Euler;

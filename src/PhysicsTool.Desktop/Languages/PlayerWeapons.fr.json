@@ -1,0 +1,18 @@
+{
+  "None": "Aucun",
+  "Player equipment": "Équipement de Link",
+  "Equipment": "Équipement",
+  "Weapons": "Armes",
+  "Swords": "Épées",
+  "Longswords": "Espadons",
+  "Spears": "Lances",
+  "Shields": "Boucliers",
+  "Bows": "Arcs",
+  "Unequipped": "Rangé",
+  "Equipped": "En main",
+  "Loading equipment...": "Chargement de l'équipement...",
+  "Equipment applied.": "Équipement appliqué.",
+  "Unequipped: back. Equipped: bow in the left hand, arrow in the right. The quiver stays on the hip.": "Rangé : dans le dos. En main : arc à gauche, flèche à droite. Le carquois reste à la hanche.",
+  "Unequipped: back. Equipped: left hand.": "Rangé : dans le dos. En main : main gauche.",
+  "Unequipped: back. Equipped: right hand. The sheath stays on the back.": "Rangé : dans le dos. En main : main droite. Le fourreau reste dans le dos."
+}

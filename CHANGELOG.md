@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.1.0
+
+- Added Textured, Wireframe and Edged Faces display modes for imported models and actor previews.
+- Replaced Hide cloth with independent Particles, Bones and Colliders visibility controls.
+- Fixed G/R/S shortcuts after selecting particles, bones or colliders from the editor list, without needing another viewport click.
+- Added FBX export for individual HKCL cloths, including the skeleton, particle mesh and separate bone-attached colliders.
+- Added Match bones to model for HKCL, with selectable bones, particle and constraint fitting, and undo/redo. Cloth bone edits now leave the loaded BFRES unchanged outside simulation.
+- Fixed cloth jitter and unstable simulation while dragging the animation timeline. Playback and simulation now resume cleanly when scrubbing ends.
+- Added a Weapons tab for Link, with swords, longswords, spears, shields and bows, drawn or stowed placement, matching sheaths, quivers and arrows.
+- Simplified armor choices to their numbers, sorted them numerically, and made typing a number jump to that armor.
+- Improved TotK helper-bone motion and cloth alignment in bent-leg poses, including Link's equipped tunic. Fixed helper ordering and preserved helper poses when starting cloth simulation.
+- Fixed equipped Player hair and tunics failing to follow animation or simulate correctly when cloth bone names include a namespace.
+- Added compressible-link simulation support, fixing skipped hair cloth on the default Player head.
+- Added default armor when opening TotK's Player actor, with separate head, upper-body and lower-body armor choices. Equipped pieces bring their textures and physics, respect hidden body parts, and keep the current camera and animation frame when swapped.
+- Fixed TotK actors loading unrelated cloth and helper-bone variants together, which could pull accessories away from their attachment points and slow down the viewport.
+- Improved cloth and collider drawing performance in actor viewing and editing, including smoother camera orbiting with many cloths visible.
+- Added bone-branch resizing with a live XYZ scale popup, optional collider resizing, and undo. Bone positions, particles and constraints resize together without changing bone scale values.
+- Fixed body meshes crumpling during simulation when a BFRES contains multiple skeletons with different resting poses.
+- Fixed switching cloths moving the model when their skeletons have different proportions, and kept the camera in place when using the cloth dropdown.
+- Fixed imported models appearing below or offset from their cloth when their skeletons use different origins.
+- Added Fit cloth to bones to reshape HKCL particles and rest constraints after editing simulation bones.
+- Reduced default BPHYSICS sub-wind speed and balanced general wind settings against vanilla armor profiles.
+- Kept the original filename when converting between physics formats.
+- Made Wii U the initial HKCL conversion target and remembered the last successfully used platform.
+- Added BPHYSICS export with editable wind settings and TotK actor reaction inspection, including matching base bones and selectable reaction frequencies.
+- Used the searchable actor browser to choose TotK cloth reactions instead of a file picker.
+- Updated the editing documentation and translations, and moved Shortcuts directly after Start here.
+
 ## 2.0
 
 ### Interface

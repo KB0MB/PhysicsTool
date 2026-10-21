@@ -26,7 +26,7 @@ public static class ClothConstraintCatalog
         new ClothConstraintKind("Volume preservation", "hclVolumeConstraint", 0,
             "Preserves a multi-particle volume frame using weighted frame and apply records. It is not a two-particle link and requires a valid volume setup.", false),
         new ClothConstraintKind("Compressible link", "hclCompressibleLinkConstraintSet", 2,
-            "A link with separate rest and compression lengths. Its reflected record is known, but authoring and preview behavior are not yet validated.", false),
+            "Allows two particles to move freely between compression and rest lengths, resisting movement beyond either limit. Existing links work in the preview; creating new ones is not yet supported.", false),
         new ClothConstraintKind("Anti-pinch recovery", "hclAntiPinchConstraintSet", 0,
             "A specialized collision-recovery constraint family. It requires runtime pinch detection and cannot safely be authored as an ordinary particle link.", false)
     };

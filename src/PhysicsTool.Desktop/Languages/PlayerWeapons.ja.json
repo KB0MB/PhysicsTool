@@ -1,0 +1,18 @@
+{
+  "None": "なし",
+  "Player equipment": "リンクの装備",
+  "Equipment": "装備",
+  "Weapons": "武器",
+  "Swords": "片手剣",
+  "Longswords": "両手剣",
+  "Spears": "槍",
+  "Shields": "盾",
+  "Bows": "弓",
+  "Unequipped": "収納",
+  "Equipped": "手に持つ",
+  "Loading equipment...": "装備を読み込み中...",
+  "Equipment applied.": "装備を適用しました。",
+  "Unequipped: back. Equipped: bow in the left hand, arrow in the right. The quiver stays on the hip.": "収納時は背中に配置します。手に持つ場合は左手に弓、右手に矢を配置します。矢筒は腰に残ります。",
+  "Unequipped: back. Equipped: left hand.": "収納時は背中、手に持つ場合は左手に配置します。",
+  "Unequipped: back. Equipped: right hand. The sheath stays on the back.": "収納時は背中、手に持つ場合は右手に配置します。鞘は背中に残ります。"
+}

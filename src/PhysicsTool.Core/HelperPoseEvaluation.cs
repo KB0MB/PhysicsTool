@@ -21,9 +21,8 @@ public static class HelperPoseEvaluation
         var overrides = new Dictionary<string, Matrix4x4>(StringComparer.OrdinalIgnoreCase);
         var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         IReadOnlyList<VisualModelBone> current = animated;
-        foreach (var group in groups)
         {
-            var evaluation = document.EvaluateSidecarDriverGroup(group.Index, current, rest, groups);
+            var evaluation = document.EvaluateSidecarPose(current, rest, groups);
             missing.UnionWith(evaluation.MissingDriverBones);
             foreach (var pose in evaluation.Poses.Where(p => p.IsDriven))
                 overrides[pose.Name] = Matrix4x4.CreateScale(pose.Scale) * Matrix4x4.CreateFromQuaternion(pose.Rotation) * Matrix4x4.CreateTranslation(pose.Position);

@@ -70,7 +70,7 @@ public sealed partial class HkclService
         {
             foreach (var set in simulation.ConstraintSets)
             {
-                if (set.ClassName is not ("hclStandardLinkConstraintSet" or "hclStretchLinkConstraintSet" or
+                if (set.ClassName is not ("hclStandardLinkConstraintSet" or "hclStretchLinkConstraintSet" or "hclCompressibleLinkConstraintSet" or
                     "hclBendLinkConstraintSet" or "hclBendStiffnessConstraintSet" or "hclLocalRangeConstraintSet" or
                     "hclTransitionConstraintSet"))
                     blockers.Add($"Unsupported constraint kernel: {set.ClassName}.");

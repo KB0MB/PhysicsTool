@@ -6,7 +6,7 @@ namespace HKCLTool;
 public sealed record BphysicsClothProfile(
     string Name,
     string BaseBone,
-    float WindFrequency = 3.5f,
+    float WindFrequency = 4.5f,
     float WindDrag = 8.0f,
     float WindMinSpeed = -2.0f,
     float WindMaxSpeed = 12.0f,
@@ -27,7 +27,7 @@ public sealed class BphysicsDocument
     public string? SupportBonePath { get; set; }
     public Vector3 SubWindDirection { get; set; } = Vector3.UnitY;
     public float SubWindFrequency { get; set; } = 5.0f;
-    public float SubWindSpeed { get; set; } = 50.0f;
+    public float SubWindSpeed { get; set; } = 25.0f;
     public List<BphysicsClothProfile> Cloths { get; } = new();
 }
 
@@ -57,7 +57,9 @@ public static class BphysicsService
         var document = new BphysicsDocument
         {
             UseCloth = settings?.Find("use_cloth")?.AsBoolean() ?? false,
-            UseSupportBone = settings?.Find("use_support_bone")?.AsBoolean() ?? false
+            UseSupportBone = settings?.Find("use_support_bone")?.AsBoolean() ?? false,
+            // Loading absent fields retains the historical interpretation, not new-export tuning.
+            SubWindSpeed = 50.0f
         };
 
         var supportBone = paramSet.Objects.FirstOrDefault(node =>
@@ -99,12 +101,35 @@ public static class BphysicsService
 
     public static void Save(string path, BphysicsDocument document)
     {
+        ValidateDocument(document);
+        SaveValidated(path, document);
+    }
+
+    public static void ValidateDocument(BphysicsDocument document)
+    {
         if (document.UseCloth && (document.Cloths.Count == 0 || string.IsNullOrWhiteSpace(document.HkclPath)))
             throw new InvalidOperationException("A cloth-enabled BPHYSICS export needs an HKCL path and at least one cloth profile.");
         if (document.UseSupportBone && string.IsNullOrWhiteSpace(document.SupportBonePath))
             throw new InvalidOperationException("A support-bone BPHYSICS export needs a .bphyssb path.");
         if (!document.UseCloth && !document.UseSupportBone)
             throw new InvalidOperationException("BPHYSICS must enable cloth, support bones, or both.");
+        if (!document.UseCloth) return;
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in document.Cloths)
+        {
+            if (string.IsNullOrWhiteSpace(p.Name) || string.IsNullOrWhiteSpace(p.BaseBone) || !names.Add(StripLinkPrefix(p.Name)))
+                throw new InvalidOperationException("Every cloth needs a unique name and a base bone.");
+            if (new[] { p.WindFrequency, p.WindDrag, p.WindMinSpeed, p.WindMaxSpeed, p.SubWindFactorMain, p.SubWindFactorAdd }.Any(v => !float.IsFinite(v)) ||
+                p.WindFrequency < 0 || p.WindDrag < 0 || p.WindMinSpeed > p.WindMaxSpeed)
+                throw new InvalidOperationException($"{p.Name}: wind values must be finite, frequency and drag nonnegative, and minimum speed no greater than maximum speed.");
+        }
+        if (!float.IsFinite(document.SubWindDirection.X) || !float.IsFinite(document.SubWindDirection.Y) || !float.IsFinite(document.SubWindDirection.Z) ||
+            !float.IsFinite(document.SubWindFrequency) || !float.IsFinite(document.SubWindSpeed) || document.SubWindFrequency < 0 || document.SubWindSpeed < 0)
+            throw new InvalidOperationException("Shared sub-wind values must be finite, with nonnegative frequency and speed.");
+    }
+
+    private static void SaveValidated(string path, BphysicsDocument document)
+    {
 
         var root = new BotwAampWriter.AampListNode("param_root");
         var paramSet = new BotwAampWriter.AampListNode("ParamSet");
@@ -165,7 +190,7 @@ public static class BphysicsService
 
         var bytes = BotwAampWriter.WriteXml(root);
         Validate(bytes);
-        File.WriteAllBytes(path, bytes);
+        AtomicFile.WriteAllBytes(path, bytes);
     }
 
     private static string NormalizeGamePath(string path) => path.Replace('\\', '/').TrimStart('/');

@@ -1,0 +1,6 @@
+{
+  "Selected cloth as FBX": "選択したクロスをFBXで出力",
+  "Export cloth FBX": "クロスをFBXで出力",
+  "Cloth FBX export": "クロスのFBX出力",
+  "Export the edited rest pose: skeleton, particle vertices, cloth triangles and collider meshes. Does not export Havok simulation settings or the loaded BFRES.": "編集した静止ポーズのスケルトン、パーティクル頂点、三角形、コライダーメッシュを出力します。Havokの設定や読み込んだBFRESは含みません。"
+}

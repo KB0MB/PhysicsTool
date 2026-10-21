@@ -67,6 +67,10 @@ internal static class FileWorkflowChecks
         }
         Require(Equals(file.Content, "File"), "English language restoration failed");
         var prefsPath = Path.Combine(output, "preferences-test.json"); File.WriteAllText(prefsPath, "{\"Unrelated\":7}");
+        Require(DesktopPreferences.Load(prefsPath).ConversionPlatform == HKCLTool.HkclPlatform.WiiU, "First conversion must default to Wii U");
+        (DesktopPreferences.Load(prefsPath) with { ConversionPlatform = HKCLTool.HkclPlatform.Switch }).Save(prefsPath);
+        (DesktopPreferences.Load(prefsPath) with { Language = "ja", AnimationFps = 30 }).Save(prefsPath);
+        Require(DesktopPreferences.Load(prefsPath).ConversionPlatform == HKCLTool.HkclPlatform.Switch, "Settings changes lost the conversion platform");
         new DesktopPreferences("fr", false, 30).Save(prefsPath);
         Require(DesktopPreferences.Load(prefsPath) == new DesktopPreferences("fr", false, 30) && File.ReadAllText(prefsPath).Contains("Unrelated"), "Preference save/load discarded values");
         File.WriteAllText(prefsPath, "invalid"); Require(DesktopPreferences.Load(prefsPath) == new DesktopPreferences(), "Invalid settings did not use defaults");

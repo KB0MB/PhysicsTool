@@ -59,6 +59,30 @@ internal static class ActorBrowserChecks
         Require(((TabControl)reopening.Content!).SelectedIndex == 1 && requests.Count == 3, "Reopening did not restore selected game");
         reopening.Close(); Dispatcher.UIThread.RunJobs();
         Require(requests[2].Pending.Task.IsCanceled, "Closing did not cancel an active scan");
+        File.WriteAllText(settings, JsonSerializer.Serialize(new ActorBrowserPaths { Botw = botw, Totk = totk, TotkSelected = false }));
+        var owner = new Window(); owner.Show();
+        var reactions = new ActorBrowserWindow(settings, Scan, clothReactionsOnly: true);
+        var chosen = reactions.ShowDialog<BotwActorCatalogEntry?>(owner); Dispatcher.UIThread.RunJobs();
+        tabs = (TabControl)reactions.Content!;
+        Require(tabs.ItemCount == 1 && Equals(((TabItem)tabs.Items[0]!).Header, "TOTK"), "Reaction picker must only show TOTK");
+        Require(requests.Count == 4 && requests[3].Totk && requests[3].Roots.SequenceEqual(new[] { totk }), "Reaction picker lost the saved TOTK folder");
+        requests[3].Pending.SetResult(new(entries.Append(new BotwActorCatalogEntry("HelperOnly", "HelperOnly.pack.zs", null, totk, true, false, true)).ToArray(), []));
+        Dispatcher.UIThread.RunJobs();
+        var reactionList = Find<ListBox>(0, "TotkActors");
+        Require(reactionList.ItemCount == 1 && reactionList.Items.Cast<BotwActorCatalogEntry>().Single() == entries[1], "Reaction picker includes BOTW or helper-only actors");
+        var search = Find<TextBox>(0, "TotkActorSearch"); search.Text = "missing"; Dispatcher.UIThread.RunJobs(); Require(reactionList.ItemCount == 0, "Reaction search ignored input");
+        search.Text = "totk"; Dispatcher.UIThread.RunJobs(); reactionList.SelectedIndex = 0; Dispatcher.UIThread.RunJobs();
+        reactions.Width = 560; reactions.Height = 480; Dispatcher.UIThread.RunJobs();
+        using (var shot = reactions.CaptureRenderedFrame()!) shot.Save(Path.Combine(output, "cloth-reaction-browser.png"));
+        var choose = ((Control)((TabItem)tabs.Items[0]!).Content!).GetLogicalDescendants().OfType<Button>().Single(b => Equals(b.Content, "Read TotK actor..."));
+        choose.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        Require(chosen.IsCompletedSuccessfully && chosen.Result == entries[1] && reactions.ResourceRoots.SequenceEqual(new[] { totk }), "Reaction picker did not return the chosen actor and resources");
+        saved = ActorBrowserPaths.Read(settings);
+        Require(!saved.TotkSelected && saved.Botw == botw && saved.Totk == totk, "Reaction picker changed the normal actor browser's selected tab or paths");
+        var cancelled = new ActorBrowserWindow(settings, Scan, clothReactionsOnly: true);
+        var cancellation = cancelled.ShowDialog<BotwActorCatalogEntry?>(owner); Dispatcher.UIThread.RunJobs(); cancelled.Close(); Dispatcher.UIThread.RunJobs();
+        Require(cancellation.IsCompletedSuccessfully && cancellation.Result == null && requests[4].Pending.Task.IsCanceled, "Canceling the reaction picker returned an actor or kept scanning");
+        owner.Close();
         Console.WriteLine("PASS: Actor BOTW/TOTK tabs, isolated paths/search/selection, concurrent scan completion, migration/persistence, compact layout and cancellation.");
     }
 }

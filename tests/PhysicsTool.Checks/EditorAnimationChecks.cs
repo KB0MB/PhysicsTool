@@ -30,6 +30,16 @@ internal static class EditorAnimationChecks
         Require(Math.Abs(root.Position.Z - .3f) < .0001f, "Animation key interpolation or unit conversion failed");
         var suppressed = rig.AnimationSkeleton(imported, imported.EndFrame / 2, new HashSet<string> { "Root" });
         Require(Math.Abs(suppressed.Bones.Single(b => b.Name == "Root").Position.Z) < .0001f, "Cloth-owned animation track was not suppressed");
+        var offset = new Vector3(.2f, 2, -.4f);
+        var aligned = rig.Translate(offset);
+        var alignedSkeleton = aligned.AnimationSkeleton(imported, imported.EndFrame / 2);
+        foreach (var bone in sampled.Bones)
+            Require(Vector3.Distance(alignedSkeleton.Bones.Single(b => b.Index == bone.Index).Position, bone.Position + offset) < .0001f,
+                "Animation skeleton lost the shared origin");
+        var alignedPose = aligned.Sample(alignedSkeleton.Bones.Select(b => new VisualBoneOverride(b.Name, b.Position, b.Rotation, b.Scale)).ToArray());
+        Require(Math.Abs(alignedPose.Meshes[0].Vertices[1] - rig.Rest.Meshes[0].Vertices[1] - offset.Y) < .0001f &&
+            Math.Abs(alignedPose.Meshes[0].Vertices[2] - rig.Rest.Meshes[0].Vertices[2] - offset.Z - .3f) < .0001f,
+            "Animation skinning lost or doubled alignment");
 
         var window = new MainWindow(graphics: false); window.Show();
         window.Session.New("Animated cloth", 0); window.Refresh(); window.ShowEditor();
@@ -71,6 +81,8 @@ internal static class EditorAnimationChecks
         Require(window.Viewport.Model!.Meshes[0].Vertices.SequenceEqual(rest), "Rest-pose choice did not restore model");
         window.SelectEditorAnimation(0); window.SeekEditorAnimation(imported.EndFrame / 2);
         Require(window.Viewport.SimulatedColliders != null, "Switching away from Rest pose lost physics input binding");
+        TimelineScrubbingChecks.Check(window, false);
+        window.ShowEditor();
         Dispatcher.UIThread.RunJobs();
         using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "editor-animation-1440.png"));
         window.Width = 980; window.Height = 640; Dispatcher.UIThread.RunJobs();
@@ -100,6 +112,9 @@ internal static class EditorAnimationChecks
         var clips = ModelAnimationClip.Load(path);
         Require(clips.Count > 0, "Native standalone clips missing");
         var sample = rig.AnimationSkeleton(clips[0], clips[0].EndFrame / 2);
+        var shifted = rig.Translate(new(0, 2, 0)).AnimationSkeleton(clips[0], clips[0].EndFrame / 2);
+        Require(sample.Bones.Zip(shifted.Bones).All(pair => Vector3.Distance(pair.Second.Position - pair.First.Position, new(0, 2, 0)) < .0001f),
+            "Native animation lost model alignment");
         var model = rig.Sample(sample.Bones.Select(b => new VisualBoneOverride(b.Name, b.Position, b.Rotation, b.Scale)).ToArray());
         Require(model.Meshes.SelectMany(m => m.Vertices).All(float.IsFinite), "Native animation produced nonfinite geometry");
         Require(!model.Meshes[0].Vertices.SequenceEqual(rig.Rest.Meshes[0].Vertices), "Native standalone clip left mesh at rest");

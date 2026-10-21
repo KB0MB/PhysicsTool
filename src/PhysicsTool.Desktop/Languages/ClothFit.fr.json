@@ -1,0 +1,7 @@
+{
+  "Fit cloth to bones": "Adapter le tissu aux os",
+  "Cloth already matches its bones.": "Le tissu correspond déjà à ses os.",
+  "Fitted cloth to the edited bones.": "Tissu adapté aux os modifiés.",
+  "After applying bone edits with Particles follow bones off, rebuild the cloth rest shape to match. HKCL only; unsupported layouts are left unchanged.": "Après avoir modifié les os sans déplacer les particules, adapte la forme au repos du tissu. HKCL uniquement ; les structures non prises en charge restent inchangées.",
+  "Reshape this cloth to the applied bone positions? This updates particles, radii, constraint rest data and simulation bone bindings. Masses and colliders stay unchanged. Undo restores the previous shape.": "Adapter ce tissu aux positions des os appliquées ? Les particules, rayons, contraintes au repos et liaisons des os de simulation seront mis à jour. Les masses et colliders restent inchangés. Annuler rétablit la forme précédente."
+}

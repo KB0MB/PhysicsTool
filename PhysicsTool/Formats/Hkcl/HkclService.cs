@@ -381,6 +381,12 @@ public sealed partial class HkclService
         return Array.Empty<SidecarDriverGroup>();
     }
 
+    public SidecarPreviewEvaluation EvaluateSidecarPose(
+        IReadOnlyList<VisualModelBone> currentBones,
+        IReadOnlyList<VisualModelBone> restBones,
+        IReadOnlyList<SidecarDriverGroup>? preparedGroups = null) =>
+        EvaluateSidecarDriverGroup(-1, currentBones, restBones, preparedGroups);
+
     public SidecarPreviewEvaluation EvaluateSidecarDriverGroup(
         int groupIndex,
         IReadOnlyList<VisualModelBone> currentBones,
@@ -3285,7 +3291,8 @@ public sealed partial class HkclService
                         StretchMaxLength = GetNativeConstraintValue(link, "stretchMaxLength"),
                         Stiffness = GetNativeConstraintValue(link, "stiffness"),
                         BendStiffness = GetNativeConstraintValue(link, "bendStiffness"),
-                        StretchStiffness = GetNativeConstraintValue(link, "stretchStiffness")
+                        StretchStiffness = GetNativeConstraintValue(link, "stretchStiffness"),
+                        CompressionLength = GetNativeConstraintValue(link, "compressionLength")
                     });
                 }
 
@@ -7419,7 +7426,8 @@ public sealed partial class HkclService
                     StretchMaxLength = ReadConstraintFloat(link, "stretchMaxLength"),
                     Stiffness = ReadConstraintFloat(link, "stiffness"),
                     BendStiffness = ReadConstraintFloat(link, "bendStiffness"),
-                    StretchStiffness = ReadConstraintFloat(link, "stretchStiffness")
+                    StretchStiffness = ReadConstraintFloat(link, "stretchStiffness"),
+                    CompressionLength = ReadConstraintFloat(link, "compressionLength")
                 });
             }
 

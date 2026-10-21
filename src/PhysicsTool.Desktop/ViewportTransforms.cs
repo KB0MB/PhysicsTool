@@ -13,6 +13,8 @@ public sealed partial class PhysicsViewport
     public event Action<Matrix4x4>? TransformPreview;
     public event Action<Matrix4x4?>? TransformFinished;
     internal bool TransformActive => _transformKey != Key.None;
+    internal bool IsScaleTransform => _transformKey == Key.S;
+    internal Vector3 TransformPivot => _transformPivot;
     private Key _transformKey, _transformAxis;
     private bool _transformPlane;
     private Point _transformStart;
@@ -22,11 +24,11 @@ public sealed partial class PhysicsViewport
     private IEnumerable<(int Index, Vector3 Position)> SelectionPoints() => SelectionKind switch {
         PhysicsSelectionKind.Bones => Data.Bones.Where(b => ShowBones && b.IsSelectable && !b.IsReference).Select(b => (b.Index, BonePosition(b))),
         PhysicsSelectionKind.Colliders => VisibleColliders.Where(_ => ShowColliders).Select(c => (c.Index, (c.Start + c.End) * .5f)),
-        _ => Data.Particles.Select(p => (p.Index, Position(p))) };
+        _ => Data.Particles.Where(_ => ShowParticles).Select(p => (p.Index, Position(p))) };
     private HashSet<int> ActiveSelection => SelectionKind switch {
         PhysicsSelectionKind.Bones => SelectedBones, PhysicsSelectionKind.Colliders => SelectedColliders, _ => Selected };
 
-    private bool TransformKey(KeyEventArgs e)
+    internal bool TransformKey(KeyEventArgs e)
     {
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta))
         {

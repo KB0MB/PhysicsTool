@@ -42,8 +42,13 @@ public static class ColliderGeometry
             var angle = joinAngle + (MathF.PI / 2 - joinAngle) * i / latitude;
             rings.Add((end + axis * (r1 * MathF.Sin(angle)), r1 * MathF.Cos(angle)));
         }
-        Vector3 Point(int ring, int j) => rings[ring].Center + rings[ring].Radius *
-            (u * MathF.Cos(MathF.Tau * j / longitude) + v * MathF.Sin(MathF.Tau * j / longitude));
+        var vertices = new Vector3[rings.Count * (longitude + 1)];
+        for (int j = 0; j <= longitude; j++)
+        {
+            var radial = u * MathF.Cos(MathF.Tau * j / longitude) + v * MathF.Sin(MathF.Tau * j / longitude);
+            for (int i = 0; i < rings.Count; i++) vertices[i * (longitude + 1) + j] = rings[i].Center + rings[i].Radius * radial;
+        }
+        Vector3 Point(int ring, int j) => vertices[ring * (longitude + 1) + j];
         void Triangle(Vector3 a, Vector3 b, Vector3 c)
         {
             if (Vector3.Cross(b - a, c - a).LengthSquared() > 1e-16f) triangles.Add(new(a, b, c));
@@ -68,10 +73,12 @@ public static class ColliderGeometry
         void Line(Vector3 start, Vector3 end) => lines.Add(new(start, end));
         void Arc(Vector3 center, Vector3 u, Vector3 v, float r, float angle = MathF.Tau, float startAngle = 0, int segments = 32)
         {
+            Vector3 Point(float t) => center + r * (u * MathF.Cos(t) + v * MathF.Sin(t));
+            var previous = Point(startAngle);
             for (int i = 0; i < segments; i++)
             {
-                Vector3 Point(float t) => center + r * (u * MathF.Cos(t) + v * MathF.Sin(t));
-                Line(Point(startAngle + angle * i / segments), Point(startAngle + angle * (i + 1) / segments));
+                var next = Point(startAngle + angle * (i + 1) / segments);
+                Line(previous, next); previous = next;
             }
         }
         void Sphere(Vector3 center, float r)

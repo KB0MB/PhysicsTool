@@ -18,6 +18,75 @@ internal static class Program
     {
         try
         {
+            if (args.Length >= 2 && args[0] == "--collider-shortcuts")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                ParticleColliderInspectorChecks.RunShortcuts(args[1]);
+                return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--cloth-fbx") { ClothFbxChecks.Run(args[1], args.ElementAtOrDefault(2)); return 0; }
+            if (args.Length >= 3 && args[0] == "--native-bone-edits")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); NativeModelAlignmentChecks.CheckBoneEdits(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--player-inspect") { PlayerArmorChecks.Inspect(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--timeline-scrub-check")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                foreach (var path in args.Skip(1)) TimelineScrubbingChecks.Native(path);
+                return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--player-weapons-check") { PlayerWeaponChecks.Synthetic(); PlayerWeaponChecks.Native(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--player-armor-check") { PlayerArmorChecks.Native(args[1], args.ElementAtOrDefault(2)); return 0; }
+            if (args.Length >= 3 && args[0] == "--player-armor-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                PlayerArmorChecks.Ui(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--actor-resource-check") { TotkPhysicsReferenceChecks.Resources(args.Skip(1)); return 0; }
+            if (args.Length >= 2 && args[0] == "--orbit-render")
+            {
+                OverlayOrbitChecks.ActorPath = args[1];
+                AppBuilder.Configure<OverlayOrbitChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return OverlayOrbitChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--actor-physics-check") { TotkPhysicsReferenceChecks.Synthetic(); TotkPhysicsReferenceChecks.Native(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--actor-physics-refs") { GanondorfChecks.References(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--ganondorf-check") { GanondorfChecks.Inspect(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--profile-cloth-render")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); ClothRenderingChecks.Profile(args[1], args.ElementAtOrDefault(2)); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--resize-branch")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); ClothBranchResizeChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--audit-simulation-binding")
+            { NativeModelAlignmentChecks.AuditSimulation(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--native-model-alignment")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                NativeModelAlignmentChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--fit-cloth")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); ClothBoneFitChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--cloth-reaction-survey") { ClothReactionChecks.Survey(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--inspect-botw-wind") { ClothReactionChecks.InspectBotw(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--cloth-reactions")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); ClothReactionChecks.Run(args[1]);
+                if (args.Length > 2) ClothReactionChecks.Native(args[1], args.Skip(2).ToArray()); return 0;
+            }
             if (args.Length >= 4 && args[0] == "--actor-animation") { ActorAnimationChecks.Run(args[1], args[2], args[3]); return 0; }
             if (args.Length >= 2 && args[0] == "--documentation")
             {
@@ -157,9 +226,13 @@ internal static class Program
                 return GpuChecks.Result;
             }
             var output = Path.GetFullPath(args.FirstOrDefault() ?? "artifacts/checks"); Directory.CreateDirectory(output);
+            ClothFbxChecks.Run(Path.Combine(output, "cloth-fbx"));
             ClothConversionAudit.Synthetic();
             TotkSimulationChecks.Equations();
             ActorParticleChecks.Synthetic();
+            TotkPhysicsReferenceChecks.Synthetic();
+            PlayerArmorChecks.Synthetic();
+            PlayerWeaponChecks.Synthetic();
             ActorAnimationChecks.Synthetic();
             MeshCodecChecks.Run();
             TotkMaterialChecks.Run();
@@ -229,6 +302,7 @@ internal static class Program
                 Require(!helperWindow.Session.IsDirty, "Helper inspection changed data"); helperWindow.Close();
             }
             var window = new MainWindow(graphics: false); window.Show(); Dispatcher.UIThread.RunJobs();
+            ClothRenderingChecks.Run(output);
             Require(!window.IsEditorVisible && !window.GetVisualDescendants().OfType<PhysicsViewport>().Any(), "Startup opens viewport");
             foreach (var size in new[] { new Size(1440, 900), new Size(980, 640) })
             {
@@ -244,6 +318,8 @@ internal static class Program
             ActorBrowserChecks.Run(output);
             TotkSimulationChecks.Editor(output);
             EditorUsabilityChecks.Run(output);
+            ModelWireframeChecks.Run();
+            ViewportVisibilityChecks.Run(output);
             TransformPreviewChecks.RunUi(output);
             SelectionConstraintChecks.Run(output);
             InspectorChecks.Run(output);
@@ -252,6 +328,7 @@ internal static class Program
             ClipboardChecks.Run(output);
             WholeClothMirrorChecks.Run(output);
             ConversionChecks.Run(output);
+            ClothReactionChecks.Run(Path.Combine(output, "cloth-reactions"));
             FileWorkflowChecks.Run(output);
             RagdollChecks.Run(output);
             CollisionChecks.Run(output);

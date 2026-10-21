@@ -185,7 +185,7 @@ public static class BphhbBridge
             (!(curve.Find("constant_in")?.AsBoolean() ?? true) && curve.Find(CurveKey0Hash)?.AsVector4().Z != 0f) ||
             (!(curve.Find("constant_out")?.AsBoolean() ?? true) && curve.Find(CurveKey2Hash)?.AsVector4().Z != 0f));
         return extrapolated == 0 ? Array.Empty<string>() : new[] {
-            $"{extrapolated} support curve(s) extrapolate beyond their authored key range. BPHHB preview clamps outside that range; those extreme poses need in-game verification." };
+            $"{extrapolated} support curve(s) extrapolate beyond their authored key range. BPHHB uses endpoint slopes without BotW's constant-end flags; verify extreme poses after conversion." };
     }
 
     public static BphhbDocumentSummary ExportWithParents(

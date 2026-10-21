@@ -65,24 +65,28 @@ internal sealed class ActorBrowserWindow : Window
     private readonly TabControl _tabs = new() { Name = "ActorGameTabs" };
     private readonly CancellationTokenSource _cancellation = new();
     private readonly string _settings;
+    private readonly bool _clothReactionsOnly;
     private readonly Func<string[], bool, IProgress<string>, CancellationToken, Task<BotwActorCatalogResult>> _scan;
     private bool _opened;
-    private GameTab Selected => _tabs.SelectedIndex == 1 ? _totk : _botw;
+    private GameTab Selected => _clothReactionsOnly || _tabs.SelectedIndex == 1 ? _totk : _botw;
     internal string[] ResourceRoots => Selected.ResourceRoots;
 
     internal ActorBrowserWindow(string? settingsPath = null,
-        Func<string[], bool, IProgress<string>, CancellationToken, Task<BotwActorCatalogResult>>? scan = null)
+        Func<string[], bool, IProgress<string>, CancellationToken, Task<BotwActorCatalogResult>>? scan = null,
+        bool clothReactionsOnly = false)
     {
+        _clothReactionsOnly = clothReactionsOnly;
         _settings = settingsPath ?? AppDataPaths.SettingsFile("actor-folders.json");
         _scan = scan ?? ((roots, totk, progress, token) => Task.Run(() => new BotwActorCatalog(
             AppDataPaths.CacheFile(totk ? "actor-catalog-totk.json" : "actor-catalog-botw.json")).Scan(roots, progress, token), token));
         var paths = ActorBrowserPaths.Read(_settings);
         _botw.Root.Text = paths.Botw; _totk.Root.Text = paths.Totk;
         Title = "Actors with cloth or helper bones"; Width = 800; Height = 660; MinWidth = 560; MinHeight = 420;
+        if (_clothReactionsOnly) { Title = "TotK cloth reactions"; _totk.Open.Content = "Read TotK actor..."; }
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        _tabs.Items.Add(new TabItem { Header = "BOTW", Content = Build(_botw) });
+        if (!_clothReactionsOnly) _tabs.Items.Add(new TabItem { Header = "BOTW", Content = Build(_botw) });
         _tabs.Items.Add(new TabItem { Header = "TOTK", Content = Build(_totk) });
-        _tabs.SelectedIndex = paths.TotkSelected ? 1 : 0;
+        _tabs.SelectedIndex = !_clothReactionsOnly && paths.TotkSelected ? 1 : 0;
         _tabs.Margin = new Thickness(16, 8, 16, 16); Content = _tabs;
         _tabs.SelectionChanged += async (_, e) => { if (e.Source == _tabs && _opened) await ScanIfNeeded(Selected); };
         Opened += async (_, _) => { _opened = true; await ScanIfNeeded(Selected); };
@@ -146,8 +150,13 @@ internal sealed class ActorBrowserWindow : Window
     }
     private void SavePaths(GameTab tab)
     {
-        try { AtomicFile.WriteAllBytes(_settings, JsonSerializer.SerializeToUtf8Bytes(new ActorBrowserPaths {
-            Botw = _botw.Root.Text?.Trim() ?? "", Totk = _totk.Root.Text?.Trim() ?? "", TotkSelected = Selected.Totk })); }
+        try
+        {
+            var paths = ActorBrowserPaths.Read(_settings);
+            paths.Totk = _totk.Root.Text?.Trim() ?? "";
+            if (!_clothReactionsOnly) { paths.Botw = _botw.Root.Text?.Trim() ?? ""; paths.TotkSelected = Selected.Totk; }
+            AtomicFile.WriteAllBytes(_settings, JsonSerializer.SerializeToUtf8Bytes(paths));
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { tab.Status.Text += " Folder settings could not be saved."; }
     }
     private Task ScanIfNeeded(GameTab tab) => !tab.Attempted && Directory.Exists(tab.Root.Text?.Trim()) ? Scan(tab) : Task.CompletedTask;
@@ -164,7 +173,7 @@ internal sealed class ActorBrowserWindow : Window
             var progress = new Progress<string>(message => { if (!_cancellation.IsCancellationRequested && tab.Busy) tab.Status.Text = "Scanning " + message; });
             var result = await _scan([root], tab.Totk, progress, _cancellation.Token);
             if (_cancellation.IsCancellationRequested) return;
-            tab.Entries = result.Actors.Where(a => a.IsTotk == tab.Totk).ToArray();
+            tab.Entries = result.Actors.Where(a => a.IsTotk == tab.Totk && (!_clothReactionsOnly || a.HasCloth)).ToArray();
             tab.WarningCount = result.Warnings.Count; tab.Busy = false; Filter(tab); SavePaths(tab);
         }
         catch (OperationCanceledException) { }

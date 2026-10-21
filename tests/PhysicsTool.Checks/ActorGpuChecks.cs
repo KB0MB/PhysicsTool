@@ -21,7 +21,7 @@ internal sealed class ActorGpuChecks : Application
     {
         var lifetime = (IClassicDesktopStyleApplicationLifetime)ApplicationLifetime!;
         var window = new MainWindow { ShowInTaskbar = false }; lifetime.MainWindow = window;
-        var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(120) };
         timeout.Tick += (_, _) => Finish("Actor GPU check timed out."); timeout.Start();
         window.ModelSurface!.RenderFailed += Finish;
         window.Opened += async (_, _) =>
@@ -105,6 +105,66 @@ internal sealed class ActorGpuChecks : Application
                     if (!SHA256.HashData(first).SequenceEqual(SHA256.HashData(restored))) throw new Exception("BotW material program switching did not restore rendering.");
                 }
                 var animations = window.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Name == "ActorAnimation");
+                var armorButton = window.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "PlayerArmor");
+                if (System.IO.Path.GetFileName(PathToActor) == "Player.pack.zs")
+                {
+                    if (!armorButton.IsVisible) throw new Exception("Player armor controls are hidden");
+                    animations.SelectedIndex = 1;
+                    var armorTimeline = window.GetVisualDescendants().OfType<Slider>().Single(s => s.Name == "ActorTimeline");
+                    armorTimeline.Value = Math.Min(8, armorTimeline.Maximum);
+                    var frame = armorTimeline.Value; var clip = animations.SelectedItem;
+                    window.Viewport.Orbit(.15f, .05f); var camera = window.Viewport.CameraState;
+                    await window.SwapPlayerArmorAsync(Enum.GetValues<HKCLTool.PlayerArmorSlot>().ToDictionary(s => s, s => "Armor_001_" + s), default);
+                    if (window.Viewport.CameraState != camera || armorTimeline.Value != frame || !Equals(animations.SelectedItem, clip))
+                        throw new Exception($"Armor swap reset camera={window.Viewport.CameraState != camera}, frame={frame}->{armorTimeline.Value}, clip={clip}->{animations.SelectedItem}");
+                    if (window.Viewport.Model!.Meshes.Any(m => m.Name.Contains("Hair_999")) || !window.Viewport.Model.Meshes.Any(m => m.Name.Contains("Hood_A_001")))
+                        throw new Exception("Head armor was not replaced");
+                    await Capture("player-hylian-armor.png");
+                    var defaults = Enum.GetValues<HKCLTool.PlayerArmorSlot>().ToDictionary(s => s, HKCLTool.PlayerArmorCatalog.DefaultName);
+                    var tiedHair = new Dictionary<HKCLTool.PlayerArmorSlot, string>(defaults) { [HKCLTool.PlayerArmorSlot.Head] = "Armor_1151_Head" };
+                    await window.SwapPlayerArmorAsync(tiedHair, default);
+                    await Capture("player-1151-head.png");
+                    tiedHair[HKCLTool.PlayerArmorSlot.Upper] = "Armor_116_Upper";
+                    tiedHair[HKCLTool.PlayerArmorSlot.Lower] = "Armor_001_Lower";
+                    await window.SwapPlayerArmorAsync(tiedHair, default);
+                    var scene = (HKCLTool.BotwActorScene)typeof(MainWindow).GetField("_actorScene", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(window)!;
+                    var reportedClip = scene.Animations.First(a => a.Name == "Assassin_DotonCharge");
+                    window.Viewport.SetModelPose(scene.Update(reportedClip, 24, false, 0, true));
+                    await Capture("player-116-1151-animated.png");
+                    for (int f = 0; f <= 24; f++) scene.Update(reportedClip, f, true, 1f / 60, f == 0);
+                    window.Viewport.SetModelPose(scene.CurrentModel);
+                    await Capture("player-116-1151-simulated.png");
+                    var beforeFailure = window.Viewport.Model;
+                    try { await window.SwapPlayerArmorAsync(new Dictionary<HKCLTool.PlayerArmorSlot, string>(defaults) { [HKCLTool.PlayerArmorSlot.Upper] = "Armor_001_Head" }, default); throw new Exception("Wrong-slot armor accepted"); }
+                    catch (System.IO.InvalidDataException) { }
+                    if (!ReferenceEquals(window.Viewport.Model, beforeFailure)) throw new Exception("Failed armor load destroyed current outfit");
+                    using (var canceled = new CancellationTokenSource())
+                    {
+                        canceled.Cancel();
+                        try { await window.SwapPlayerArmorAsync(defaults, canceled.Token); throw new Exception("Canceled outfit was applied"); }
+                        catch (OperationCanceledException) { }
+                    }
+                    if (!ReferenceEquals(window.Viewport.Model, beforeFailure)) throw new Exception("Canceled armor load changed current outfit");
+                    await window.SwapPlayerArmorAsync(defaults, default);
+                    animations.SelectedIndex = 0;
+                    await Capture("player-default-restored.png");
+                    foreach (var (label, equipment) in new[] { ("stowed", PlayerWeaponChecks.Outfit()), ("sword", PlayerWeaponChecks.Outfit(true)), ("bow", PlayerWeaponChecks.Outfit(bow: true)) })
+                    {
+                        var equipmentCamera = window.Viewport.CameraState;
+                        await window.SwapPlayerEquipmentAsync(tiedHair, equipment, default);
+                        if (window.Viewport.CameraState != equipmentCamera) throw new Exception("Equipment swap changed camera");
+                        var equippedScene = (HKCLTool.BotwActorScene)typeof(MainWindow).GetField("_actorScene", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(window)!;
+                        PlayerWeaponChecks.Verify(equippedScene);
+                        await Capture("player-equipment-" + label + ".png");
+                        window.Viewport.Orbit(3.14f, 0);
+                        await Capture("player-equipment-" + label + "-back.png");
+                        window.Viewport.Orbit(-3.14f, 0);
+                    }
+                    await window.SwapPlayerEquipmentAsync(defaults, new Dictionary<HKCLTool.PlayerWeaponKind, HKCLTool.PlayerWeaponSelection>(), default);
+                    await Capture("player-equipment-cleared.png");
+                    Console.WriteLine("PASS: Player default/equipped/1151 armor rendering, frame and camera preservation, cancellation and failed-load rollback.");
+                }
+                else if (armorButton.IsVisible) throw new Exception("Armor controls visible for a non-Player actor");
                 if (animations.ItemCount >= 2)
                 {
                 animations.SelectedIndex = 1;
@@ -130,6 +190,7 @@ internal sealed class ActorGpuChecks : Application
                 window.Width = 980; window.Height = 640; await Task.Delay(50); await Capture("actor-compact.png");
                 window.ShowOverview();
                 if (window.IsActorMode) throw new Exception("Actor was not released on Back.");
+                if (armorButton.IsVisible) throw new Exception("Armor controls remained visible after leaving Player");
                 Result = 0; Console.WriteLine("PASS: actor GPU rendering, simulation, compact viewport and Back cleanup."); Finish(null);
             }
             catch (Exception ex) { Finish(ex.ToString()); }

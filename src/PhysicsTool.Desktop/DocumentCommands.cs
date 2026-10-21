@@ -65,8 +65,15 @@ public sealed partial class MainWindow
         var json = MenuCommand("JSON", () => ExportDocument(null, true));
         var wiiU = MenuCommand("Wii U HKCL", () => ExportDocument(HkclPlatform.WiiU));
         var nx = MenuCommand("Switch HKCL", () => ExportDocument(HkclPlatform.Switch));
+        var sidecar = MenuCommand("BPHYSICS sidecar", ExportBphysics);
+        sidecar.Name = "ExportBphysics";
+        sidecar.IsEnabled = !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
         wiiU.IsEnabled = nx.IsEnabled = !Session.Document.IsReadOnlyExternal;
-        _export.ItemsSource = new object[] { json, wiiU, nx };
+        var fbx = MenuCommand("Selected cloth as FBX", ExportClothFbx);
+        fbx.Name = "ExportClothFbx";
+        fbx.IsEnabled = Session.CanManageCloth && !Session.Document.IsBphcl && !IsActorMode && !_viewport.TransformActive;
+        ToolTip.SetTip(fbx, "Export the edited rest pose: skeleton, particle vertices, cloth triangles and collider meshes. Does not export Havok simulation settings or the loaded BFRES.");
+        _export.ItemsSource = new object[] { json, wiiU, nx, sidecar, fbx };
         _file.ContextMenu!.Open(_file);
     }
     private async Task ExportDocument(HkclPlatform? platform, bool json = false)
@@ -82,5 +89,31 @@ public sealed partial class MainWindow
         });
         if (file?.TryGetLocalPath() is not { } path) return;
         Session.ExportCopy(path, platform); _status.Text = "Exported " + System.IO.Path.GetFileName(path);
+    }
+    private async Task ExportBphysics()
+    {
+        var name = System.IO.Path.GetFileNameWithoutExtension(Session.Path) ?? "NewCloth";
+        var sidecar = await new BphysicsExportWindow(Session.Document, name).ShowDialog<BphysicsDocument?>(this);
+        if (sidecar == null) return;
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions {
+            Title = "Export BPHYSICS sidecar", SuggestedFileName = name + ".bphysics", DefaultExtension = "bphysics", ShowOverwritePrompt = true,
+            FileTypeChoices = [new FilePickerFileType("BPHYSICS") { Patterns = ["*.bphysics"] }] });
+        if (file?.TryGetLocalPath() is not { } path) return;
+        BphysicsService.Save(path, sidecar); _status.Text = "Exported " + System.IO.Path.GetFileName(path);
+    }
+
+    private async Task ExportClothFbx()
+    {
+        if (!Session.CanManageCloth || Session.Document.IsBphcl || IsActorMode || _viewport.TransformActive) return;
+        var document = new HkclService(); document.RestoreState(Session.Document.CaptureState());
+        var cloth = Session.ClothIndex;
+        var name = document.GetClothName(cloth);
+        foreach (var c in System.IO.Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions {
+            Title = "Export cloth FBX", SuggestedFileName = name + ".fbx", DefaultExtension = "fbx", ShowOverwritePrompt = true,
+            FileTypeChoices = [new FilePickerFileType("FBX") { Patterns = ["*.fbx"] }] });
+        if (file?.TryGetLocalPath() is not { } path) return;
+        await Task.Run(() => Rendering.ClothFbxExporter.Export(document, cloth, path));
+        _status.Text = "Exported " + System.IO.Path.GetFileName(path);
     }
 }

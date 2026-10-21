@@ -1,0 +1,7 @@
+{
+  "Resize bone branch": "Redimensionner la branche d'os",
+  "Resize attached colliders": "Redimensionner les colliders liés",
+  "Resize collision shapes bound to this branch. Other body colliders are not resized.": "Redimensionne les formes de collision liées à cette branche. Les autres colliders du corps gardent leur taille.",
+  "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. HKCL only.": "Redimensionne la branche et son tissu autour de l'os sélectionné. Modifie les positions et les dimensions des contraintes sans changer l'échelle des os. HKCL uniquement.",
+  "Enter a scale factor.": "Saisissez un facteur d'échelle."
+}

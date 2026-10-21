@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.0',
+    [string]$Version = '2.1.0',
     [ValidateSet('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','osx-arm64')]
     [string[]]$Runtimes = @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','osx-arm64'),
     [switch]$SkipSource
@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zip-unix.ps1')
 if ($Version -notmatch '^\d+\.\d+(\.\d+)?(-[A-Za-z0-9.-]+)?$') { throw 'Invalid version label.' }
 $root = Split-Path $PSScriptRoot
+$releaseNotes = Join-Path $root "docs/RELEASE_$Version.md"
+if (-not (Test-Path -LiteralPath $releaseNotes)) { throw "Release notes missing: $releaseNotes" }
 $output = Join-Path $root "artifacts/releases/$Version"
 $work = Join-Path $root ('artifacts/package-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $output,$work -Force | Out-Null
@@ -45,7 +47,7 @@ foreach ($rid in $Runtimes) {
         New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $target
     }
-    Copy-Item (Join-Path $root 'docs/RELEASE_2.0.md') (Join-Path $package 'RELEASE_NOTES.md')
+    Copy-Item $releaseNotes (Join-Path $package 'RELEASE_NOTES.md')
     $deps = Get-Content (Join-Path $app 'PhysicsTool.deps.json') -Raw | ConvertFrom-Json
     $runtime = @($deps.libraries.PSObject.Properties.Name | Where-Object { $_.StartsWith('runtimepack.Microsoft.NETCore.App.Runtime.') })[0]
     if (-not $runtime) { throw 'Self-contained runtime not found in dependency manifest.' }

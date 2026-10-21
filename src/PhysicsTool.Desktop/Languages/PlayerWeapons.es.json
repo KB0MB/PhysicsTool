@@ -1,0 +1,18 @@
+{
+  "None": "Ninguno",
+  "Player equipment": "Equipo de Link",
+  "Equipment": "Equipo",
+  "Weapons": "Armas",
+  "Swords": "Espadas",
+  "Longswords": "Mandobles",
+  "Spears": "Lanzas",
+  "Shields": "Escudos",
+  "Bows": "Arcos",
+  "Unequipped": "Guardado",
+  "Equipped": "En mano",
+  "Loading equipment...": "Cargando equipo...",
+  "Equipment applied.": "Equipo aplicado.",
+  "Unequipped: back. Equipped: bow in the left hand, arrow in the right. The quiver stays on the hip.": "Guardado: en la espalda. En mano: arco a la izquierda y flecha a la derecha. El carcaj permanece en la cadera.",
+  "Unequipped: back. Equipped: left hand.": "Guardado: en la espalda. En mano: mano izquierda.",
+  "Unequipped: back. Equipped: right hand. The sheath stays on the back.": "Guardado: en la espalda. En mano: mano derecha. La vaina permanece en la espalda."
+}

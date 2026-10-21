@@ -1,10 +1,10 @@
-name: Build release candidates
+name: Build platform packages
 on:
   workflow_dispatch:
     inputs:
       version:
         description: Release version
-        default: '2.0'
+        default: '2.1.0'
         required: true
 permissions:
   contents: read
@@ -50,11 +50,11 @@ jobs:
           exit $LASTEXITCODE
       - name: Package
         shell: pwsh
-        run: ./scripts/package-release.ps1 -Version $env:RELEASE_VERSION -Runtimes $env:RELEASE_RID
+        run: ./scripts/package-release.ps1 -Version $env:RELEASE_VERSION -Runtimes $env:RELEASE_RID -SkipSource
       - uses: actions/upload-artifact@v4
         with:
           name: PhysicsTool-${{ inputs.version }}-${{ matrix.rid }}
-          path: artifacts/releases/
+          path: artifacts/releases/${{ inputs.version }}/PhysicsTool-${{ inputs.version }}-${{ matrix.rid }}.zip
       - uses: actions/upload-artifact@v4
         if: always()
         with:

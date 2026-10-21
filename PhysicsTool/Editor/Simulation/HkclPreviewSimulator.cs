@@ -1282,6 +1282,15 @@ public sealed class HkclPreviewSimulator
 
         var target = link.RestLength;
         var strength = link.Stiffness ?? 1.0f;
+        if (constraintKind.Contains("CompressibleLink", StringComparison.Ordinal))
+        {
+            // TotK 71003dd6c0: a free interval, then the same mass-scaled
+            // endpoint correction as StandardLink. Compression wins if limits overlap.
+            if (link.CompressionLength is { } minimum && length < minimum)
+                target = minimum;
+            else if (!target.HasValue || length <= target.Value)
+                return;
+        }
         if (constraintKind.Contains("StretchLink", StringComparison.Ordinal) && target.HasValue && length <= target.Value)
             return;
         if (constraintKind.Contains("BendLink", StringComparison.Ordinal))
@@ -1325,6 +1334,7 @@ public sealed class HkclPreviewSimulator
         // coefficients above one.
         var usesMassScaledCoefficient =
             constraintKind.Contains("StandardLink", StringComparison.Ordinal) ||
+            constraintKind.Contains("CompressibleLink", StringComparison.Ordinal) ||
             constraintKind.Contains("BendLink", StringComparison.Ordinal);
         if (usesMassScaledCoefficient)
         {

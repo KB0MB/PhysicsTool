@@ -1850,7 +1850,7 @@ public static class HkclToBphclStandaloneGraphBuilder
         return false;
     }
 
-    private static bool TryGetBendRestConfiguration(
+    internal static bool TryGetBendRestConfiguration(
         Vector3 a,
         Vector3 b,
         Vector3 c,
@@ -1860,7 +1860,8 @@ public static class HkclToBphclStandaloneGraphBuilder
         out float weightC,
         out float weightD,
         out float restCurvature,
-        out float restDistance)
+        out float restDistance,
+        bool validateCandidate = true)
     {
         var edge = b - a;
         var oppositeEdge = d - c;
@@ -1868,7 +1869,8 @@ public static class HkclToBphclStandaloneGraphBuilder
         var oppositeLengthSq = oppositeEdge.LengthSquared();
         var edgeDot = Vector3.Dot(edge, oppositeEdge);
         var denominator = edgeLengthSq * oppositeLengthSq - edgeDot * edgeDot;
-        if (edgeLengthSq < 0.0000001f || oppositeLengthSq < 0.0000001f || MathF.Abs(denominator) < 0.0000001f)
+        if (validateCandidate ? edgeLengthSq < 0.0000001f || oppositeLengthSq < 0.0000001f || MathF.Abs(denominator) < 0.0000001f
+            : edgeLengthSq < 1e-16f || oppositeLengthSq < 1e-16f || MathF.Abs(denominator) < 1e-10f * edgeLengthSq * oppositeLengthSq)
         {
             weightA = weightB = weightC = weightD = restCurvature = restDistance = 0.0f;
             return false;
@@ -1879,7 +1881,7 @@ public static class HkclToBphclStandaloneGraphBuilder
                         oppositeLengthSq * Vector3.Dot(edge, ac)) / denominator;
         var closestC = (edgeLengthSq * Vector3.Dot(oppositeEdge, ac) -
                         edgeDot * Vector3.Dot(edge, ac)) / denominator;
-        if (closestA is < -0.25f or > 1.25f || closestC is < -0.25f or > 1.25f)
+        if (validateCandidate && (closestA is < -0.25f or > 1.25f || closestC is < -0.25f or > 1.25f))
         {
             weightA = weightB = weightC = weightD = restCurvature = restDistance = 0.0f;
             return false;
@@ -1904,7 +1906,7 @@ public static class HkclToBphclStandaloneGraphBuilder
         var sharedDWeight = heightCFromBendEdge / heightSum;
         var balancedSharedPoint = sharedCWeight * c + sharedDWeight * d;
         var bendEdgeProjection = Vector3.Dot(balancedSharedPoint - a, edge) / edgeLengthSq;
-        if (bendEdgeProjection is < -0.25f or > 1.25f)
+        if (validateCandidate && (bendEdgeProjection is < -0.25f or > 1.25f))
         {
             weightA = weightB = weightC = weightD = restCurvature = restDistance = 0.0f;
             return false;

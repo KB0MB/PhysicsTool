@@ -21,6 +21,8 @@ internal static class ConversionChecks
             session.Edit((d, c) => { var p = d.GetParticleRows(c)[1]; p.Radius += .002f; d.UpdateParticleRows(c, [p]); });
             var before = session.Document.CaptureState(); var sourcePath = session.Path; var dirty = session.IsDirty; var undo = session.CanUndo;
             var conversion = new PhysicsConversion(session.Document, session.Path);
+            Require(conversion.SuggestedFileName == Path.GetFileNameWithoutExtension(session.Path) + conversion.Extension,
+                "Conversion renamed the source instead of changing its extension");
             foreach (var platform in new[] { HkclPlatform.WiiU, HkclPlatform.Switch })
             {
                 var file = Path.Combine(folder, $"manual-{format}-{platform}" + conversion.Extension);
@@ -43,6 +45,8 @@ internal static class ConversionChecks
         var profiled = new EditorSession(); profiled.New("Hire_006_Havok", 2);
         var profilePath = Path.Combine(folder, "Armor_006_Head.bphcl"); profiled.Save(profilePath);
         var profileConversion = new PhysicsConversion(profiled.Document, profilePath);
+        Require(new PhysicsConversion(profiled.Document).SuggestedFileName == "Physics.hkcl", "Untitled conversion name is invalid");
+        Require(new PhysicsConversion(profiled.Document, "name_converted.bphcl").SuggestedFileName == "name_converted.hkcl", "Conversion stripped part of a user filename");
         Require(profileConversion.Scales.Single().DefaultMassScale > 9.9f && profileConversion.Scales.SequenceEqual(profiled.Document.GetBphclConversionScaleSuggestions()), "Measured filename profile was lost in conversion snapshot");
         var native = Path.Combine(output, "fixture-Armor_1106_RaulSkin_Upper.bphcl");
         if (File.Exists(native))
@@ -94,6 +98,8 @@ internal static class ConversionChecks
         button.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); Dispatcher.UIThread.RunJobs();
         var dialog = (ConversionWindow)window.OwnedWindows.Single();
         T Find<T>(string name) where T : Control => dialog.GetVisualDescendants().OfType<T>().Single(c => c.Name == name);
+        Require(Find<ComboBox>("ConversionPlatform").SelectedIndex == (DesktopPreferences.Load().ConversionPlatform == HkclPlatform.Switch ? 1 : 0),
+            "Conversion used the document platform instead of the saved output preference");
         Find<TextBox>("ConversionMass0").Text = "NaN"; Dispatcher.UIThread.RunJobs();
         Require(!Find<Button>("ConfirmConversion").IsEnabled, "Invalid conversion scale enabled");
         Find<Button>("ConversionDefaults").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();

@@ -219,7 +219,7 @@ Read-only Ghidra headless scans of the supplied BotW Switch and TotK executables
 | Bone planes | `0x7102658677` | `0x71037362a1` | Inspect only; transform-set and plane bindings required |
 | Transition | `0x7102648812` | `0x710371ce6d` | Inspect only; transition runtime setup required |
 | Volume | `0x710262800c` | `0x710376ed50` | Inspect only; weighted frame/apply records required |
-| Compressible link | `0x710263840a` | `0x7103766fa4` | Inspect only; authoring/preview behavior unvalidated |
+| Compressible link | `0x710263840a` | `0x7103766fa4` | Preview supported; creation not exposed |
 | Anti-pinch | `0x7102672c48` | `0x710376ec6a` | Inspect only; recovery runtime state required |
 
 The native constraint creation path writes reflected 12-byte standard/stretch records or 20-byte bend records, preserving native coefficients rather than applying a universal scale. Missing TYPE definitions are merged from the existing reflection catalog. A new static set is added to each applicable explicit simulation schedule before its first collision call; an empty schedule retains the all-sets fallback.

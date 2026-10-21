@@ -1,0 +1,7 @@
+{
+  "Resize bone branch": "ボーン階層のサイズ変更",
+  "Resize attached colliders": "関連コライダーもサイズ変更",
+  "Resize collision shapes bound to this branch. Other body colliders are not resized.": "この階層に関連付けられた衝突形状をサイズ変更します。他の身体コライダーのサイズは変わりません。",
+  "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. HKCL only.": "選択したボーンを中心に、その階層とクロスをサイズ変更します。ボーンのスケール値は変えず、位置と拘束の寸法に反映します。HKCLのみ。",
+  "Enter a scale factor.": "倍率を入力してください。"
+}

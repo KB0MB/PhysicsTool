@@ -29,6 +29,17 @@ public sealed partial class MainWindow : Window
     public PhysicsViewport Viewport => _viewport;
     public ModelGlControl? ModelSurface { get; }
     private readonly Button _loadModel, _clearModel, _meshes;
+    private readonly ComboBox _modelDisplay = new()
+    {
+        Name = "ModelDisplayMode", MinWidth = 160, Margin = new Thickness(10, 4),
+        ItemsSource = new ComboBoxItem[]
+        {
+            new() { Content = "Textured" },
+            new() { Content = "Wireframe" },
+            new() { Content = "Edged Faces" }
+        },
+        SelectedIndex = 0
+    };
     private int _modelRequest;
     private bool _modelLoading;
     private readonly ComboBox _cloths = new() { HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
@@ -40,7 +51,7 @@ public sealed partial class MainWindow : Window
     private readonly GridSplitter _workspaceSplit;
     private readonly WrapPanel _editorActions;
     private readonly CheckBox _bonesToggle;
-    private readonly CheckBox _hideToggle, _collidersToggle;
+    private readonly CheckBox _particlesToggle, _collidersToggle;
     private readonly Button _navigation;
     private bool _fitPending = true;
     public bool IsEditorVisible => ReferenceEquals(_body.Content, _workspace);
@@ -116,6 +127,16 @@ public sealed partial class MainWindow : Window
         _loadModel = Add(modelbar, "Load model", async () => await OpenModel());
         _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; PauseEditorAnimation(); StopSimulation(); ExitActor(); _importedModel = null; ClearEditorAnimation(); _viewport.SetModel(null); UpdateModelActions(); });
         _meshes = Add(modelbar, "Meshes", async () => await ShowMeshes());
+        _modelDisplay.SelectionChanged += (_, _) =>
+        {
+            if (_modelDisplay.SelectedIndex >= 0)
+                _viewport.DisplayMode = (ModelDisplayMode)_modelDisplay.SelectedIndex;
+        };
+        ToolTip.SetTip(_modelDisplay, "Model display");
+        Avalonia.Automation.AutomationProperties.SetName(_modelDisplay, "Model display");
+        modelbar.Children.Add(_modelDisplay);
+        _playerArmor = Add(modelbar, "Equipment", async () => await ShowPlayerArmor());
+        _playerArmor.Name = "PlayerArmor"; _playerArmor.IsVisible = false;
         _importAnimation = Add(modelbar, "Import animation", OpenEditorAnimation);
         DockPanel.SetDock(modelbar, Dock.Top); center.Children.Add(modelbar);
         var viewbar = new WrapPanel { Margin = new Thickness(5) };
@@ -126,10 +147,10 @@ public sealed partial class MainWindow : Window
         var emission = new CheckBox { Name = "ViewportEmission", Content = "Emission", IsChecked = false, Margin = new Thickness(10, 4) };
         emission.IsCheckedChanged += (_, _) => { _viewport.ShowEmission = emission.IsChecked == true; ModelSurface?.RequestNextFrameRendering(); };
         viewbar.Children.Add(emission);
-        var hide = _hideToggle = new CheckBox { Content = "Hide cloth", Margin = new Thickness(10, 4) };
-        hide.IsCheckedChanged += (_, _) => { _viewport.ShowPhysics = hide.IsChecked != true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(hide);
-        var bones = _bonesToggle = new CheckBox { Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
-        var colliders = _collidersToggle = new CheckBox { Content = "Colliders", IsChecked = true, Margin = new Thickness(10, 4) }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
+        var particles = _particlesToggle = new CheckBox { Name = "ViewportParticles", Content = "Particles", IsChecked = true, Margin = new Thickness(10, 4) };
+        particles.IsCheckedChanged += (_, _) => { _viewport.ShowParticles = particles.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(particles);
+        var bones = _bonesToggle = new CheckBox { Name = "ViewportBones", Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
+        var colliders = _collidersToggle = new CheckBox { Name = "ViewportColliders", Content = "Colliders", IsChecked = true, Margin = new Thickness(10, 4) }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
         DockPanel.SetDock(viewbar, Dock.Bottom); center.Children.Add(viewbar);
         ConfigureActorBar(center);
         var scene = new Grid();
@@ -197,7 +218,7 @@ public sealed partial class MainWindow : Window
         _relationshipActions.Children.Add(_constraint); _relationshipActions.Children.Add(_removeConstraint);
         _constraint.Margin = new Thickness(0, 4, 6, 0); _removeConstraint.Margin = new Thickness(0, 4, 0, 0);
         _editControls.AddRange(new Control[] { _cloths, _mode, _items, _details, _save, _undo, _redo, _add, _delete });
-        _cloths.SelectionChanged += (_, _) => { if (_refreshing || _cloths.SelectedIndex < 0) return; StopSimulation(); Session.ClothIndex = _cloths.SelectedIndex; Refresh(true); };
+        _cloths.SelectionChanged += (_, _) => { if (_refreshing || _cloths.SelectedIndex < 0) return; StopSimulation(); Session.ClothIndex = _cloths.SelectedIndex; Refresh(); };
         _mode.SelectionChanged += (_, _) => { if (!_refreshing) Refresh(); };
         _items.SelectionChanged += (_, _) => { if (_refreshing) return; ShowDetails(); SelectViewport(); UpdateActions(); };
         _relationships.SelectionChanged += (_, _) => { ShowRelationshipDetails(); UpdateActions(); };
@@ -219,7 +240,7 @@ public sealed partial class MainWindow : Window
         _viewport.LostFocus += (_, _) => _viewport.FinishTransform(false);
         _timer.Tick += (_, _) =>
         {
-            if (_solver == null && _ragdollSolver == null && !_editorPlaying) return;
+            if (_timelineScrubbing || (_solver == null && _ragdollSolver == null && !_editorPlaying)) return;
             try
             {
                 var now = _clock.Elapsed.TotalSeconds;
@@ -449,7 +470,7 @@ public sealed partial class MainWindow : Window
         if (Session.Document.IsHkrg) ToolTip.SetTip(_simulate, "Approximate glide/stress preview from the original tool. It does not reproduce Havok or change saved poses.");
         _viewport.CanSelect = editing || ready && !_timer.IsEnabled && !_editorPlaying && Session.Document.IsHkrg && _mode.SelectedIndex is 1 or 2;
         _viewport.SelectionKind = (PhysicsSelectionKind)_mode.SelectedIndex;
-        _hideToggle.Content = Session.Document.IsHkrg && !IsActorMode ? "Hide ragdoll" : "Hide cloth";
+        _particlesToggle.IsVisible = !Session.Document.IsHkrg || IsActorMode;
         _collidersToggle.Content = Session.Document.IsHkrg && !IsActorMode ? "Rigid bodies" : "Colliders";
         _loadModel.IsVisible = _clearModel.IsVisible = !IsActorMode;
         _importAnimation.IsVisible = !IsActorMode;
@@ -553,7 +574,7 @@ public sealed partial class MainWindow : Window
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.IndianRed };
         void Persist()
         {
-            try { new DesktopPreferences(UiLanguage.Current, Application.Current?.RequestedThemeVariant != ThemeVariant.Light, _animationFps).Save(); error.Text = ""; }
+            try { (DesktopPreferences.Load() with { Language = UiLanguage.Current, DarkTheme = Application.Current?.RequestedThemeVariant != ThemeVariant.Light, AnimationFps = _animationFps }).Save(); error.Text = ""; }
             catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
             { error.Text = "Settings could not be saved. Check that the application folder is writable."; }
         }
@@ -599,13 +620,16 @@ public sealed partial class MainWindow : Window
             _status.Text = $"{System.IO.Path.GetFileName(path)}: {model.Meshes.Count} meshes, {model.TriangleCount:N0} triangles, {model.EmbeddedTextureCount + model.ExternalTextureCount} textures."
                 + (model.Warnings.Count == 0 ? "" : " " + string.Join(" ", model.Warnings.Take(3)));
         }
-        finally { if (request == _modelRequest) { _modelLoading = false; UpdateModelActions(); } }
+        finally { if (request == _modelRequest) { _modelLoading = false; UpdateModelActions(); UpdateSelectionTools(); } }
     }
     private void UpdateModelActions()
     {
+        _playerArmor.IsVisible = _actorScene?.ArmorCatalog != null;
+        _playerArmor.IsEnabled = !_modelLoading;
         _evaluateHelpers.IsEnabled = _importedModel != null && !_modelLoading;
         _loadModel.IsEnabled = !_modelLoading; _clearModel.IsEnabled = !_modelLoading && _viewport.Model != null;
         _meshes.IsEnabled = !_modelLoading && _viewport.Model != null;
+        _modelDisplay.IsEnabled = _meshes.IsEnabled;
         _importAnimation.IsEnabled = !_modelLoading && !_animationLoading && _importedModel != null && !IsActorMode;
     }
     private async Task OpenModel()

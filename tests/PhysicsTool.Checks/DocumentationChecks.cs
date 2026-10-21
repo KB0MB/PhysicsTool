@@ -23,6 +23,8 @@ internal static class DocumentationChecks
         var body = controls.OfType<TextBlock>().Single(c => c.Name == "DocumentationBody");
         try
         {
+            Require(ClothHelp.Topics[0].Title == "Start here" && ClothHelp.Topics[1].Title == "Shortcuts",
+                "Shortcuts must appear immediately after Start here");
             foreach (var code in new[] { "fr", "es", "ja" })
             {
                 var assembly = typeof(MainWindow).Assembly;
@@ -61,11 +63,12 @@ internal static class DocumentationChecks
                 UiLanguage.Set("en"); Dispatcher.UIThread.RunJobs();
                 Require(list.ItemCount == 0 && heading.Text == "No matching topics", "Language switch did not refresh filtered results");
             }
-            search.Text = ""; Dispatcher.UIThread.RunJobs(); list.SelectedIndex = 6;
+            var supportIndex = ClothHelp.Topics.ToList().FindIndex(t => t.Title == "Support and helper bones");
+            search.Text = ""; Dispatcher.UIThread.RunJobs(); list.SelectedIndex = supportIndex;
             UiLanguage.Set("fr"); Dispatcher.UIThread.RunJobs();
-            Require(list.SelectedIndex == 6 && heading.Text == UiLanguage.Text("Support and helper bones"), "Language switch lost selected topic");
+            Require(list.SelectedIndex == supportIndex && heading.Text == UiLanguage.Text("Support and helper bones"), "Language switch lost selected topic");
             UiLanguage.Set("en"); Dispatcher.UIThread.RunJobs();
-            Require(body.Text == ClothHelp.Topics[6].Body, "English article restoration failed");
+            Require(body.Text == ClothHelp.Topics[supportIndex].Body, "English article restoration failed");
         }
         finally { help.Close(); UiLanguage.Set("en"); }
         Console.WriteLine("PASS: all documentation and constraint descriptions in French/Spanish/Japanese, localized search, live language switching and compact layouts.");

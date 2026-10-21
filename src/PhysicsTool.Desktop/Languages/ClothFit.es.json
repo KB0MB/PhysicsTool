@@ -1,0 +1,7 @@
+{
+  "Fit cloth to bones": "Adaptar tela a los huesos",
+  "Cloth already matches its bones.": "La tela ya coincide con sus huesos.",
+  "Fitted cloth to the edited bones.": "Tela adaptada a los huesos editados.",
+  "After applying bone edits with Particles follow bones off, rebuild the cloth rest shape to match. HKCL only; unsupported layouts are left unchanged.": "Tras editar los huesos sin mover las partículas, adapta la forma en reposo de la tela. Solo HKCL; las estructuras no compatibles no se modifican.",
+  "Reshape this cloth to the applied bone positions? This updates particles, radii, constraint rest data and simulation bone bindings. Masses and colliders stay unchanged. Undo restores the previous shape.": "¿Adaptar esta tela a las posiciones aplicadas de los huesos? Se actualizarán las partículas, los radios, las restricciones en reposo y los enlaces de los huesos de simulación. Las masas y los colisionadores no cambiarán. Deshacer restaura la forma anterior."
+}
