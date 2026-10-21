@@ -37,13 +37,14 @@ foreach ($rid in $Runtimes) {
     $package = Join-Path $stage "PhysicsTool-$Version-$rid"
     $app = $package
     if ($rid.StartsWith('osx-')) { $app = Join-Path $package 'PhysicsTool.app/Contents/MacOS' }
+    $resources = if ($rid.StartsWith('osx-')) { Join-Path $package 'PhysicsTool.app/Contents/Resources' } else { $app }
     New-Item -ItemType Directory -Path $app -Force | Out-Null
     foreach ($file in Get-ChildItem -LiteralPath $raw -Recurse -File) {
         $relative = [IO.Path]::GetRelativePath($raw, $file.FullName).Replace('\','/')
         if ($file.Extension -eq '.pdb') { continue }
         if ($file.Name -match '^(settings|actor-folders|actor-catalog-.*)\.json$') { throw "Private file in publish: $relative" }
         if ($relative.StartsWith('Tools/MeshCodec/') -and -not $relative.StartsWith("Tools/MeshCodec/$rid/")) { continue }
-        $target = Join-Path $app $relative
+        $target = Join-Path $(if ($relative.StartsWith('Licenses/')) { $resources } else { $app }) $relative
         New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $target
     }
@@ -55,7 +56,7 @@ foreach ($rid in $Runtimes) {
     $assets = Get-Content (Join-Path $root 'src/PhysicsTool.Desktop/obj/project.assets.json') -Raw | ConvertFrom-Json
     $runtimeDirectory = @($assets.packageFolders.PSObject.Properties.Name | ForEach-Object { Join-Path $_ $runtimePath } | Where-Object { Test-Path -LiteralPath $_ })[0]
     if (-not $runtimeDirectory) { throw "Runtime license source missing: $runtime" }
-    $runtimeNotices = Join-Path $app 'Licenses/DotNetRuntime'
+    $runtimeNotices = Join-Path $resources 'Licenses/DotNetRuntime'
     New-Item -ItemType Directory -Path $runtimeNotices -Force | Out-Null
     foreach ($notice in @('LICENSE.TXT', 'THIRD-PARTY-NOTICES.TXT')) { Copy-Item (Join-Path $runtimeDirectory $notice) $runtimeNotices }
     Copy-Item (Join-Path $root 'docs/RELEASING.md') (Join-Path $package 'BUILD_AND_LICENSES.md')
@@ -97,11 +98,13 @@ foreach ($rid in $Runtimes) {
             & chmod +x (Join-Path $app 'PhysicsTool') (Join-Path $app "Tools/MeshCodec/$rid/$helperName")
             & codesign --force --deep --sign - (Join-Path $package 'PhysicsTool.app')
             if ($LASTEXITCODE -ne 0) { throw 'Ad-hoc macOS bundle signing failed.' }
+            & codesign --verify --deep --strict (Join-Path $package 'PhysicsTool.app')
+            if ($LASTEXITCODE -ne 0) { throw 'macOS bundle signature verification failed.' }
         }
     }
     $exe = Join-Path $app ('PhysicsTool' + $(if ($rid.StartsWith('win-')) { '.exe' } else { '' }))
-    foreach ($required in @($exe, (Join-Path $app 'LICENSE'), (Join-Path $app 'Licenses/Inter-OFL.txt'),
-        (Join-Path $app 'Licenses/MeshCodec-source.zip'), (Join-Path $app "Tools/MeshCodec/$rid/$helperName"))) {
+    foreach ($required in @($exe, (Join-Path $app 'LICENSE'), (Join-Path $resources 'Licenses/Inter-OFL.txt'),
+        (Join-Path $resources 'Licenses/MeshCodec-source.zip'), (Join-Path $app "Tools/MeshCodec/$rid/$helperName"))) {
         if (-not (Test-Path -LiteralPath $required)) { throw "Missing release file: $required" }
     }
     Zip-Folder $stage (Join-Path $output "PhysicsTool-$Version-$rid.zip")

@@ -1,6 +1,6 @@
 # MeshCodec Source and Local Changes
 
-Updated 2026-10-11.
+Updated 2026-10-20.
 
 The decoder is dt-12345/MeshCodec, licensed under GPL-2.0 as stated in its
 upstream README. Reference revision: b3600954872dbc2893a1bcc9e851c1e364f303ab
@@ -22,6 +22,7 @@ Local changes to upstream files:
 - mc_Codec.cpp: partial lossless blocks use the remaining buffer size;
   compressed-size varints and input cursor advancement are corrected.
 - mc_Float.cpp: compiler/CPU-specific floating-point control handling.
+- mc_BitStream.h: standard C++20 bit counts on MSVC ARM64 instead of x86 intrinsics.
 - mc_StackAllocator.cpp: portable size comparison and filename-only diagnostics.
 - mc_Types.h, mc_AttributeCodec.cpp, mc_Codec.cpp, mc_IndexDecompressor.cpp,
   mc_IndexStreamContext.cpp and mc_MeshCodec.cpp: explicit standard includes.

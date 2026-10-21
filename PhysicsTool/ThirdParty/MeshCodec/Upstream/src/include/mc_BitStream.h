@@ -3,8 +3,11 @@
 #include "mc_Types.h"
 
 #ifdef _MSC_VER
+#include <bit>
 #include <stdlib.h>
+#if defined(_M_IX86) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 #include <intrin.h>
 #elif defined(__APPLE__)
 #include <libkern/OSByteOrder.h>
@@ -55,7 +58,9 @@ inline u32 Clz(u64 value) {
     // bsr on x86 has undefined behavior when the operand is 0, clz on aarch64 returns 0x20
     if (value == 0) return 0x20;
 #endif
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && defined(_M_ARM64)
+    return static_cast<u32>(std::countl_zero(value));
+#elif defined(_MSC_VER)
     return _lzcnt_u64(value);
 #elif defined(__GNUC__)
     return __builtin_clzll(value);
@@ -66,7 +71,9 @@ inline u32 Clz(u32 value) {
 #if defined(__x86_64__) || defined(_M_X64)
     if (value == 0) return 0x20;
 #endif
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && defined(_M_ARM64)
+    return static_cast<u32>(std::countl_zero(value));
+#elif defined(_MSC_VER)
     return _lzcnt_u32(value);
 #elif defined(__GNUC__)
     return __builtin_clz(value);
@@ -74,7 +81,9 @@ inline u32 Clz(u32 value) {
 }
 
 inline u32 Popcount(u32 value) {
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && defined(_M_ARM64)
+    return static_cast<u32>(std::popcount(value));
+#elif defined(_MSC_VER)
     return __popcnt(value);
 #elif defined(__GNUC__)
     return  __builtin_popcount(value);
