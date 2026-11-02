@@ -13,7 +13,7 @@ public sealed partial class MainWindow
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, (_, e) =>
         {
-            e.DragEffects = !_openingDroppedPhysics && !_conversionBusy && IsEnabled && !_viewport.TransformActive && GetPhysicsDropPath(e.DataTransfer) != null
+            e.DragEffects = !IsToolWorkspaceVisible && !_openingDroppedPhysics && !_conversionBusy && IsEnabled && !_viewport.TransformActive && GetPhysicsDropPath(e.DataTransfer) != null
                 ? e.DragEffects & DragDropEffects.Copy : DragDropEffects.None;
             e.Handled = true;
         }, RoutingStrategies.Bubble, handledEventsToo: true);
@@ -22,12 +22,12 @@ public sealed partial class MainWindow
             var path = GetPhysicsDropPath(e.DataTransfer);
             e.Handled = true;
             e.DragEffects = path != null ? DragDropEffects.Copy : DragDropEffects.None;
-            if (path != null) await RunCommand(() => OpenDroppedPhysicsAsync(path));
+            if (path != null && !IsToolWorkspaceVisible) await RunCommand(() => OpenDroppedPhysicsAsync(path));
         }, RoutingStrategies.Bubble, handledEventsToo: true);
     }
 
     internal static bool IsPhysicsFilePath(string path) =>
-        System.IO.Path.GetExtension(path).ToLowerInvariant() is ".hkcl" or ".bphcl" or ".bphyssb" or ".bphhb" or ".hkrg";
+        System.IO.Path.GetExtension(path).ToLowerInvariant() is ".hkcl" or ".bphcl" or ".bphyssb" or ".bphhb" or ".hkrg" or ".bphysics";
 
     internal static string? GetPhysicsDropPath(IDataTransfer data)
     {
@@ -43,7 +43,7 @@ public sealed partial class MainWindow
         try
         {
             if (!File.Exists(path)) throw new FileNotFoundException("The dropped physics file is no longer available.");
-            if (!await CanReplace()) return;
+            if (!System.IO.Path.GetExtension(path).Equals(".bphysics", StringComparison.OrdinalIgnoreCase) && !await CanReplace()) return;
             LoadPath(path);
         }
         finally { _openingDroppedPhysics = false; }

@@ -44,7 +44,7 @@ internal static class ClothDropdownCameraChecks
             var view = window.Viewport;
             VisualModelData? model = withModel ? new() { BoundsMinimum = new(-12, -3, -4), BoundsMaximum = new(12, 3, 4) } : null;
             if (model != null) view.SetModel(model);
-            var names = new[] { "Camera cloth A", "Camera cloth B" };
+            var names = new[] { "All", "Camera cloth A", "Camera cloth B" };
             var dropdown = window.GetVisualDescendants().OfType<ComboBox>().Single(c =>
                 c.ItemsSource?.Cast<object>().OfType<string>().SequenceEqual(names) == true);
             view.Orbit(.4f, -.2f); view.Pan(75, -45); view.ZoomAt(3, new(120, 160));
@@ -54,7 +54,7 @@ internal static class ClothDropdownCameraChecks
 
             void CheckSelection(int index)
             {
-                dropdown.SelectedIndex = index;
+                dropdown.SelectedIndex = index + 1;
                 Dispatcher.UIThread.RunJobs();
                 Require(window.Session.ClothIndex == index, "Dropdown did not switch cloth");
                 var expected = window.Session.Document.GetParticleRows(index)[0];

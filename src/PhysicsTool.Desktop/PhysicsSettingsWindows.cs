@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using HKCLTool;
 using PhysicsTool.Core;
 
@@ -112,7 +113,8 @@ internal sealed class PreviewOptionsWindow : PhysicsSettingsWindow
         input.ValueChanged += (_, _) => { if (syncing || input.Value == null) return; syncing = true; try { slider.Value = (double)input.Value.Value; } finally { syncing = false; } };
         return input;
     }
-    public PreviewOptionsWindow(PreviewOptions initial, Action<PreviewOptions> update) : base("Simulation options", 530)
+    public PreviewOptionsWindow(PreviewOptions initial, Action<PreviewOptions> update,
+        EditorSession? windSession = null, Action? windChanged = null, bool actorWind = false) : base("Simulation options", 610)
     {
         var accepted = false;
         Heading("Wind direction");
@@ -120,6 +122,45 @@ internal sealed class PreviewOptionsWindow : PhysicsSettingsWindow
         Fields.Children.Add(direction);
         var wind = SliderNumber("WindSpeed", "Wind strength", initial.WindSpeed, 0, 50, .1m);
         var gust = SliderNumber("Gustiness", "Wind gustiness", initial.Gustiness, 0, 1, .01m);
+        if (windSession != null || actorWind)
+        {
+            var profileName = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            Fields.Children.Add(profileName);
+            void RefreshWind()
+            {
+                var active = actorWind || windSession?.SelectedWindProfile != null;
+                profileName.Text = actorWind ? "Wind profile: actor BPHYSICS" : windSession?.WindParametersPath is { } path
+                    ? $"{System.IO.Path.GetFileName(path)}: {(active ? windSession.SelectedWindProfile!.Cloth.Name : "no matching cloth")}" : "Wind profile: generic preview";
+                ((Control)gust.Parent!).IsEnabled = !active;
+                ToolTip.SetTip(wind, active ? "Main wind speed. The cloth's BPHYSICS profile supplies drag, gust frequency and sub-wind." : null);
+            }
+            if (windSession != null)
+            {
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var load = new Button { Content = "Load BPHYSICS" };
+                load.Click += async (_, _) =>
+                {
+                    try
+                    {
+                        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+                        {
+                            Title = "Load wind parameters", AllowMultiple = false,
+                            FileTypeFilter = [new FilePickerFileType("BPHYSICS") { Patterns = ["*.bphysics"] }]
+                        });
+                        if (files.FirstOrDefault()?.TryGetLocalPath() is not { } path) return;
+                        windSession.LoadWindParameters(path); windChanged?.Invoke(); RefreshWind(); Error.IsVisible = false;
+                    }
+                    catch (Exception ex) { Error.Text = ex.Message; Error.IsVisible = true; }
+                };
+                buttons.Children.Add(load);
+                buttons.Children.Add(ViewportTools.Icon("X", "Clear wind parameters", () => TryApply(() =>
+                {
+                    windSession.LoadWindParameters(null); windChanged?.Invoke(); RefreshWind();
+                })));
+                Fields.Children.Add(buttons);
+            }
+            RefreshWind();
+        }
         var gravity = SliderNumber("GravityScale", "Gravity scale", initial.GravityScale, 0, 3, .01m, "Preview multiplier only; does not change the cloth's saved gravity.");
         var speed = SliderNumber("PlaybackSpeed", "Playback speed", initial.PlaybackSpeed, .1m, 4, .01m);
         var passes = SliderNumber("SolverPasses", "Solver pass multiplier", initial.SolverPasses, 1, 24, 1);

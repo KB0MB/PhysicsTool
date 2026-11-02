@@ -27,29 +27,36 @@ public sealed partial class HkclService
             document.Cloths.Add(
                 BphysicsRuntimeProfileCatalog.TryGetCloth(hkclGamePath, clothName, out var verifiedProfile)
                     ? verifiedProfile
-                    : CreateFallbackBphysicsProfile(clothName, boneNames));
+                    : CreateFallbackBphysicsProfile(clothName, boneNames, GetSimulationRuntimeData(index).TotalMass));
         }
 
         return document;
     }
 
-    private static BphysicsClothProfile CreateFallbackBphysicsProfile(string clothName, ISet<string> boneNames)
+    private static BphysicsClothProfile CreateFallbackBphysicsProfile(string clothName, ISet<string> boneNames, float totalMass)
     {
+        if (!float.IsFinite(totalMass) || totalMass < 0)
+            throw new InvalidOperationException($"Cloth '{clothName}' has an invalid total mass. Correct its mass before exporting wind settings.");
+
         // Generic defaults use the armor survey in docs/BPHYSICS_WIND_DEFAULTS.md.
         // Keep the existing accessory-specific tuning and editable export values.
         var baseBone = ChooseBphysicsBaseBone(clothName, boneNames);
         var profile = new BphysicsClothProfile(clothName, baseBone);
 
         if (clothName.Contains("Earring", StringComparison.OrdinalIgnoreCase))
-            return profile with { WindFrequency = 3.62f, WindDrag = 5.0f, WindMaxSpeed = 8.0f, SubWindFactorMain = 0.0f };
-        if (clothName.Contains("Belt", StringComparison.OrdinalIgnoreCase) ||
+            profile = profile with { WindFrequency = 3.62f, WindDrag = 5.0f, WindMaxSpeed = 8.0f, SubWindFactorMain = 0.0f };
+        else if (clothName.Contains("Belt", StringComparison.OrdinalIgnoreCase) ||
             clothName.Contains("Tunic", StringComparison.OrdinalIgnoreCase) ||
             clothName.Contains("Apron", StringComparison.OrdinalIgnoreCase))
-            return profile with { WindFrequency = 3.5f, WindDrag = 8.0f, WindMaxSpeed = 10.0f };
-        if (clothName.Contains("Hair", StringComparison.OrdinalIgnoreCase))
-            return profile with { WindFrequency = 5.0f, WindDrag = 8.0f, WindMaxSpeed = 12.0f };
+            profile = profile with { WindFrequency = 3.5f, WindDrag = 8.0f, WindMaxSpeed = 10.0f };
+        else if (clothName.Contains("Hair", StringComparison.OrdinalIgnoreCase))
+            profile = profile with { WindFrequency = 5.0f, WindDrag = 8.0f, WindMaxSpeed = 12.0f };
 
-        return profile;
+        // BotW divides drag by total cloth mass. The paired vanilla armor median
+        // is 4; cap at the old category default so heavier cloths are not amplified.
+        const float armorMedianDragPerMass = 4.0f;
+        var drag = (float)Math.Min(profile.WindDrag, (double)totalMass * armorMedianDragPerMass);
+        return profile with { WindDrag = drag, WindEnabled = totalMass > 0 };
     }
 
     private static string ChooseBphysicsBaseBone(string clothName, ISet<string> bones)

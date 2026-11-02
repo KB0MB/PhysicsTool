@@ -7,6 +7,11 @@ namespace HKCLTool;
 
 public sealed class TotkPreviewMaterial
 {
+    public bool IsSeal { get; init; }
+    public bool IsTranslucent { get; init; }
+    public bool DepthWrite { get; init; } = true;
+    public string DisplayFace { get; init; } = "both";
+    public int Priority { get; init; }
     public VisualModelTexture?[] Textures { get; } = new VisualModelTexture?[8];
     public string[] UvSets { get; } = ["_u0", "_u1", "_u2", "_u3"];
     public Vector4[] VertexColors { get; set; } = [];
@@ -47,13 +52,22 @@ internal static class ToolboxTotkMaterial
         var options = Enumerable.Range(0, shader.ShaderOptions?.Count ?? 0)
             .ToDictionary(i => shader.ShaderOptionDict.GetKey(i), i => shader.ShaderOptions![i]);
         if (!options.Keys.Any(k => k is "o_albedo_color" or "o_emission_color" or "o_material_behave" || k.StartsWith("o_texcoord") || k.StartsWith("o_texture"))) return;
-        var result = new TotkPreviewMaterial(); mesh.Material.Totk = result;
         int O(string key, int fallback) => options.TryGetValue(key, out var text) && int.TryParse(text.Trim().Trim('(', ')'), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) ? n : fallback;
         bool B(string key, bool fallback) => options.TryGetValue(key, out var text) && bool.TryParse(text.Trim().Trim('(', ')'), out bool b) ? b : O(key, fallback ? 1 : 0) != 0;
-        void I(string key, int value) => result.Integers["totk" + key] = value;
         string R(string name, string fallback) => m.RenderInfos?.FirstOrDefault(r => r.Name == name) is { } r
             ? r.Type == Res.RenderInfoType.String ? r.GetValueStrings().FirstOrDefault() ?? fallback
-            : r.Type == Res.RenderInfoType.Int32 ? r.GetValueInt32s().FirstOrDefault().ToString(CultureInfo.InvariantCulture) : fallback : fallback;
+            : r.Type == Res.RenderInfoType.Int32 ? r.GetValueInt32s().FirstOrDefault().ToString(CultureInfo.InvariantCulture)
+            : r.GetValueSingles().FirstOrDefault().ToString(CultureInfo.InvariantCulture) : fallback;
+        var result = new TotkPreviewMaterial
+        {
+            IsSeal = R("gsys_pass", "") == "seal",
+            IsTranslucent = R("gsys_render_state_mode", "opaque") is "translucent" or "custom",
+            DepthWrite = R("gsys_depth_test_write", "true") is "true" or "1",
+            DisplayFace = R("gsys_render_state_display_face", "both"),
+            Priority = int.TryParse(R("gsys_priority", "0"), out var priority) ? priority : 0
+        };
+        mesh.Material.Totk = result;
+        void I(string key, int value) => result.Integers["totk" + key] = value;
         var semantic = Enumerable.Range(0, shader.SamplerAssigns?.Count ?? 0).Select(shader.SamplerAssignDict.GetKey).ToArray();
         var assigned = shader.SamplerAssigns?.ToArray() ?? [];
         int slots = Math.Min(8, assigned.Length > 0 ? assigned.Length : m.TextureRefs.Count);
@@ -122,7 +136,8 @@ internal static class ToolboxTotkMaterial
         I("AlphaTestEnabled", alphaTest is "true" or "1" ? 1 : 0);
         I("AlphaTestFunc", R("gsys_alpha_test_func", "") switch { "gequal" => 0, "greater" => 1, "equal" => 2, "less" => 3, "lequal" => 4, "notequal" => 5, "never" => 6, "always" => 7, _ => O("gsys_alpha_test_func", 0) });
         I("ForceOpaqueOutput", R("gsys_render_state_mode", "opaque") is "opaque" or "mask" ? 1 : 0);
-        result.Scalars["gsys_alpha_test_ref_value"] = Float(m, "gsys_alpha_test_ref_value", .1f);
+        result.Scalars["gsys_alpha_test_ref_value"] = Float(m, "gsys_alpha_test_ref_value",
+            float.TryParse(R("gsys_alpha_test_value", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var alphaReference) && float.IsFinite(alphaReference) ? alphaReference : .1f);
         int emission = B("o_enable_emission", false) ? Resolve("o_emission_color", Find("_e0", "Emission0", "_em0")) : -1;
         int expression = Find("_n1");
         if (O("o_emission_color", 0) >= 200 && emission >= 0 && expression >= 0 && Assigned(emission) == Assigned(expression) && O($"o_texture{expression}_texcoord", -1) >= 0) emission = expression;

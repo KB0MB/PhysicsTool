@@ -3363,6 +3363,7 @@ public sealed partial class HkclService
         if (GetValue(simulationInfo, "gravity") is Vector4 gravity)
             preview.Gravity = new Vector3(gravity.X, gravity.Y, gravity.Z);
         preview.DampingPerSecond = Convert.ToSingle(GetValue(simulationInfo, "globalDampingPerSecond") ?? 0.0f, CultureInfo.InvariantCulture);
+        preview.TotalMass = Convert.ToSingle(GetValue(simData, "totalMass") ?? preview.Particles.Sum(p => p.Mass), CultureInfo.InvariantCulture);
         preview.CollisionTolerance = Convert.ToSingle(GetValue(simulationInfo, "collisionTolerance") ?? 0.0f, CultureInfo.InvariantCulture);
         var hkclTransferMotion = GetValue(simData, "transferMotionData");
         preview.TransferMotionEnabled = ToBool(GetValue(simData, "transferMotionEnabled"));
@@ -5760,14 +5761,16 @@ public sealed partial class HkclService
                 return Array.Empty<ParticleColliderOption>();
 
             return bphclSimulation.CollidableItemIndices
-                .Take(31)
-                .Select((itemIndex, bitIndex) =>
+                .Select((itemIndex, slot) => (itemIndex, slot))
+                .GroupBy(value => Math.Min(value.slot, 30))
+                .Select(group =>
                 {
-                    var collider = bphcl.Colliders.FirstOrDefault(value => value.ItemIndex == itemIndex);
+                    var entries = group.Select(entry => bphcl.Colliders.FirstOrDefault(value => value.ItemIndex == entry.itemIndex)).ToArray();
                     return new ParticleColliderOption(
-                        bitIndex,
-                        collider?.Index ?? -1,
-                        collider?.Name ?? $"Collider item {itemIndex}");
+                        group.Key,
+                        entries.Length == 1 ? entries[0]?.Index ?? -1 : -1,
+                        string.Join(", ", entries.Select((collider, index) => collider?.Name ?? $"Collider slot {group.Key + index}")))
+                        { SlotCount = entries.Length };
                 })
                 .ToArray();
         }
@@ -7840,15 +7843,28 @@ public sealed partial class HkclService
         }
     }
 
-    private static void AddNativeBphclPreviewColliders(ParticlePreviewData preview, NativeBphclDocument document, int clothIndex)
+    private static void AddNativeBphclPreviewColliders(ParticlePreviewData preview, NativeBphclDocument document, int clothIndex,
+        NativeBphclSimulateConfig? config = null)
     {
-        var bones = document.Skeletons.ElementAtOrDefault(clothIndex)?.Bones ?? Array.Empty<NativeBphclBone>();
-        var referencedColliderItems = document.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths
-            .SelectMany(simulation => simulation.CollidableItemIndices)
-            .ToHashSet() ?? new HashSet<int>();
-        foreach (var collider in document.Colliders.Where(collider => collider.Enabled && referencedColliderItems.Contains(collider.ItemIndex)))
+        var simulation = document.Cloths.ElementAtOrDefault(clothIndex)?.SimCloths.FirstOrDefault();
+        if (simulation == null) return;
+        var skeleton = document.Skeletons.ElementAtOrDefault(clothIndex);
+        var map = simulation.CollidableTransformMap;
+        var colliders = document.Colliders.ToDictionary(c => c.ItemIndex);
+        for (var slot = 0; slot < simulation.CollidableItemIndices.Count; slot++)
         {
-            var boneIndex = ResolveColliderBoneIndex(collider.Name, bones.Select(bone => (bone.Index, bone.Name)), -1);
+            if (!colliders.TryGetValue(simulation.CollidableItemIndices[slot], out var collider) || !collider.Enabled ||
+                config != null && !config.UseAllInstanceCollidables && !config.InstanceCollidablesUsed.Contains(slot)) continue;
+            var boneIndex = -1;
+            var transform = GetNativeColliderTransform(collider);
+            // The per-cloth attachment map is authoritative in both rest view and simulation.
+            // A disabled map must not acquire an animation binding from the collider's name.
+            if (map.TransformSetIndex == 0 && skeleton != null && slot < map.TransformIndices.Count &&
+                slot < map.Offsets.Count && map.TransformIndices[slot] < skeleton.Bones.Count)
+            {
+                boneIndex = checked((int)map.TransformIndices[slot]);
+                transform = map.Offsets[slot] * GetBphclBoneWorldTransform(skeleton, boneIndex);
+            }
             var shape = collider.Shape;
             var kind = shape.TypeName switch
             {
@@ -7859,23 +7875,24 @@ public sealed partial class HkclService
                 _ => ColliderPreviewKind.Point
             };
 
-            var start = TransformNativeColliderPoint(collider, shape.Start);
-            var end = TransformNativeColliderPoint(collider, shape.End);
-            var planeNormal = TransformNativeColliderDirection(collider, new Vector3(shape.PlaneEquation.X, shape.PlaneEquation.Y, shape.PlaneEquation.Z));
+            var start = TransformHkclColliderPoint(transform, shape.Start);
+            var end = TransformHkclColliderPoint(transform, shape.End);
+            var planeNormal = TransformHkclColliderDirection(transform, new Vector3(shape.PlaneEquation.X, shape.PlaneEquation.Y, shape.PlaneEquation.Z));
             if (kind == ColliderPreviewKind.Plane)
             {
-                var localNormal = new Vector3(shape.PlaneEquation.X, shape.PlaneEquation.Y, shape.PlaneEquation.Z);
-                start = TransformNativeColliderPoint(collider, new Vector4(localNormal * -shape.PlaneEquation.W, 0.0f));
+                start = TransformHkclColliderPoint(transform, new Vector4(GetPlanePoint(shape.PlaneEquation), 0.0f));
                 end = start;
             }
 
             preview.Colliders.Add(new ColliderPreviewShape
             {
                 Index = collider.Index,
+                CollisionBit = slot,
                 Name = collider.Name,
                 BoneIndex = boneIndex,
                 Start = start,
                 End = end,
+                TransformOrigin = transform.Translation,
                 Radius = shape.Radius,
                 EndRadius = shape.EndRadius,
                 PlaneNormal = NormalizeOr(planeNormal, Vector3.UnitY),

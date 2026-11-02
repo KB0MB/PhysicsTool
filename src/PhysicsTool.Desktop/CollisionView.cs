@@ -10,7 +10,7 @@ using System.Numerics;
 
 namespace PhysicsTool.Desktop;
 
-internal sealed class CollisionWindow : Window
+internal sealed class CollisionView : UserControl
 {
     private readonly PhysicsViewport _view = new() { ShowPhysics = false, CanSelect = false };
     private readonly ComboBox _target = new() { Name = "CollisionTarget", ItemsSource = new[] { "BotW - Wii U actor (.hkrb)", "BotW - Switch actor (.hkrb)", "BotW - Wii U static (.hksc)", "TotK - Polytope (.bgyml)" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -26,8 +26,11 @@ internal sealed class CollisionWindow : Window
     private readonly ProgressBar _progress = new() { IsIndeterminate = true, IsVisible = false, Height = 3 };
     private readonly Button _preview, _generate, _export;
     private readonly Control _inputs;
+    private readonly Grid _editor;
     private readonly StackPanel _bodyField;
     private readonly Button _import, _open;
+    private readonly Button _actorButton;
+    private string? _actorPath, _actorEntry;
     private IReadOnlyList<BotwCollisionMesh> _meshes = [];
     private CollisionPreview? _prepared;
     private CollisionSettings? _preparedSettings;
@@ -36,23 +39,28 @@ internal sealed class CollisionWindow : Window
     internal PhysicsViewport Viewport => _view;
     internal ModelGlControl? ModelSurface { get; }
     internal bool Busy => _busy;
+    internal Func<string?, Task>? OpenStaticCompound { get; set; }
+    internal Action? OpenShrineScene { get; set; }
+    private Window OwnerWindow => TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("Collision workspace is not attached.");
+    private IStorageProvider StorageProvider => OwnerWindow.StorageProvider;
 
-    internal CollisionWindow(bool graphics = true, string? actorPath = null, string? actorEntry = null)
+    internal CollisionView(bool graphics = true, string? actorPath = null, string? actorEntry = null)
     {
-        Title = "Collision"; Width = 1180; Height = 780; MinWidth = 900; MinHeight = 600; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var shell = new DockPanel();
         var bar = new WrapPanel { Margin = new Thickness(8) };
         _open = Button("Open actor / collision", async () => await Open(false)); bar.Children.Add(_open);
         _import = Button("Import mesh", async () => await Open(true)); bar.Children.Add(_import);
-        if (actorPath != null && !actorPath.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase))
-            bar.Children.Add(Button("Current actor", async () => await LoadPathAsync(actorPath, false, actorEntry)));
+        bar.Children.Add(Button("Static compound...", async () => { if (!_busy && OpenStaticCompound != null) await OpenStaticCompound(null); }));
+        bar.Children.Add(Button("Shrine scene...", () => { if (!_busy) OpenShrineScene?.Invoke(); return Task.CompletedTask; }));
+        _actorButton = Button("Current actor", async () => { if (_actorPath != null) await LoadPathAsync(_actorPath, false, _actorEntry); });
+        bar.Children.Add(_actorButton); SetActorSource(actorPath, actorEntry);
         var wire = new CheckBox { Content = "Wireframe", Margin = new Thickness(12, 0, 0, 0) };
         wire.IsCheckedChanged += (_, _) => { _view.Wireframe = wire.IsChecked == true; _view.InvalidateVisual(); }; bar.Children.Add(wire);
-        ToolTip.SetTip(_open, "BotW actor packs, HKRB/HKSC, or TotK polytope ShapeParam.");
+        ToolTip.SetTip(_open, "BotW actor packs, HKRB/HKSC, TotK polytope ShapeParam, or BPHSC static compounds.");
         ToolTip.SetTip(_import, "Source geometry: FBX, DAE, OBJ, glTF, GLB or BFRES. This creates new collision, not a lossless actor-pack edit.");
         DockPanel.SetDock(bar, Dock.Top); shell.Children.Add(bar);
         var footer = new StackPanel(); footer.Children.Add(_progress); footer.Children.Add(_status); DockPanel.SetDock(footer, Dock.Bottom); shell.Children.Add(footer);
-        var split = new Grid { ColumnDefinitions = new ColumnDefinitions("*,5,370") }; split.ColumnDefinitions[0].MinWidth = 400; split.ColumnDefinitions[2].MinWidth = 320;
+        var split = _editor = new Grid { IsVisible = false, ColumnDefinitions = new ColumnDefinitions("*,5,370") }; split.ColumnDefinitions[0].MinWidth = 400; split.ColumnDefinitions[2].MinWidth = 320;
         var scene = new Grid();
         if (graphics) { var gl = ModelSurface = new ModelGlControl(_view); gl.RenderFailed += _ => _status.Text = "GPU preview unavailable; showing wireframe."; scene.Children.Add(gl); }
         var camera = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
@@ -87,7 +95,6 @@ internal sealed class CollisionWindow : Window
         _coordinates.SelectionChanged += (_, _) => InvalidatePreview(); _scale.ValueChanged += (_, _) => InvalidatePreview();
         foreach (var number in _offset) number.ValueChanged += (_, _) => InvalidatePreview();
         _compress.IsCheckedChanged += (_, _) => InvalidatePreview(); _bodyName.TextChanged += (_, _) => InvalidatePreview();
-        Closing += (_, e) => { if (_busy) e.Cancel = true; };
         UpdateTarget(); UpdateActions();
     }
     private static NumericUpDown Number(string name, decimal value, decimal minimum = -1000000) => new()
@@ -97,6 +104,11 @@ internal sealed class CollisionWindow : Window
     private Button Button(string title, Func<Task> action)
     { var b = new Button { Content = title, Margin = new Thickness(0, 0, 6, 0), HorizontalAlignment = HorizontalAlignment.Stretch }; b.Click += async (_, _) => { try { await action(); } catch (Exception ex) { Error(ex); } }; return b; }
     private void Error(Exception ex) => _status.Text = UserFacingExceptionFormatter.Format(ex);
+    internal void SetActorSource(string? path, string? entry)
+    {
+        _actorPath = path; _actorEntry = entry;
+        _actorButton.IsVisible = path != null && !path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase);
+    }
     private void UpdateTarget()
     {
         _compress.IsVisible = _target.SelectedIndex == 2; _bodyField.IsVisible = _target.SelectedIndex is 0 or 1;
@@ -116,7 +128,7 @@ internal sealed class CollisionWindow : Window
     }
     private void UpdateActions()
     {
-        _open.IsEnabled = _import.IsEnabled = _inputs.IsEnabled = !_busy;
+        _open.IsEnabled = _import.IsEnabled = _actorButton.IsEnabled = _inputs.IsEnabled = !_busy;
         _preview.IsEnabled = !_busy && _meshes.Any(m => m.Included);
         _generate.IsEnabled = _export.IsEnabled = !_busy && _prepared != null;
         _progress.IsVisible = _busy;
@@ -129,12 +141,17 @@ internal sealed class CollisionWindow : Window
     }
     private async Task Open(bool model)
     {
-        var extensions = model ? PortableModelImporter.Extensions.Select(e => "*" + e).ToArray() : new[] { "*.sbactorpack", "*.hkrb", "*.hksc", "*.shksc", "*.bgyml", "*.yaml", "*.yml" };
+        var extensions = model ? PortableModelImporter.Extensions.Select(e => "*" + e).ToArray() : new[] { "*.sbactorpack", "*.hkrb", "*.hksc", "*.shksc", "*.bgyml", "*.yaml", "*.yml", "*.bphsc", "*.bphsc.zs" };
         var files = await StorageProvider.OpenFilePickerAsync(new() { Title = model ? "Import collision source mesh" : "Open actor or collision", FileTypeFilter = [new(model ? "Source meshes" : "Collision resources") { Patterns = extensions }] });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) await LoadPathAsync(path, model);
     }
     internal async Task LoadPathAsync(string path, bool model, string? actorEntry = null)
     {
+        if (!model && BphscDocument.IsPath(path))
+        {
+            if (!_busy && OpenStaticCompound != null) await OpenStaticCompound(path);
+            return;
+        }
         await Work("Loading collision source...", async () =>
         {
             var extension = Path.GetExtension(path).ToLowerInvariant();
@@ -192,6 +209,8 @@ internal sealed class CollisionWindow : Window
         var preview = await Task.Run(() => CollisionWorkflow.Prepare(source, settings));
         var model = await Task.Run(() => BotwCollisionVisualModel.Create(preview.Meshes, _path));
         _prepared = preview; _preparedSettings = settings; _view.SetModel(model);
+        _editor.IsVisible = true;
+        Avalonia.Threading.Dispatcher.UIThread.Post(_view.Fit, Avalonia.Threading.DispatcherPriority.Loaded);
         var size = model.BoundsMaximum - model.BoundsMinimum;
         _summary.Text = $"{preview.Meshes.Count:N0} {(preview.Polytope != null ? "hulls" : "meshes")} / {model.TriangleCount:N0} triangles\nSize: {size.X:G5} x {size.Y:G5} x {size.Z:G5}";
         _status.Text = preview.Polytope != null ? "Hull preview ready. Convex hulls can fill concave gaps." : "Collision preview ready.";

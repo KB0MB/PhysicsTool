@@ -1,4 +1,4 @@
-param([string]$Version = '2.1.0', [switch]$SkipSource)
+param([string]$Version = '2.2.0', [switch]$SkipSource)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zip-unix.ps1')
 $root = Split-Path $PSScriptRoot

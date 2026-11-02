@@ -20,6 +20,11 @@ public sealed partial class MainWindow
     private void UpdateImportedModelPose(bool captureRest = false)
     {
         if (IsActorMode) return;
+        if (Session.AllClothsSelected)
+        {
+            if (_importedModel != null) _viewport.SetModelPose(_importedModel.Rest);
+            return;
+        }
         var entry = Session.SelectedEntryId;
         if (!ReferenceEquals(_bindingDocument, Session.Document) || _bindingEntry != entry)
         {

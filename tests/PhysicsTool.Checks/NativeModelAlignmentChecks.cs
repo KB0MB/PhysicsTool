@@ -231,7 +231,7 @@ internal static class NativeModelAlignmentChecks
             window.LoadPath(physicsPath); window.ShowEditor(); Dispatcher.UIThread.RunJobs();
             if (!modelFirst) Import();
             var doc = window.Session.Document; var original = doc.CaptureState();
-            var names = Enumerable.Range(0, doc.GetClothSummaries().Count).Select(doc.GetClothName).ToArray();
+            var names = Enumerable.Range(0, doc.GetClothSummaries().Count).Select(doc.GetClothName).Append("All").ToArray();
             ComboBox Selector() => window.GetVisualDescendants().OfType<ComboBox>().Single(c =>
                 c.ItemsSource?.Cast<object>().OfType<string>().SequenceEqual(names) == true);
             void Select(int i) { Selector().SelectedIndex = i; Dispatcher.UIThread.RunJobs(); }

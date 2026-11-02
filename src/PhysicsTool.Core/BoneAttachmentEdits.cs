@@ -39,13 +39,13 @@ public static class BoneAttachmentEdits
         else
         {
             if (document.IsBphcl) throw new InvalidOperationException("Native BPHCL collider rebinding is not available yet. The existing bindings were not changed.");
-            var rows = document.GetColliderRows(cloth);
+            var rows = document.GetColliderEditRows(cloth);
             var anchor = rows.Single(c => c.Index == anchorIndex);
             if (rows.Count(c => selection.Contains(c.Index)) != selection.Count) throw new ArgumentException("A selected collider no longer exists.");
             var center = new Vector3(anchor.StartX + anchor.EndX, anchor.StartY + anchor.EndY, anchor.StartZ + anchor.EndZ) * .5f;
             var moved = SelectionTransforms.TransformColliders(rows, selection, Matrix4x4.CreateTranslation(position - center));
             foreach (var collider in moved) { collider.BoneIndex = target.Index; collider.BoneName = target.Name; }
-            document.UpdateColliderRows(moved);
+            document.UpdateColliderEditRows(moved);
         }
     }
 }

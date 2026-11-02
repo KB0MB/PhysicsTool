@@ -101,6 +101,7 @@ public sealed partial class MainWindow
                 _inspectorWidth = _workspace.ColumnDefinitions[2].Width;
             }
             else { _actorTimer.Stop(); _actorScene.Dispose(); }
+            ClearActorAnimations();
             _actorScene = scene; _actorFrame = 0; _actorPlaying = _actorSimulating = false;
             _updatingTimeline = true;
             _animations.ItemsSource = new[] { "Rest pose" }.Concat(scene.Animations.Select(a => a.Name)).ToArray();
@@ -124,6 +125,7 @@ public sealed partial class MainWindow
         CancelTimelineScrub();
         _actorLoad?.Cancel(); _actorTimer.Stop();
         if (_actorScene == null) return;
+        ClearActorAnimations();
         _actorScene.Dispose(); _actorScene = null; _actorPlaying = _actorSimulating = false;
         _viewport.ReadOnlyActorView = false;
         _actorBar.IsVisible = false; _inspector.IsVisible = _workspaceSplit.IsVisible = _editorActions.IsVisible = true;

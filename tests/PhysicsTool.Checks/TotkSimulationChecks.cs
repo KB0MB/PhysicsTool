@@ -61,6 +61,20 @@ internal static class TotkSimulationChecks
         solver = new(contact); solver.Step(dt);
         Require(solver.GetPositions()[0] == contact.Particles[0].Position, "Disabled collision mask");
         foreach (var profile in new[] { ClothSolverProfile.TotkExperimental, ClothSolverProfile.BotwPreview })
+        foreach (var slot in new[] { -1, 0, 29, 30, 31, 32, 35, 63 })
+        foreach (var mask in new[] { 0u, 1u, 1u << 29, 1u << 30, 1u << 31, uint.MaxValue })
+        {
+            var boundary = new ParticlePreviewData { SolverProfile = profile, Gravity = Vector3.Zero };
+            boundary.Particles.Add(new() { Index = 0, Mass = 1, InverseMass = 1, Position = new(.5f, 0, 0), CollisionMask = mask });
+            boundary.Colliders.Add(new() { Index = 7, CollisionBit = slot, Kind = ColliderPreviewKind.Sphere, Radius = 1 });
+            var expectedContact = slot >= 0 && (profile == ClothSolverProfile.TotkExperimental || slot < 31) &&
+                (mask & (1u << Math.Min(slot, 30))) != 0;
+            var boundarySolver = new HkclPreviewSimulator(boundary); boundarySolver.Step(dt);
+            Require(MathF.Abs(boundarySolver.GetPositions()[0].X - (expectedContact ? 1 : .5f)) < 1e-5f,
+                $"Collision mask boundary: {profile}, slot {slot}, mask {mask:X8}");
+        }
+        Console.WriteLine("PASS: TotK slots 30+ share bit 30 without wrapping or consuming landscape bit 31; BotW unchanged.");
+        foreach (var profile in new[] { ClothSolverProfile.TotkExperimental, ClothSolverProfile.BotwPreview })
         foreach (var distance in new[] { .5f, 1f, 1.5f, 2f, 3f, 0f })
         foreach (var fixedA in new[] { false, true })
         {

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.1.0',
+    [string]$Version = '2.2.0',
     [ValidateSet('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','osx-arm64')]
     [string[]]$Runtimes = @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','osx-arm64'),
     [switch]$SkipSource

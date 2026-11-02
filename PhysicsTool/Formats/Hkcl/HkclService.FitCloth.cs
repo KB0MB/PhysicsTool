@@ -9,13 +9,21 @@ public sealed partial class HkclService
     {
         if (!HasDocument || IsHelperBoneSidecar || IsHkrg)
             throw new InvalidOperationException("Select a cloth first.");
-        if (IsBphcl)
-            throw new InvalidOperationException("Fit cloth to bones currently supports HKCL. Native BPHCL rest-shape rebuilding is not available yet.");
         // The same ownership and operator checks apply to any whole-rest-shape edit.
-        ValidateWholeClothMirror(clothIndex);
-        var preview = GetParticlePreview(clothIndex);
+        if (_bphcl?.NativeDocument is { } native) NativeBphclParticleEditor.ValidateRestShape(native, clothIndex);
+        else ValidateWholeClothMirror(clothIndex, true);
+        var preview = GetClothFitPreview(clothIndex);
         if (preview.BoneBindings.Count == 0 || preview.BoneBindings.Any(b => !b.UseNativeSimpleDeformer))
             throw new InvalidOperationException("This cloth needs native triangle-to-bone bindings before its shape can be fitted.");
+    }
+
+    private ParticlePreviewData GetClothFitPreview(int clothIndex)
+    {
+        var preview = GetParticlePreview(clothIndex);
+        // Evaluate the authored centroid-frame matrices, never the preview's
+        // fallback calibration against the already edited skeleton.
+        if (IsBphcl) foreach (var binding in preview.BoneBindings) binding.UseNativeSimpleDeformer = true;
+        return preview;
     }
 
     public int FitClothToBones(int clothIndex)
@@ -33,7 +41,7 @@ public sealed partial class HkclService
         var snapshot = CaptureState();
         try
         {
-            var preview = GetParticlePreview(clothIndex);
+            var preview = GetClothFitPreview(clothIndex);
             var before = GetBoneRows(clothIndex);
             var rows = GetBoneRows(clothIndex).ToDictionary(b => b.Index);
             var oldWorld = BoneEditGeometry.WorldTransforms(before);
@@ -78,7 +86,7 @@ public sealed partial class HkclService
 
     private int FitClothToBonesCore(int clothIndex, ParticlePreviewData? originalPreview = null, IReadOnlyDictionary<int, Vector3>? fixedTargets = null)
     {
-        var preview = GetParticlePreview(clothIndex);
+        var preview = GetClothFitPreview(clothIndex);
         var before = GetParticleRows(clothIndex);
         var old = before.ToDictionary(p => p.Index, ToPosition);
         var desiredBones = preview.Bones.ToDictionary(b => b.Index,
@@ -151,14 +159,24 @@ public sealed partial class HkclService
         if (positions.Values.Any(p => !float.IsFinite(p.LengthSquared())) || scales.Values.Any(s => !float.IsFinite(s) || s < 1e-5f))
             throw new InvalidOperationException("These bone positions collapse part of the cloth. No changes were applied.");
 
+        // Native thin-triangle frames accumulate a few micrometers of float
+        // round-off. Do not re-quantize the packed skin for that noise alone.
+        var toleranceSquared = IsBphcl ? 1e-10f : 1e-12f;
+        var moved = positions.Count(p => Vector3.DistanceSquared(p.Value, old[p.Key]) > toleranceSquared);
+        if (moved == 0) return 0;
         ApplyClothRestShape(clothIndex, preview, old, positions, scales, desiredBones);
-        return positions.Count(p => Vector3.DistanceSquared(p.Value, old[p.Key]) > 1e-12f);
+        return moved;
     }
 
     private void ApplyClothRestShape(int clothIndex, ParticlePreviewData preview,
         IReadOnlyDictionary<int, Vector3> old, IReadOnlyDictionary<int, Vector3> positions,
         IReadOnlyDictionary<int, float> scales, IReadOnlyDictionary<int, Matrix4x4> desiredBones)
     {
+        if (IsBphcl)
+        {
+            ApplyBphclRestShape(clothIndex, preview, old, positions, scales, desiredBones);
+            return;
+        }
         var cloth = GetClothDatas(RequireRoot()).ElementAt(clothIndex);
         var simulation = GetFirst(GetValue(cloth, "simClothDatas"));
         FitConstraintRestData(cloth, simulation!, old, positions, scales);

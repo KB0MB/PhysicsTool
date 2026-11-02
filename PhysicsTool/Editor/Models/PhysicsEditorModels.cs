@@ -329,7 +329,10 @@ public sealed record ClothStateTransformSetAccessData(
 
 // Collision masks are stored as bits in the native formats. The editor uses
 // these options to expose the cloth-local collider list instead of raw bits.
-public sealed record ParticleColliderOption(int BitIndex, int ColliderIndex, string Name);
+public sealed record ParticleColliderOption(int BitIndex, int ColliderIndex, string Name)
+{
+    public int SlotCount { get; init; } = 1;
+}
 
 public sealed class BoneEditRow
 {
@@ -431,6 +434,7 @@ public sealed class ParticlePreviewData
     public bool HasViewRoot { get; set; }
     public Vector3 Gravity { get; set; } = new(0.0f, -9.81f, 0.0f);
     public float DampingPerSecond { get; set; }
+    public float? TotalMass { get; set; }
     public float CollisionTolerance { get; set; }
     public List<int> ConstraintExecution { get; } = new();
     public bool PinchDetectionEnabled { get; set; }

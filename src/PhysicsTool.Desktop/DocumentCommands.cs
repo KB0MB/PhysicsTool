@@ -11,6 +11,8 @@ public sealed partial class MainWindow
 {
     private static readonly FilePickerFileType[] PhysicsFileTypes =
     [new("Physics") { Patterns = ["*.hkcl", "*.bphcl", "*.bphyssb", "*.bphhb", "*.hkrg"] }];
+    private static readonly FilePickerFileType[] OpenPhysicsFileTypes =
+    [new("Physics") { Patterns = ["*.hkcl", "*.bphcl", "*.bphyssb", "*.bphhb", "*.hkrg", "*.bphysics"] }];
 
     private async Task RunCommand(Func<Task> command)
     {
@@ -36,8 +38,12 @@ public sealed partial class MainWindow
     {
         if (!Session.CanRemoveEntry || _timer.IsEnabled) return;
         var label = Session.Document.GetClothSummaries()[Session.ClothIndex];
-        if (!await Dialogs.Confirm(this, Session.Document.IsHelperBoneSidecar ? "Delete helper group" : "Remove cloth", $"Remove {label}?")) return;
-        Session.RemoveSelected(); Refresh(true); _status.Text = "Removed selected entry.";
+        try
+        {
+            if (!await Dialogs.Confirm(this, Session.Document.IsHelperBoneSidecar ? "Delete helper group" : "Remove cloth", $"Remove {label}?")) return;
+            Session.RemoveSelected(); Refresh(true); _status.Text = "Removed selected entry.";
+        }
+        finally { _overview.RestoreCurrentFocus(); }
     }
     private async Task RenameCloth()
     {

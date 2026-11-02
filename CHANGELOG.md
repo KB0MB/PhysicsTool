@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.2.0
+
+- Added an experimental TotK shrine editor with a searchable scene browser, textured models, WASD camera controls, adjustable camera speed and automatic loading of matching scene and collision files.
+- Added shrine actor movement, rotation, scaling, duplication and deletion, including multi-selection, undo/redo and matching updates to supported collision. Edited shrines save to a separate mod folder.
+- Added editing for existing GroundControl groups and movement settings, with checks for mismatched actor and collision links.
+- Added BPHSC editing for existing collision bodies, group bindings, actor links and water. Creating new BPHSC collision geometry is not supported yet.
+- Moved collision tools into the main window with Back navigation, and kept the empty viewport hidden until a file is loaded.
+- Added a BPHYSICS editor with searchable cloth slots, wind and attachment settings, duplication, reordering and undo/redo.
+- Improved BotW wind previews using BPHYSICS settings. Made exported wind settings account for cloth mass to reduce excessive wind on lightweight converted cloths.
+- Added BPHCL cloth fitting, matching bones to a loaded model and bone-branch resizing. Particles and constraints update together without changing bone scale values or particle masses.
+- Added All at the top of the editor's cloth dropdown for resizing an entire file, with adjustable XYZ factors and undo/redo.
+- Made individual cloth resizing create separate copies of shared colliders when needed.
+- Fixed BPHCL colliders changing position when simulation starts.
+- Fixed simulation and collider deletion for BPHCL cloths with more than 31 colliders.
+- Added actor exports for BFRES models, cloth, helper/support bones and BotW BPHYSICS, including loaded equipment.
+- Added animation BFRES/SBFRES loading in the actor viewer, with imported animations kept when swapping Link's equipment.
+- Fixed support/helper bones with a Link: prefix not binding to the model.
+- Fixed repeated Delete/Enter after removing cloths.
+- Added remembered window position and size, Maximize on startup and safe repositioning when a monitor is disconnected.
+- Updated the editing documentation and translations.
+
 ## 2.1.0
 
 - Added Textured, Wireframe and Edged Faces display modes for imported models and actor previews.

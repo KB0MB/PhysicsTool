@@ -27,6 +27,7 @@ public sealed partial class MainWindow
 
     private async Task OpenEditorAnimation()
     {
+        if (!IsActorMode && Session.AllClothsSelected) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Import animation",
             FileTypeFilter = [new("BFRES skeletal animations") { Patterns = ["*.bfres", "*.sbfres"] }] });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) await LoadAnimationPathAsync(path);
@@ -38,13 +39,19 @@ public sealed partial class MainWindow
     }
     internal async Task LoadAnimationsAsync(Func<IReadOnlyList<ModelAnimationClip>> read, string path)
     {
+        if (IsActorMode)
+        {
+            await LoadActorAnimationsAsync(read, path);
+            return;
+        }
+        if (Session.AllClothsSelected) throw new InvalidOperationException("Select an individual cloth before importing animations.");
         if (_importedModel == null || IsActorMode) throw new InvalidOperationException("Load an editor model before importing animations.");
         var rig = _importedModel; var request = ++_animationRequest;
         _animationLoading = true; UpdateModelActions();
         try
         {
             var clips = await Task.Run(read);
-            if (request != _animationRequest || !ReferenceEquals(rig, _importedModel) || IsActorMode) return;
+            if (request != _animationRequest || !ReferenceEquals(rig, _importedModel) || IsActorMode || Session.AllClothsSelected) return;
             var names = rig.Rest.Bones.Select(b => ModelAnimationClip.Normalize(b.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
             clips = clips.Where(c => c.BoneNames.Any(n => names.Contains(ModelAnimationClip.Normalize(n)))).ToArray();
             if (clips.Count == 0) throw new InvalidDataException("No animation tracks match this model's bone names.");
@@ -68,7 +75,7 @@ public sealed partial class MainWindow
     }
     internal void SelectEditorAnimation(int index)
     {
-        if (IsActorMode) return;
+        if (IsActorMode || Session.AllClothsSelected) return;
         if (_ragdollSolver != null) StopSimulation();
         PauseEditorAnimation(); _editorClipIndex = Math.Clamp(index, -1, _editorClips.Count - 1); _editorFrame = 0;
         _updatingTimeline = true; _animations.SelectedIndex = _editorClipIndex + 1; _updatingTimeline = false;
@@ -84,14 +91,14 @@ public sealed partial class MainWindow
     }
     internal void SeekEditorAnimation(double frame)
     {
-        if (EditorClip == null || IsActorMode) return;
+        if (EditorClip == null || IsActorMode || Session.AllClothsSelected) return;
         if (!_timelineScrubbing) PauseEditorAnimation();
         _editorFrame = Math.Clamp(frame, 0, EditorClip.EndFrame);
         PoseEditorAnimation(0, true, false); ResetTimelineClocks(); UpdateEditorPlayback();
     }
     internal void ToggleEditorPlayback()
     {
-        if (EditorClip == null || IsActorMode) return;
+        if (EditorClip == null || IsActorMode || Session.AllClothsSelected) return;
         if (!_editorPlaying && _editorFrame >= EditorClip.EndFrame) SeekEditorAnimation(0);
         _editorPlaying = !_editorPlaying; UpdateEditorPlayback(); UpdateActions();
     }
@@ -108,7 +115,7 @@ public sealed partial class MainWindow
         var kind = _editorPlaying ? Lucide.Avalonia.LucideIconKind.Pause : Lucide.Avalonia.LucideIconKind.Play;
         if (_actorPlay.Content is not Lucide.Avalonia.LucideIcon icon || icon.Kind != kind)
             _actorPlay.Content = new Lucide.Avalonia.LucideIcon { Kind = kind, Size = 18 };
-        _actorPlay.IsEnabled = _timeline.IsEnabled = EditorClip != null;
+        _actorPlay.IsEnabled = _timeline.IsEnabled = EditorClip != null && !Session.AllClothsSelected;
         _updatingTimeline = true;
         _timeline.Maximum = Math.Max(1, EditorClip?.EndFrame ?? 1); _timeline.Value = _editorFrame;
         _frameLabel.Text = $"{_editorFrame:0.0} / {EditorClip?.EndFrame ?? 0:0.0}";
@@ -120,7 +127,7 @@ public sealed partial class MainWindow
     }
     internal void AdvanceEditorPreview(float seconds)
     {
-        if (_timelineScrubbing) return;
+        if (_timelineScrubbing || Session.AllClothsSelected) return;
         if (_ragdollSolver != null)
         {
             _ragdollSolver.WindEnabled = _wind.IsChecked == true; _ragdollSolver.Step(seconds);
@@ -147,7 +154,7 @@ public sealed partial class MainWindow
     }
     private void PoseEditorAnimation(float seconds, bool reset, bool looped)
     {
-        if (_posingAnimation || IsActorMode || _importedModel == null || EditorClip == null) return;
+        if (_posingAnimation || IsActorMode || Session.AllClothsSelected || _importedModel == null || EditorClip == null) return;
         _posingAnimation = true;
         try
         {

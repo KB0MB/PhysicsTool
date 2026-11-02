@@ -18,6 +18,93 @@ internal static class Program
     {
         try
         {
+            if (args.Length >= 3 && args[0] == "--bphcl-delete-colliders")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                BphclColliderDeletionChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--bphcl-collision-layout")
+            {
+                BphclColliderPoseChecks.InspectSlots(args[1]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--bphcl-collider-poses")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                BphclColliderPoseChecks.Run(args[1], args[2]); BphclColliderPoseChecks.Ui(args[1]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--resize-all")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                WholeClothResizeChecks.Run(args[1], args[2]);
+                WholeClothResizeUiChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--bphcl-fit")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                BphclRestShapeChecks.Run(args[1], args[2]); BphclRestShapeChecks.Ui(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--delete-focus")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                DeletionFocusChecks.Run(args[1], args.ElementAtOrDefault(2)); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--actor-export-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                ActorExportChecks.Ui(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--actor-export-check") { ActorExportChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--bphysics-native") { BphysicsEditorChecks.Native(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--bphysics-editor")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                BphysicsEditorChecks.Run(args[1]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--botw-wind") { BotwWindChecks.Run(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--inspect-converted-wind") { BotwWindChecks.InspectConversion(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--export-converted-wind") { BotwWindChecks.ExportConvertedWind(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--survey-wind-mass") { BotwWindChecks.SurveyMass(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--botw-actor-wind") { BotwWindChecks.Actor(args[1]); return 0; }
+            if (args.Length >= 1 && args[0] == "--gpu-depth")
+            {
+                AppBuilder.Configure<ViewportDepthChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]); return ViewportDepthChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--shrine-textures")
+            { ShrineTextureChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--shrine-ground-control")
+            {
+                ShrineGroundControlChecks.Native(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--shrine-population")
+            { ShrinePopulationChecks.Native(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--shrine-collision-moves")
+            { ShrinePlacementChecks.Compounds(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--shrine-scene")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); ShrineSceneChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--workspace-navigation")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); WorkspaceNavigationChecks.Run(args[1]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--bphsc")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); BphscChecks.Run(args[1], args.ElementAtOrDefault(2)); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--actor-animation-import")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en");
+                for (int i = 2; i < args.Length; i++) ActorAnimationImportChecks.Run(Path.Combine(args[1], (i - 2).ToString()), args[i]);
+                return 0;
+            }
             if (args.Length >= 2 && args[0] == "--collider-shortcuts")
             {
                 AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
@@ -138,6 +225,11 @@ internal static class Program
             if (args.Length >= 1 && args[0] == "--botw-materials") { BotwMaterialChecks.Run(args.Skip(1).ToArray()); return 0; }
             if (args.Length >= 2 && args[0] == "--survey-material") { BotwMaterialChecks.Survey(args[1]); return 0; }
             if (args.Length >= 1 && args[0] == "--actor-appearance") { ActorAppearanceChecks.Run(args.Skip(1).ToArray()); return 0; }
+            if (args.Length >= 3 && args[0] == "--gpu-shrine")
+            {
+                ShrineGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(ShrineGpuChecks.Output); ShrineGpuChecks.Source = args[2];
+                AppBuilder.Configure<ShrineGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]); return ShrineGpuChecks.Result;
+            }
             if (args.Length >= 3 && args[0] == "--gpu-collision")
             {
                 CollisionGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(CollisionGpuChecks.Output); CollisionGpuChecks.Source = args[2];
@@ -226,9 +318,11 @@ internal static class Program
                 return GpuChecks.Result;
             }
             var output = Path.GetFullPath(args.FirstOrDefault() ?? "artifacts/checks"); Directory.CreateDirectory(output);
+            BotwWindChecks.Run(output);
             ClothFbxChecks.Run(Path.Combine(output, "cloth-fbx"));
             ClothConversionAudit.Synthetic();
             TotkSimulationChecks.Equations();
+            BphclColliderDeletionChecks.Synthetic();
             ActorParticleChecks.Synthetic();
             TotkPhysicsReferenceChecks.Synthetic();
             PlayerArmorChecks.Synthetic();
@@ -346,6 +440,11 @@ internal static class Program
             ModelBindingChecks.RunEditor(output);
             EditorAnimationChecks.Run(output);
             TuningWindowChecks.Run(window, output);
+            BotwWindChecks.Ui(output);
+            BphysicsEditorChecks.Run(Path.Combine(output, "bphysics-editor"));
+            DeletionFocusChecks.Run(Path.Combine(output, "delete-focus"));
+            foreach (var fixture in Directory.EnumerateFiles(output, "fixture-*.bphcl"))
+                BphclRestShapeChecks.Run(fixture, Path.Combine(output, "bphcl-fitting", Path.GetFileNameWithoutExtension(fixture)));
             window.Viewport.SelectRectangle(new Rect(0, 0, window.Viewport.Bounds.Width, window.Viewport.Bounds.Height), SelectionOperation.Replace);
             for (int cycle = 0; cycle < 3; cycle++)
             {

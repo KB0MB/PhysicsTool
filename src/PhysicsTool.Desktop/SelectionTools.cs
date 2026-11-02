@@ -11,7 +11,7 @@ public sealed partial class MainWindow
     private readonly WrapPanel _selectionTools = new();
     private readonly List<(MenuItem Menu, int Action)> _selectionMenus = new();
     private Button _copySelection = null!, _pasteSelection = null!, _mirrorSelection = null!;
-    private Button _mirrorCloth = null!, _fitCloth = null!, _resizeBranch = null!, _matchModelBones = null!;
+    private Button _mirrorCloth = null!, _fitCloth = null!, _resizeBranch = null!, _matchModelBones = null!, _resizeAllCloths = null!;
     private PhysicsSelectionKind SelectionKind => (PhysicsSelectionKind)_mode.SelectedIndex;
     private bool SelectionEditable => IsEditorVisible && !IsActorMode && !_timer.IsEnabled && !_viewport.TransformActive && Session.HasSelectedEntry && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
     private HashSet<int> SelectionIndices => _items.SelectedItems?.Cast<Item>().Select(i => i.Index).ToHashSet() ?? [];
@@ -42,11 +42,14 @@ public sealed partial class MainWindow
         _fitCloth.Name = "FitClothToBones";
         _matchModelBones = Add(footer, "Match bones to model", MatchBonesToModel);
         _matchModelBones.Name = "MatchBonesToModel";
-        ToolTip.SetTip(_matchModelBones, "Choose cloth bones to match to the loaded BFRES. Updates particles and constraint rest data without changing the model. HKCL only.");
+        ToolTip.SetTip(_matchModelBones, "Choose cloth bones to match to the loaded BFRES. Updates particles and constraint rest data without changing the model. Supports HKCL and supported native BPHCL layouts.");
         _resizeBranch = Add(footer, "Resize bone branch", ResizeBoneBranch);
         _resizeBranch.Name = "ResizeBoneBranch";
-        ToolTip.SetTip(_resizeBranch, "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. HKCL only.");
-        ToolTip.SetTip(_fitCloth, "After applying bone edits with Particles follow bones off, rebuild the cloth rest shape to match. HKCL only; unsupported layouts are left unchanged.");
+        _resizeAllCloths = Add(footer, "Resize all cloths", ResizeAllCloths);
+        _resizeAllCloths.Name = "ResizeAllCloths";
+        ToolTip.SetTip(_resizeAllCloths, "Scale every cloth together around the file origin (0, 0, 0).");
+        ToolTip.SetTip(_resizeBranch, "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. Unsupported layouts are left unchanged.");
+        ToolTip.SetTip(_fitCloth, "After applying bone edits with Particles follow bones off, rebuild the cloth rest shape to match. Supports HKCL and native BPHCL; unsupported layouts are left unchanged.");
         ToolTip.SetTip(_mirrorCloth, "Mirror the whole cloth, not just selected particles. Undo restores the complete graph. Shared or unvalidated layouts are rejected before changes.");
         MenuItem[] EditingMenus() => [SelectionMenu("Copy", 0, CopySelection), SelectionMenu("Paste", 1, () => PasteSelection(false)), SelectionMenu("Paste mirrored X", 1, () => PasteSelection(true)), .. MirrorMenus()];
         _items.ContextMenu = new ContextMenu { ItemsSource = EditingMenus() };
@@ -68,11 +71,13 @@ public sealed partial class MainWindow
         _mirrorCloth.IsVisible = supported && !IsActorMode;
         _mirrorCloth.IsEnabled = SelectionEditable;
         _fitCloth.IsVisible = supported && !IsActorMode;
-        _fitCloth.IsEnabled = SelectionEditable && !Session.Document.IsBphcl;
+        _fitCloth.IsEnabled = SelectionEditable;
         _matchModelBones.IsVisible = supported && !IsActorMode;
-        _matchModelBones.IsEnabled = SelectionEditable && !Session.Document.IsBphcl && _importedModel != null && !_modelLoading;
+        _matchModelBones.IsEnabled = SelectionEditable && _importedModel != null && !_modelLoading;
         _resizeBranch.IsVisible = supported && !IsActorMode && SelectionKind == PhysicsSelectionKind.Bones;
-        _resizeBranch.IsEnabled = SelectionEditable && !Session.Document.IsBphcl && SelectionIndices.Count > 0;
+        _resizeBranch.IsEnabled = SelectionEditable && SelectionIndices.Count > 0;
+        _resizeAllCloths.IsVisible = supported && !IsActorMode && Session.AllClothsSelected;
+        _resizeAllCloths.IsEnabled = IsEditorVisible && !IsActorMode && Session.AllClothsSelected && !_timer.IsEnabled && !_viewport.TransformActive;
         var copy = SelectionEditable && SelectionIndices.Count > 0 && SelectionClipboard.Supports(Session.Document, SelectionKind);
         var paste = SelectionEditable && _selectionClipboard.CanPaste(Session.Document, Session.ClothIndex, SelectionKind);
         var mirror = SelectionEditable && SelectionIndices.Count > 0;
@@ -89,6 +94,17 @@ public sealed partial class MainWindow
     {
         if (!SelectionEditable || SelectionKind != PhysicsSelectionKind.Bones || SelectionIndices.Count == 0) return;
         await AdjustBoneBranchResize(SelectionIndices, Vector3.One);
+    }
+    private async Task ResizeAllCloths()
+    {
+        if (!_resizeAllCloths.IsEnabled) return;
+        using var preview = new WholeFileClothResizePreview(Session);
+        var window = new BoneBranchResizeWindow("All cloths", Vector3.One, (scale, colliders) => {
+            try { preview.Sample(scale, colliders); } finally { Refresh(); }
+        }, allCloths: true);
+        window.Opened += (_, _) => window.Position = this.PointToScreen(new Avalonia.Point(24, Math.Max(48, Bounds.Height - window.Bounds.Height - 48)));
+        try { if (await window.ShowDialog<bool>(this)) preview.Commit(); }
+        finally { preview.Dispose(); Refresh(); }
     }
     private async Task AdjustBoneBranchResize(IReadOnlySet<int> selected, Vector3 initialScale, Vector3? pivot = null)
     {

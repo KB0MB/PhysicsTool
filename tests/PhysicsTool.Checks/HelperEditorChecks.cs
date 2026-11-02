@@ -126,7 +126,10 @@ internal static class HelperEditorChecks
             using (var image = window.CaptureRenderedFrame()!) image.Save(Path.Combine(output, $"helper-curve-plot-{doc.IsBphhb}.png"));
             Require(hash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(path))), "Helper fixture modified");
             var restModel = new VisualModelData();
-            foreach (var b in doc.GetSidecarBoneRows()) restModel.Bones.Add(new VisualModelBone { Index = b.Index, Name = b.Name, ParentIndex = -1, Position = new(b.X, b.Y, b.Z) });
+            // Deliberately mismatch runtime prefixes between physics and model.
+            foreach (var b in doc.GetSidecarBoneRows()) restModel.Bones.Add(new VisualModelBone { Index = b.Index,
+                Name = b.Name.StartsWith("Link:", StringComparison.OrdinalIgnoreCase) ? b.Name[5..] : "Link:" + b.Name,
+                ParentIndex = -1, Position = new(b.X, b.Y, b.Z) });
             var rig = new ImportedModelRig(restModel, poses => {
                 var result = new VisualModelData(); var byName = poses.ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
                 foreach (var b in restModel.Bones) result.Bones.Add(byName.TryGetValue(b.Name, out var p)
@@ -146,6 +149,12 @@ internal static class HelperEditorChecks
             var animatedModel = rig.AnimationSkeleton(clip, 20);
             var expected = HelperPoseEvaluation.Evaluate(doc, animatedModel.Bones, restModel.Bones).Poses;
             Require(window.Viewport.Model!.Bones.All(b => Vector3.Distance(b.Position, expected.Single(p => p.Name == b.Name).Position) < 1e-5f), "Standalone timeline bypassed the helper graph");
+            foreach (var b in window.Viewport.Data.Bones)
+            {
+                var displayed = window.Viewport.Model.Bones.First(m => ModelAnimationClip.Normalize(m.Name) == ModelAnimationClip.Normalize(b.Name));
+                Require(Vector3.Distance(window.Viewport.SimulatedBones![b.Index].Position, displayed.Position) < 1e-5f,
+                    "Link: helper overlay did not follow its bound model bone");
+            }
             Find<CheckBox>("EvaluateHelpers").IsChecked = false;
             Require(window.Viewport.Model!.Bones.Zip(animatedModel.Bones).All(p => Vector3.Distance(p.First.Position, p.Second.Position) < 1e-5f && Math.Abs(Quaternion.Dot(p.First.Rotation, p.Second.Rotation)) > .99999f), "Disabling helper evaluation did not restore animation-only poses");
             Find<CheckBox>("EvaluateHelpers").IsChecked = true;

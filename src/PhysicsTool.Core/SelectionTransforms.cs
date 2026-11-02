@@ -22,7 +22,7 @@ public static class SelectionTransforms
             doc.UpdateBoneRows(cloth, TransformBones(doc.GetBoneRows(cloth), selection, delta), followBones);
         }
         else
-            doc.UpdateColliderRows(TransformColliders(doc.GetColliderRows(cloth), selection, delta));
+            doc.UpdateColliderEditRows(TransformColliders(doc.GetColliderEditRows(cloth), selection, delta));
     }
 
     internal static BoneEditRow[] TransformBones(IReadOnlyList<BoneEditRow> source, IReadOnlySet<int> selection, Matrix4x4 delta)

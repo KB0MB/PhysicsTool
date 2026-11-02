@@ -3,6 +3,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using HKCLTool;
 using PhysicsTool.Core;
+using PhysicsTool.Desktop.Rendering;
 using System.Numerics;
 
 namespace PhysicsTool.Desktop;
@@ -134,9 +135,9 @@ public sealed partial class MainWindow
             ? "Model is missing helper drivers: " + string.Join(", ", evaluation.Missing)
             : "Evaluate the helper graph against the model's current animation without changing saved poses.");
         _viewport.SetModelPose(_importedModel.Sample(poses));
-        var displayed = _viewport.Model!.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var displayed = _viewport.Model!.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         _viewport.Simulated = null; _viewport.SimulatedColliders = null;
-        _viewport.SimulatedBones = _viewport.Data.Bones.ToDictionary(b => b.Index, b => displayed.TryGetValue(b.Name, out var v)
+        _viewport.SimulatedBones = _viewport.Data.Bones.ToDictionary(b => b.Index, b => displayed.TryGetValue(ModelAnimationClip.Normalize(b.Name), out var v)
             ? new SimulatedBonePreviewPose { Position = v.Position, AxisX = v.AxisX, AxisY = v.AxisY, AxisZ = v.AxisZ }
             : new SimulatedBonePreviewPose { Position = b.Position, AxisX = b.AxisX, AxisY = b.AxisY, AxisZ = b.AxisZ });
     }

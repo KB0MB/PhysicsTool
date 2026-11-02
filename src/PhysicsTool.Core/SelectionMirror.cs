@@ -14,14 +14,14 @@ public static class SelectionMirror
         {
             PhysicsSelectionKind.Particles => doc.GetParticleRows(cloth).Where(p => selection.Contains(p.Index)).Select(p => new Vector3(p.X, p.Y, p.Z)).ToArray(),
             PhysicsSelectionKind.Bones => BoneEditGeometry.WorldTransforms(doc.GetBoneRows(cloth)).Where(b => selection.Contains(b.Key)).Select(b => b.Value.Translation).ToArray(),
-            _ => doc.GetColliderRows(cloth).Where(c => selection.Contains(c.Index)).Select(c => (new Vector3(c.StartX, c.StartY, c.StartZ) + new Vector3(c.EndX, c.EndY, c.EndZ)) / 2).ToArray()
+            _ => doc.GetColliderEditRows(cloth).Where(c => selection.Contains(c.Index)).Select(c => (new Vector3(c.StartX, c.StartY, c.StartZ) + new Vector3(c.EndX, c.EndY, c.EndZ)) / 2).ToArray()
         };
         if (points.Length != selection.Count) throw new ArgumentException("The selection contains missing items.");
         var pivot = aroundCenter ? points.Aggregate(Vector3.Zero, (a, b) => a + b) / points.Length : Vector3.Zero;
         var delta = Matrix4x4.CreateTranslation(-pivot) * reflection * Matrix4x4.CreateTranslation(pivot);
         if (kind == PhysicsSelectionKind.Particles) SelectionTransforms.Apply(doc, cloth, kind, selection, delta, followBones);
         else if (kind == PhysicsSelectionKind.Colliders)
-            doc.UpdateColliderRows(doc.GetColliderRows(cloth).Where(c => selection.Contains(c.Index)).Select(c => ReflectCollider(c, axis, pivot)).ToArray());
+            doc.UpdateColliderEditRows(doc.GetColliderEditRows(cloth).Where(c => selection.Contains(c.Index)).Select(c => ReflectCollider(c, axis, pivot)).ToArray());
         else
         {
             // Mirror bone positions, retaining authored orientation and scale.

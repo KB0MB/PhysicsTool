@@ -9,6 +9,7 @@ namespace PhysicsTool.Desktop;
 public sealed partial class PhysicsViewport
 {
     public PhysicsSelectionKind SelectionKind { get; set; }
+    public bool CanTransform { get; set; } = true;
     public event Action? TransformStarted;
     public event Action<Matrix4x4>? TransformPreview;
     public event Action<Matrix4x4?>? TransformFinished;
@@ -24,7 +25,7 @@ public sealed partial class PhysicsViewport
     private IEnumerable<(int Index, Vector3 Position)> SelectionPoints() => SelectionKind switch {
         PhysicsSelectionKind.Bones => Data.Bones.Where(b => ShowBones && b.IsSelectable && !b.IsReference).Select(b => (b.Index, BonePosition(b))),
         PhysicsSelectionKind.Colliders => VisibleColliders.Where(_ => ShowColliders).Select(c => (c.Index, (c.Start + c.End) * .5f)),
-        _ => Data.Particles.Where(_ => ShowParticles).Select(p => (p.Index, Position(p))) };
+        _ => Data.Particles.Where(_ => ShowParticles || ModelItemPicker != null).Select(p => (p.Index, Position(p))) };
     private HashSet<int> ActiveSelection => SelectionKind switch {
         PhysicsSelectionKind.Bones => SelectedBones, PhysicsSelectionKind.Colliders => SelectedColliders, _ => Selected };
 
@@ -48,7 +49,8 @@ public sealed partial class PhysicsViewport
             }
             return true;
         }
-        if (!CanSelect || !ShowPhysics || e.KeyModifiers != KeyModifiers.None || e.Key is not (Key.G or Key.R or Key.S)) return false;
+        if (!CanTransform || !CanSelect || !ShowPhysics || e.KeyModifiers != KeyModifiers.None || e.Key is not (Key.G or Key.R or Key.S)) return false;
+        if (TranslationOnly && e.Key != Key.G) return false;
         var points = SelectionPoints().Where(p => ActiveSelection.Contains(p.Index)).Select(p => p.Position).ToArray();
         if (points.Length == 0) return false;
         EndGesture(); CancelCameraTransition();

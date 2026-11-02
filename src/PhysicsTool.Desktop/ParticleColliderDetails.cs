@@ -53,11 +53,14 @@ public sealed partial class MainWindow
             var check = new CheckBox { Name = "ColliderSlot" + option.BitIndex,
                 Content = new TextBlock { Text = $"{option.BitIndex}: {option.Name}", TextWrapping = TextWrapping.Wrap },
                 IsChecked = (particle.CollisionMask & (1u << option.BitIndex)) != 0 };
-            ToolTip.SetTip(check, $"Cloth collision slot {option.BitIndex}, collider {option.ColliderIndex}. Repeated colliders can occupy separate mask bits.");
+            ToolTip.SetTip(check, option.SlotCount > 1
+                ? "These colliders share one collision-mask bit in TotK. This checkbox enables or disables them together for this particle."
+                : $"Cloth collision slot {option.BitIndex}, collider {option.ColliderIndex}. Repeated colliders can occupy separate mask bits.");
             slots.Children.Add(check); checks.Add((option, check));
         }
-        var expander = new Expander { Name = "ParticleCollisionAssignments", Header = $"Colliders ({checks.Count(c => c.Check.IsChecked == true)}/{choices.Count})", Content = slots, HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = choices.Count > 0 };
-        foreach (var (_, check) in checks) check.IsCheckedChanged += (_, _) => expander.Header = $"Colliders ({checks.Count(c => c.Check.IsChecked == true)}/{choices.Count})";
+        string ColliderHeader() => $"Colliders ({checks.Where(c => c.Check.IsChecked == true).Sum(c => c.Option.SlotCount)}/{choices.Sum(c => c.SlotCount)})";
+        var expander = new Expander { Name = "ParticleCollisionAssignments", Header = ColliderHeader(), Content = slots, HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = choices.Count > 0 };
+        foreach (var (_, check) in checks) check.IsCheckedChanged += (_, _) => expander.Header = ColliderHeader();
         _details.Children.Add(expander);
         ToolTip.SetTip(expander, "Select collision slots for this particle. Unlisted mask bits, including landscape collision, are preserved. Apply commits the selection.");
         DetailApply("ApplyParticleDetails", () => {
@@ -129,7 +132,7 @@ public sealed partial class MainWindow
             if (r < 0) throw new ArgumentException("Radius cannot be negative.");
             if (binding.SelectedItem is not ColliderBoneChoice selected) throw new ArgumentException("Choose a valid bone.");
             Edit((doc, cloth) => {
-                var row = doc.GetColliderRows(cloth).Single(c => c.Index == collider.Index);
+                var row = doc.GetColliderEditRows(cloth).Single(c => c.Index == collider.Index);
                 row.Name = name.Text.Trim();
                 if (!bphcl) { row.BoneIndex = selected.Index; row.BoneName = selected.Name; }
                 if (row.IsPlane)
@@ -144,7 +147,7 @@ public sealed partial class MainWindow
                     row.StartX = a.X; row.StartY = a.Y; row.StartZ = a.Z;
                     row.EndX = b.X; row.EndY = b.Y; row.EndZ = b.Z; row.Radius = r;
                 }
-                doc.UpdateColliderRows([row]);
+                doc.UpdateColliderEditRows([row]);
             });
         });
     }

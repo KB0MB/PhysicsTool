@@ -68,9 +68,9 @@ internal sealed class BoneBranchResizeGeometry
             };
         }).ToArray();
     }
-    internal ColliderEditRow[] BakeColliders(IEnumerable<ColliderEditRow> colliders, Vector3 scale)
+    internal ColliderEditRow[] BakeColliders(IEnumerable<ColliderEditRow> colliders, Vector3 scale, bool includeAll = false)
     {
-        return colliders.Where(c => Branch.Contains(c.BoneIndex)).Select(c => {
+        return colliders.Where(c => includeAll || Branch.Contains(c.BoneIndex)).Select(c => {
             var start = Resize(new(c.StartX, c.StartY, c.StartZ), scale);
             var end = Resize(new(c.EndX, c.EndY, c.EndZ), scale);
             var transform = c.Transform; transform.Translation = Resize(transform.Translation, scale);

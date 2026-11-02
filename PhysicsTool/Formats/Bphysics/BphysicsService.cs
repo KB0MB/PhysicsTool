@@ -45,9 +45,11 @@ public static class BphysicsService
     /// converter use verified wind and attachment values from matched files
     /// instead of relying only on family-name defaults.
     /// </summary>
-    public static BphysicsDocument Load(string path)
+    public static BphysicsDocument Load(string path) => Parse(File.ReadAllBytes(path));
+
+    internal static BphysicsDocument Parse(byte[] bytes)
     {
-        var archive = BotwAampReader.Read(path);
+        var archive = BotwAampReader.Read(bytes);
         if (!string.Equals(archive.Type, "xml", StringComparison.Ordinal))
             throw new InvalidDataException("The AAMP archive is not a BotW XML BPHYSICS file.");
 
@@ -130,7 +132,13 @@ public static class BphysicsService
 
     private static void SaveValidated(string path, BphysicsDocument document)
     {
+        var bytes = BotwAampWriter.WriteXml(BuildRoot(document));
+        Validate(bytes);
+        AtomicFile.WriteAllBytes(path, bytes);
+    }
 
+    internal static BotwAampWriter.AampListNode BuildRoot(BphysicsDocument document, bool keepInactive = false)
+    {
         var root = new BotwAampWriter.AampListNode("param_root");
         var paramSet = new BotwAampWriter.AampListNode("ParamSet");
         root.Children.Add(paramSet);
@@ -146,7 +154,7 @@ public static class BphysicsService
         settings.Parameters.Add(BotwAampWriter.AampParameterNode.Boolean("use_system_group_handler", true));
         paramSet.Objects.Add(settings);
 
-        if (document.UseSupportBone)
+        if (document.UseSupportBone || (keepInactive && document.SupportBonePath != null))
         {
             var supportBone = new BotwAampWriter.AampObjectNode("SupportBone");
             supportBone.Parameters.Add(BotwAampWriter.AampParameterNode.String256Value(
@@ -154,7 +162,7 @@ public static class BphysicsService
             paramSet.Objects.Add(supportBone);
         }
 
-        if (document.UseCloth)
+        if (document.UseCloth || (keepInactive && (document.Cloths.Count > 0 || document.HkclPath.Length > 0)))
         {
             var cloth = new BotwAampWriter.AampListNode("Cloth");
             paramSet.Children.Add(cloth);
@@ -188,9 +196,7 @@ public static class BphysicsService
             }
         }
 
-        var bytes = BotwAampWriter.WriteXml(root);
-        Validate(bytes);
-        AtomicFile.WriteAllBytes(path, bytes);
+        return root;
     }
 
     private static string NormalizeGamePath(string path) => path.Replace('\\', '/').TrimStart('/');

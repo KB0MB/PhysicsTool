@@ -27,7 +27,7 @@ public sealed class SelectionClipboard
         if (!Supports(doc, kind) || selection.Count == 0) throw new InvalidOperationException("Select supported items to copy first.");
         var particles = kind == PhysicsSelectionKind.Particles ? doc.GetParticleRows(cloth).Where(p => selection.Contains(p.Index)).ToArray() : [];
         var bones = kind == PhysicsSelectionKind.Bones ? doc.GetBoneRows(cloth).Where(b => selection.Contains(b.Index)).ToArray() : [];
-        var colliders = kind == PhysicsSelectionKind.Colliders ? doc.GetColliderRows(cloth).Where(c => selection.Contains(c.Index)).ToArray() : [];
+        var colliders = kind == PhysicsSelectionKind.Colliders ? doc.GetColliderEditRows(cloth).Where(c => selection.Contains(c.Index)).ToArray() : [];
         if (particles.Length + bones.Length + colliders.Length != selection.Count) throw new ArgumentException("The selection contains missing items.");
         _source = doc; _cloth = cloth; Kind = kind; _particles = particles; _bones = bones; _colliders = colliders;
         _states.Clear(); _states.Add(State(doc));
@@ -67,11 +67,11 @@ public sealed class SelectionClipboard
                 {
                     var index = d.AddCollider(cloth, source, d.GetBoneRows(cloth).FirstOrDefault(b => b.Index == source.BoneIndex));
                     var row = Clone(source); row.Index = index; row.ClothIndex = cloth;
-                    row.Name = d.GetColliderRows(cloth).Single(c => c.Index == index).Name;
+                    row.Name = d.GetColliderEditRows(cloth).Single(c => c.Index == index).Name;
                     // AddCollider clones native shape metadata; commit the
                     // authored world geometry through the normal local writer.
                     if (mirrorX) row = SelectionMirror.ReflectCollider(row, 0, Vector3.Zero);
-                    d.UpdateColliderRows([row]); result.Add(index);
+                    d.UpdateColliderEditRows([row]); result.Add(index);
                 }
             }
         });

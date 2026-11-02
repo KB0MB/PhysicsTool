@@ -1,5 +1,11 @@
 PhysicsTool 2.0 distribution notices
 
+BPHSC format research used Starlight-Dev's PhiveStaticCompoundFile declarations
+as a reference, checked against local game data. PhysicsTool's bounded parser,
+fixed-size editor and BANC group diagnostics are independently implemented.
+Starlight-Dev is licensed under GPL-3.0:
+https://github.com/MrMystery-Official/Starlight-Dev
+
 Complete package license texts and a versioned inventory are shipped under
 Licenses. See BUILD_AND_LICENSES.md in binary archives (docs/RELEASING.md in
 source) for source distribution and platform details. Sections describing

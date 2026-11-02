@@ -40,6 +40,9 @@ Thumbs.db
 # User-supplied game resources and extracted test fixtures
 *.hkcl
 *.bphcl
+*.bphsc
+*.bphysics
+*.bcett.byml
 *.bphyssb
 *.bphhb
 *.hkrg

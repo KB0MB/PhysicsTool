@@ -12,7 +12,7 @@ namespace PhysicsTool.Desktop;
 
 internal sealed record LanguageChoice(string Code, string Name) { public override string ToString() => Name; }
 internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme = true, int AnimationFps = 60,
-    HkclPlatform ConversionPlatform = HkclPlatform.WiiU)
+    HkclPlatform ConversionPlatform = HkclPlatform.WiiU, bool MaximizeOnStartup = false)
 {
     internal static string FilePath => AppDataPaths.SettingsFile("settings.json");
     internal static DesktopPreferences Load(string? path = null)
@@ -23,7 +23,8 @@ internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme
             var language = root?["Language"]?.GetValue<string>() ?? "en";
             return new(UiLanguage.Languages.Any(l => l.Code == language) ? language : "en", root?["DarkTheme"]?.GetValue<bool>() ?? true,
                 root?["AnimationFramesPerSecond"]?.GetValue<int>() == 30 ? 30 : 60,
-                root?["ConversionPlatform"]?.GetValue<string>() == "Switch" ? HkclPlatform.Switch : HkclPlatform.WiiU);
+                root?["ConversionPlatform"]?.GetValue<string>() == "Switch" ? HkclPlatform.Switch : HkclPlatform.WiiU,
+                root?["MaximizeOnStartup"]?.GetValue<bool>() ?? false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { return new(); }
     }
@@ -33,6 +34,7 @@ internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme
         var root = File.Exists(file) ? JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? new() : new JsonObject();
         root["Language"] = Language; root["DarkTheme"] = DarkTheme; root["AnimationFramesPerSecond"] = AnimationFps;
         root["ConversionPlatform"] = ConversionPlatform.ToString();
+        root["MaximizeOnStartup"] = MaximizeOnStartup;
         HKCLTool.AtomicFile.WriteAllBytes(file, JsonSerializer.SerializeToUtf8Bytes(root, new JsonSerializerOptions { WriteIndented = true }));
     }
 }

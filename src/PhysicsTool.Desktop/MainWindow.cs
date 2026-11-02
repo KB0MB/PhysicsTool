@@ -42,7 +42,7 @@ public sealed partial class MainWindow : Window
     };
     private int _modelRequest;
     private bool _modelLoading;
-    private readonly ComboBox _cloths = new() { HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
+    private readonly ComboBox _cloths = new() { Name = "EditorCloths", HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
     private readonly ListBox _items = new() { SelectionMode = SelectionMode.Multiple };
     private readonly TabStrip _mode = new() { ItemsSource = new[] { "Particles", "Bones", "Colliders" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ContentControl _body = new();
@@ -101,7 +101,7 @@ public sealed partial class MainWindow : Window
         Add(toolbar, "New", async () => { if (await CanReplace()) await NewDocument(); });
         Add(toolbar, "Open Physics", async () => await OpenDocument());
         Add(toolbar, "Open Actor", async () => await OpenActorBrowser());
-        Add(toolbar, "Collision", async () => { PauseEditorAnimation(); _actorPlaying = false; StopSimulation(); await new CollisionWindow(graphics, _actorScene?.Resources.SourcePath, _actorScene?.Resources.SourceEntry).ShowDialog(this); });
+        Add(toolbar, "Collision", () => ShowCollision(graphics));
         _swap = _overview.SwapButton;
         _save = MenuCommand("Save", () => SaveDocument()); _save.Name = "SavePhysics";
         _saveAs = MenuCommand("Save as...", () => SaveDocument(true));
@@ -127,6 +127,8 @@ public sealed partial class MainWindow : Window
         _loadModel = Add(modelbar, "Load model", async () => await OpenModel());
         _clearModel = Add(modelbar, "Clear model", () => { _modelRequest++; PauseEditorAnimation(); StopSimulation(); ExitActor(); _importedModel = null; ClearEditorAnimation(); _viewport.SetModel(null); UpdateModelActions(); });
         _meshes = Add(modelbar, "Meshes", async () => await ShowMeshes());
+        _actorExport = Add(modelbar, "Export", ShowActorExport); _actorExport.Name = "ActorExport"; _actorExport.IsVisible = false;
+        ToolTip.SetTip(_actorExport, "Export original actor models and physics files. BFRES is decompressed; external textures are separate.");
         _modelDisplay.SelectionChanged += (_, _) =>
         {
             if (_modelDisplay.SelectedIndex >= 0)
@@ -138,6 +140,7 @@ public sealed partial class MainWindow : Window
         _playerArmor = Add(modelbar, "Equipment", async () => await ShowPlayerArmor());
         _playerArmor.Name = "PlayerArmor"; _playerArmor.IsVisible = false;
         _importAnimation = Add(modelbar, "Import animation", OpenEditorAnimation);
+        _importAnimation.Name = "ImportAnimation";
         DockPanel.SetDock(modelbar, Dock.Top); center.Children.Add(modelbar);
         var viewbar = new WrapPanel { Margin = new Thickness(5) };
         _simulate = Add(viewbar, "Run simulation", ToggleSimulation);
@@ -203,7 +206,7 @@ public sealed partial class MainWindow : Window
         ConfigureHelperEditor(editorActions);
         ConfigureSelectionTools(editorActions);
         Grid.SetRow(editorActions, 1); Grid.SetColumnSpan(editorActions, 3); workspace.Children.Add(editorActions);
-        _body.Content = _overview; shell.Children.Add(_body); Content = shell;
+        _body.Content = _overview; shell.Children.Add(_body); Content = shell; _mainContent = shell;
         _overview.RemoveRequested += async () => await RunCommand(RemoveCloth);
         _overview.DuplicateRequested += () => Try(() => { Session.DuplicateSelected(); Refresh(true); _status.Text = "Duplicated cloth."; });
         _overview.RenameRequested += async () => await RunCommand(RenameCloth);
@@ -218,7 +221,15 @@ public sealed partial class MainWindow : Window
         _relationshipActions.Children.Add(_constraint); _relationshipActions.Children.Add(_removeConstraint);
         _constraint.Margin = new Thickness(0, 4, 6, 0); _removeConstraint.Margin = new Thickness(0, 4, 0, 0);
         _editControls.AddRange(new Control[] { _cloths, _mode, _items, _details, _save, _undo, _redo, _add, _delete });
-        _cloths.SelectionChanged += (_, _) => { if (_refreshing || _cloths.SelectedIndex < 0) return; StopSimulation(); Session.ClothIndex = _cloths.SelectedIndex; Refresh(); };
+        _cloths.SelectionChanged += (_, _) => {
+            if (_refreshing || _cloths.SelectedIndex < 0) return;
+            _viewport.FinishTransform(false);
+            PauseEditorAnimation();
+            Session.ClothIndex = Session.CanSelectAllCloths
+                ? _cloths.SelectedIndex == 0 ? EditorSession.AllClothsIndex : _cloths.SelectedIndex - 1
+                : _cloths.SelectedIndex;
+            StopSimulation(); Refresh();
+        };
         _mode.SelectionChanged += (_, _) => { if (!_refreshing) Refresh(); };
         _items.SelectionChanged += (_, _) => { if (_refreshing) return; ShowDetails(); SelectViewport(); UpdateActions(); };
         _relationships.SelectionChanged += (_, _) => { ShowRelationshipDetails(); UpdateActions(); };
@@ -253,6 +264,7 @@ public sealed partial class MainWindow : Window
         };
         KeyDown += async (_, e) =>
         {
+            if (IsToolWorkspaceVisible) return;
             var command = e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
             if (!e.Handled && command && e.Key == Key.S && _save.IsEnabled)
             { await RunCommand(() => SaveDocument(e.KeyModifiers.HasFlag(KeyModifiers.Shift))); e.Handled = true; return; }
@@ -281,7 +293,27 @@ public sealed partial class MainWindow : Window
             else if (!command && !_timer.IsEnabled && e.Key == Key.F && _mode.SelectedIndex == 0) { await AddConstraint(); e.Handled = true; }
             else if (!_timer.IsEnabled && e.Key == Key.Delete && (_items.IsFocused || _viewport.IsFocused)) { await DeleteItems(); e.Handled = true; }
         };
-        Closing += async (_, e) => { if (_conversionBusy) { e.Cancel = true; return; } if (_closingApproved) return; if (Session.IsDirty || DonorSession.IsDirty) { e.Cancel = true; if (await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in the current and donor files and close?")) { _closingApproved = true; Close(); } } else StopSimulation(); };
+        Closing += async (_, e) =>
+        {
+            if (_conversionBusy || ToolWorkspaceBusy) { e.Cancel = true; return; }
+            if (_closingApproved) return;
+            if (_bphysicsView != null || _bphscView != null || _shrineView != null || Session.IsDirty || DonorSession.IsDirty)
+            {
+                e.Cancel = true;
+                if (_confirmingClose) return;
+                _confirmingClose = true;
+                try
+                {
+                    if (_bphysicsView != null && !await _bphysicsView.CanCloseAsync()) return;
+                    if (_bphscView != null && !await _bphscView.CanCloseAsync()) return;
+                    if (_shrineView != null && !await _shrineView.CanCloseAsync()) return;
+                    if ((Session.IsDirty || DonorSession.IsDirty) && !await Dialogs.Confirm(this, "Unsaved changes", "Discard unsaved changes in the current and donor files and close?")) return;
+                    _closingApproved = true; Dispatcher.UIThread.Post(Close);
+                }
+                finally { _confirmingClose = false; }
+            }
+            else StopSimulation();
+        };
         Closed += (_, _) => { _modelRequest++; _animationRequest++; _editorPlaying = false; _actorLoad?.Cancel(); _actorTimer.Stop(); _actorScene?.Dispose(); _actorScene = null; StopSimulation(); };
         Opened += (_, _) => { if (file != null) Try(() => LoadPath(file)); };
         ConfigurePhysicsFileDrop();
@@ -317,10 +349,15 @@ public sealed partial class MainWindow : Window
             FileTypeFilter = PhysicsFileTypes });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) LoadDonorPath(path);
     }
-    public void LoadPath(string path) { PauseEditorAnimation(); StopSimulation(); Session.Load(path); ExitActor(); Refresh(true); _status.Text = $"Opened {System.IO.Path.GetFileName(path)}"; }
+    public void LoadPath(string path)
+    {
+        if (System.IO.Path.GetExtension(path).Equals(".bphysics", StringComparison.OrdinalIgnoreCase)) { ShowBphysics(path); return; }
+        PauseEditorAnimation(); StopSimulation(); Session.Load(path); ExitActor(); Refresh(true); _status.Text = $"Opened {System.IO.Path.GetFileName(path)}";
+    }
     public void Refresh(bool fit = false)
     {
         if (IsActorMode) { UpdateActions(); return; }
+        if (Session.AllClothsSelected && (_solver != null || _editorPlaying)) { PauseEditorAnimation(); StopSimulation(); }
         var sameSelectionContext = ReferenceEquals(_selectionDocument, Session.Document)
             && _selectionCloth == Session.ClothIndex && _selectionMode == _mode.SelectedIndex;
         var selected = sameSelectionContext ? _items.SelectedItems!.Cast<Item>().Select(i => i.Index).ToHashSet() : new HashSet<int>();
@@ -330,18 +367,23 @@ public sealed partial class MainWindow : Window
         try
         {
             UpdateRagdollTabs();
-            _cloths.ItemsSource = Enumerable.Range(0, Session.Document.GetClothSummaries().Count).Select(i => Session.Document.IsHelperBoneSidecar
-                ? $"{i}: {Session.Document.GetSidecarDriverGroup(i)?.DisplayName}" : Session.Document.GetClothName(i)).ToArray(); _cloths.SelectedIndex = Session.ClothIndex;
+            var clothNames = Enumerable.Range(0, Session.Document.GetClothSummaries().Count).Select(i => Session.Document.IsHelperBoneSidecar
+                ? $"{i}: {Session.Document.GetSidecarDriverGroup(i)?.DisplayName}" : Session.Document.GetClothName(i));
+            _cloths.ItemsSource = (Session.CanSelectAllCloths ? clothNames.Prepend("All") : clothNames).ToArray();
+            _cloths.SelectedIndex = Session.AllClothsSelected ? 0 : _cloths.ItemCount > 0
+                ? Session.ClothIndex + (Session.CanSelectAllCloths ? 1 : 0) : -1;
             if (Session.Document.IsHelperBoneSidecar) _mode.SelectedIndex = 1;
             _items.ItemsSource = Array.Empty<Item>(); _viewport.Data = new();
-            if (Session.Document.HasDocument && _cloths.SelectedIndex >= 0)
+            if (Session.AllClothsSelected)
+                _viewport.Data = WholeFileClothPreview.Create(Session.Document);
+            else if (Session.HasSelectedEntry)
             {
                 var doc = Session.Document; var cloth = Session.ClothIndex;
                 IEnumerable<Item> rows = _mode.SelectedIndex switch
                 {
                     0 when doc.IsHkrg => doc.GetHkrgConstraintRows().Select(c => new Item(c.Index, $"{c.Index}: {c.Name} ({c.ConstraintType})", c)),
                     1 => (EditingRagdollModel ? doc.GetHkrgModelBoneRows() : doc.GetBoneRows(cloth)).Select(b => new Item(b.Index + (EditingRagdollModel ? 100000 : 0), doc.IsHelperBoneSidecar ? $"[{HelperRole(doc.GetSidecarDriverGroup(cloth), b.Index)}] {b.Index}: {b.Name}" : $"{b.Index}: {b.Name}", b)),
-                    2 => doc.GetColliderRows(cloth).Select(c => new Item(c.Index, $"{c.Index}: {c.Name} ({c.ShapeType})", c)),
+                    2 => doc.GetColliderEditRows(cloth).Select(c => new Item(c.Index, $"{c.Index}: {c.Name} ({c.ShapeType})", c)),
                     _ => doc.GetParticleRows(cloth).Select(p => new Item(p.Index, $"{p.Index}  {(p.Fixed ? "Fixed" : "Free")}", p))
                 };
                 var array = rows.ToArray(); _items.ItemsSource = array;
@@ -358,7 +400,7 @@ public sealed partial class MainWindow : Window
             Title = $"PhysicsTool - {(Session.Path == null ? "Untitled" : System.IO.Path.GetFileName(Session.Path))}{(Session.IsDirty ? " *" : "")}";
         }
         finally { _refreshing = false; }
-        ShowDetails(); SelectViewport(); UpdateImportedModelPose(true);
+        ShowDetails(); SelectViewport(); UpdateImportedModelPose(true); UpdateEditorPlayback(); UpdateModelActions();
         if (fit) { if (IsEditorVisible) _viewport.Fit(); else _fitPending = true; }
         if (!IsEditorVisible) _overview.Update(Session, DonorSession);
         _viewport.InvalidateVisual(); UpdateActions();
@@ -403,18 +445,20 @@ public sealed partial class MainWindow : Window
     private void Edit(Action<HkclService, int> action)
     {
         if (IsActorMode) throw new InvalidOperationException("Actor view is read-only.");
+        if (Session.AllClothsSelected) throw new InvalidOperationException("Select an individual cloth before editing items.");
         if (_timer.IsEnabled) throw new InvalidOperationException("Pause animation and stop simulation before editing.");
         try { Session.Edit(action); } finally { Refresh(); }
         _status.Text = "Updated document.";
     }
     private void UpdateActions()
     {
-        var ready = Session.Document.HasDocument && _cloths.SelectedIndex >= 0;
+        var ready = Session.HasSelectedEntry;
         var editing = ready && !_timer.IsEnabled && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
         _relationshipDetails.IsEnabled = editing && !IsActorMode;
         foreach (var c in _editControls) c.IsEnabled = !_timer.IsEnabled;
         if (Session.Document.IsHkrg) _details.IsEnabled = !_timer.IsEnabled && !_editorPlaying && !IsActorMode;
-        _mode.IsEnabled = !_timer.IsEnabled && !Session.Document.IsHelperBoneSidecar;
+        _mode.IsEnabled = !_timer.IsEnabled && !Session.Document.IsHelperBoneSidecar && !Session.AllClothsSelected;
+        if (Session.AllClothsSelected) _items.IsEnabled = _details.IsEnabled = false;
         _ragdollSkeleton.IsEnabled = !_timer.IsEnabled && !_editorPlaying;
         _save.IsEnabled = Session.Document.HasDocument && !_timer.IsEnabled;
         _saveAs.IsEnabled = _export.IsEnabled = _save.IsEnabled;
@@ -440,7 +484,7 @@ public sealed partial class MainWindow : Window
             0 => "Snap selected particles to a bone using the active particle as a fixed anchor. Existing skin weights are retained.",
             1 => "Snap the active bone to another bone while preserving group spacing and the existing hierarchy.",
             _ => Session.Document.IsBphcl ? "Native BPHCL collider rebinding is not available yet." : "Snap and bind selected colliders to a bone, preserving group spacing." });
-        var relationshipsVisible = _mode.SelectedIndex == 0 && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
+        var relationshipsVisible = !Session.AllClothsSelected && _mode.SelectedIndex == 0 && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
         if (_relationshipPane.IsVisible != relationshipsVisible)
         {
             _relationshipPane.IsVisible = _relationshipSplit.IsVisible = relationshipsVisible;
@@ -464,7 +508,7 @@ public sealed partial class MainWindow : Window
             _simulate.IsEnabled = ready;
             _simulate.Content = _ragdollSolver == null ? "Run stress preview" : "Stop preview";
         }
-        ToolTip.SetTip(_simulate, Session.Document.IsBphcl
+        ToolTip.SetTip(_simulate, Session.HasSelectedEntry && Session.Document.IsBphcl
             ? string.Join(" ", Session.Document.GetTotkSimulationSupport(Session.ClothIndex).Blockers.Concat(
                 Session.Document.GetTotkSimulationSupport(Session.ClothIndex).Warnings)) : null);
         if (Session.Document.IsHkrg) ToolTip.SetTip(_simulate, "Approximate glide/stress preview from the original tool. It does not reproduce Havok or change saved poses.");
@@ -473,7 +517,8 @@ public sealed partial class MainWindow : Window
         _particlesToggle.IsVisible = !Session.Document.IsHkrg || IsActorMode;
         _collidersToggle.Content = Session.Document.IsHkrg && !IsActorMode ? "Rigid bodies" : "Colliders";
         _loadModel.IsVisible = _clearModel.IsVisible = !IsActorMode;
-        _importAnimation.IsVisible = !IsActorMode;
+        _importAnimation.IsVisible = true;
+        _animations.IsEnabled = IsActorMode || !Session.AllClothsSelected;
         if (IsActorMode)
         {
             _save.IsEnabled = _saveAs.IsEnabled = _export.IsEnabled = _undo.IsEnabled = _redo.IsEnabled = false;
@@ -555,10 +600,11 @@ public sealed partial class MainWindow : Window
     }
     private async Task OpenDocument()
     {
-        if (!await CanReplace()) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Open physics", AllowMultiple = false,
-            FileTypeFilter = PhysicsFileTypes });
-        if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) Try(() => LoadPath(path));
+            FileTypeFilter = OpenPhysicsFileTypes });
+        if (files.FirstOrDefault()?.TryGetLocalPath() is not { } path) return;
+        if (!System.IO.Path.GetExtension(path).Equals(".bphysics", StringComparison.OrdinalIgnoreCase) && !await CanReplace()) return;
+        Try(() => LoadPath(path));
     }
     private async Task SaveDocument(bool saveAs = false)
     {
@@ -572,17 +618,19 @@ public sealed partial class MainWindow : Window
     private async Task ShowSettings()
     {
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.IndianRed };
+        var maximize = new CheckBox { Name = "MaximizeOnStartup", Content = "Maximize on startup", IsChecked = DesktopPreferences.Load().MaximizeOnStartup };
         void Persist()
         {
-            try { (DesktopPreferences.Load() with { Language = UiLanguage.Current, DarkTheme = Application.Current?.RequestedThemeVariant != ThemeVariant.Light, AnimationFps = _animationFps }).Save(); error.Text = ""; }
+            try { (DesktopPreferences.Load() with { Language = UiLanguage.Current, DarkTheme = Application.Current?.RequestedThemeVariant != ThemeVariant.Light, AnimationFps = _animationFps, MaximizeOnStartup = maximize.IsChecked == true }).Save(); error.Text = ""; }
             catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
             { error.Text = "Settings could not be saved. Check that the application folder is writable."; }
         }
         var dark = new CheckBox { Content = "Dark theme", IsChecked = Application.Current?.RequestedThemeVariant != Avalonia.Styling.ThemeVariant.Light };
         dark.IsCheckedChanged += (_, _) => { Application.Current!.RequestedThemeVariant = dark.IsChecked == true ? ThemeVariant.Dark : ThemeVariant.Light; Persist(); };
+        maximize.IsCheckedChanged += (_, _) => Persist();
         var format = new ComboBox { ItemsSource = new[] { "Wii U HKCL", "Switch HKCL" }, SelectedIndex = Session.Platform == HkclPlatform.WiiU ? 0 : 1, IsEnabled = !Session.Document.IsBphcl };
         format.SelectionChanged += (_, _) => Session.Platform = format.SelectedIndex == 0 ? HkclPlatform.WiiU : HkclPlatform.Switch;
-        var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) }; panel.Children.Add(dark); panel.Children.Add(new TextBlock { Text = "HKCL save platform" }); panel.Children.Add(format);
+        var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) }; panel.Children.Add(dark); panel.Children.Add(maximize); panel.Children.Add(new TextBlock { Text = "HKCL save platform" }); panel.Children.Add(format);
         var fps = new ComboBox { ItemsSource = new[] { "30 fps (half speed)", "60 fps (normal speed)" }, SelectedIndex = _animationFps == 30 ? 0 : 1 };
         fps.SelectionChanged += (_, _) => { AnimationPlaybackFps = fps.SelectedIndex == 0 ? 30 : 60; Persist(); };
         panel.Children.Add(new TextBlock { Text = "Animation playback" }); panel.Children.Add(fps);
@@ -624,13 +672,14 @@ public sealed partial class MainWindow : Window
     }
     private void UpdateModelActions()
     {
+        UpdateActorExport();
         _playerArmor.IsVisible = _actorScene?.ArmorCatalog != null;
         _playerArmor.IsEnabled = !_modelLoading;
         _evaluateHelpers.IsEnabled = _importedModel != null && !_modelLoading;
         _loadModel.IsEnabled = !_modelLoading; _clearModel.IsEnabled = !_modelLoading && _viewport.Model != null;
         _meshes.IsEnabled = !_modelLoading && _viewport.Model != null;
         _modelDisplay.IsEnabled = _meshes.IsEnabled;
-        _importAnimation.IsEnabled = !_modelLoading && !_animationLoading && _importedModel != null && !IsActorMode;
+        _importAnimation.IsEnabled = !_modelLoading && !_animationLoading && (IsActorMode || _importedModel != null && !Session.AllClothsSelected);
     }
     private async Task OpenModel()
     {

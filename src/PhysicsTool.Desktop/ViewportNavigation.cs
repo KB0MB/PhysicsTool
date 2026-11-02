@@ -16,8 +16,12 @@ public sealed partial class PhysicsViewport
     private IPointer? _gesturePointer;
     public bool CanSelect { get; set; } = true;
     public event Action<IReadOnlyList<int>, SelectionOperation>? SelectionRequested;
+    internal Func<Vector3, Vector3, int?>? ModelItemPicker { get; set; }
+    internal (Vector3 Minimum, Vector3 Maximum)? ModelSelectionBounds { get; set; }
     public (Vector3 Center, float Yaw, float Pitch, double Zoom) CameraState => (_center, _yaw, _pitch, _zoom);
-    private double PixelsPerUnit => Math.Max(1, Math.Min(Bounds.Width, Bounds.Height)) * .78 / _extent * _zoom;
+    private double PixelsPerUnit => FlyNavigation
+        ? Math.Max(1, Bounds.Height) / (2 * Math.Tan(Math.PI / 6) * Math.Max(.1f, Vector3.Dot(FlyPosition - (TransformActive ? _transformPivot : _center), ViewDirection)))
+        : Math.Max(1, Math.Min(Bounds.Width, Bounds.Height)) * .78 / _extent * _zoom;
 
     private void ConfigureNavigation()
     {
@@ -42,6 +46,7 @@ public sealed partial class PhysicsViewport
         if (points.Length == 0) points = [new(-.5f), new(.5f)];
         var min = points.Aggregate(Vector3.Min); var max = points.Aggregate(Vector3.Max);
         _center = (min + max) / 2; _extent = Math.Max(.01f, (max - min).Length()); _pan = default;
+        if (FlyNavigation) { FrameFly(_center, _extent); return; }
         var rotated = points.Select(p => Vector3.TransformNormal(p - _center, Rotation)).ToArray();
         var size = rotated.Aggregate(Vector3.Max) - rotated.Aggregate(Vector3.Min);
         var w = Math.Max(1, Bounds.Width); var h = Math.Max(1, Bounds.Height);
@@ -54,9 +59,11 @@ public sealed partial class PhysicsViewport
             .SelectMany(p => BoundsCorners(Position(p) - new Vector3(Math.Max(.025f, p.Radius)), Position(p) + new Vector3(Math.Max(.025f, p.Radius))))
             .Concat(Data.Bones.Where(b => SelectedBones.Contains(b.Index)).SelectMany(b => BoundsCorners(BonePosition(b) - new Vector3(.025f), BonePosition(b) + new Vector3(.025f))))
             .Concat(VisibleColliders.Where(c => SelectedColliders.Contains(c.Index)).SelectMany(ColliderGeometry.Create).SelectMany(l => new[] { l.Start, l.End })).ToArray();
+        if (ModelSelectionBounds is { } bounds) points = BoundsCorners(bounds.Minimum, bounds.Maximum).ToArray();
         if (points.Length == 0) return;
         var min = points.Aggregate(Vector3.Min); var max = points.Aggregate(Vector3.Max);
         var center = (min + max) / 2;
+        if (FlyNavigation) { FrameFly(center, (max - min).Length()); return; }
         var rotated = points.Select(p => Vector3.TransformNormal(p - center, Rotation)).ToArray();
         var size = rotated.Aggregate(Vector3.Max) - rotated.Aggregate(Vector3.Min);
         var pixels = Math.Min(Math.Max(1, Bounds.Width) * .65 / Math.Max(.1f, size.X), Math.Max(1, Bounds.Height) * .65 / Math.Max(.1f, size.Y));
@@ -77,10 +84,12 @@ public sealed partial class PhysicsViewport
     public void Pan(double x, double y)
     {
         CancelCameraTransition();
+        if (FlyNavigation) { FlyPosition += Vector3.TransformNormal(new((float)(-x / PixelsPerUnit), (float)(y / PixelsPerUnit), 0), Matrix4x4.Transpose(Rotation)); Changed(); return; }
         _center += Vector3.TransformNormal(new((float)(-x / PixelsPerUnit), (float)(y / PixelsPerUnit), 0), Matrix4x4.Transpose(Rotation)); Changed();
     }
     public void ZoomAt(double steps, Point anchor)
     {
+        if (FlyNavigation) { FlyPosition -= ViewDirection * (float)(steps * CameraSpeed * .15); Changed(); return; }
         CancelCameraTransition();
         var before = PixelsPerUnit;
         _zoom = Math.Clamp(_zoom * Math.Pow(1 / .88, Math.Clamp(steps, -20, 20)), .00001, 1000000);
@@ -100,6 +109,11 @@ public sealed partial class PhysicsViewport
         if (TransformActive) { FinishTransform(!e.GetCurrentPoint(this).Properties.IsRightButtonPressed); e.Handled = true; return; }
         Focus(); _last = _down = e.GetPosition(this);
         var properties = e.GetCurrentPoint(this).Properties;
+        if (FlyNavigation && properties.IsRightButtonPressed)
+        {
+            _looking = true; _flyTime = System.Diagnostics.Stopwatch.GetTimestamp(); _flyTimer.Start();
+            _gesturePointer = e.Pointer; e.Pointer.Capture(this); e.Handled = true; return;
+        }
         var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift); var alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
         _orbit = (properties.IsMiddleButtonPressed || alt && properties.IsLeftButtonPressed) && !shift;
         _panning = (properties.IsMiddleButtonPressed || alt && properties.IsLeftButtonPressed) && shift;
@@ -111,6 +125,7 @@ public sealed partial class PhysicsViewport
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         var p = e.GetPosition(this); var delta = p - _last; _last = p;
+        if (_looking) { Orbit((float)delta.X * .004f, (float)delta.Y * .004f); e.Handled = true; return; }
         if (TransformActive) { MoveTransform(p); e.Handled = true; return; }
         if (_orbit) Orbit((float)delta.X * .01f, (float)delta.Y * .01f);
         else if (_panning) Pan(delta.X, delta.Y);
@@ -118,32 +133,48 @@ public sealed partial class PhysicsViewport
     }
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
+        if (FlyNavigation && _looking && e.GetCurrentPoint(this).Properties.IsRightButtonPressed) return;
         if (_selecting && CanSelect)
         {
             var p = e.GetPosition(this); var delta = p - _down; var operation = Operation(_selectionModifiers);
             if (Math.Abs(delta.X) + Math.Abs(delta.Y) > 4) SelectRectangle(new Rect(_down, p).Normalize(), operation);
             else
             {
+                if (ModelItemPicker != null && Matrix4x4.Invert(CameraMatrix, out var inverse))
+                {
+                    var ndc = new Vector3((float)(2 * p.X / Math.Max(1, Bounds.Width) - 1), (float)(1 - 2 * p.Y / Math.Max(1, Bounds.Height)), -1);
+                    var origin = Unproject(ndc, inverse); ndc.Z = .999f;
+                    int? selected = ModelItemPicker(origin, Vector3.Normalize(Unproject(ndc, inverse) - origin));
+                    SelectionRequested?.Invoke(selected is { } index ? [index] : [], operation);
+                }
+                else
+                {
                 var candidates = SelectionPoints().ToArray();
                 var hit = candidates.Select(point => { var d = Project(point.Position) - p; return (point.Index, Distance: Math.Sqrt(d.X * d.X + d.Y * d.Y)); }).OrderBy(t => t.Distance).FirstOrDefault();
                 if (candidates.Length > 0 && hit.Distance <= 10) SelectionRequested?.Invoke([hit.Index], operation);
                 else if (operation == SelectionOperation.Replace) SelectionRequested?.Invoke([], operation);
+                }
             }
             e.Handled = true;
         }
-        EndGesture(); e.Pointer.Capture(null);
+        EndGesture(preserveMovement: FlyNavigation); e.Pointer.Capture(null);
     }
-    private void EndGesture()
+    private void EndGesture(bool preserveMovement = false)
     {
+        if (preserveMovement) _looking = false; else StopFly();
         _orbit = _panning = _selecting = false; _selectionRect = default;
         var pointer = _gesturePointer; _gesturePointer = null;
         if (pointer?.Captured == this) pointer.Capture(null);
         Cursor = new Cursor(StandardCursorType.Arrow); InvalidateVisual();
     }
-    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e) { EndGesture(); base.OnPointerCaptureLost(e); }
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e) { if (_gesturePointer != null) EndGesture(); base.OnPointerCaptureLost(e); }
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e) { if (!TransformActive) ZoomAt(e.Delta.Y, e.GetPosition(this)); e.Handled = true; }
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        // With an idle selected scene actor, S starts scale. During mouse-look
+        // or an active walking chord it remains the backwards movement key.
+        if (FlyNavigation && e.Key == Key.S && !_looking && _flyKeys.Count == 0 && TransformKey(e)) { e.Handled = true; return; }
+        if (FlyKey(e)) { e.Handled = true; return; }
         if (TransformKey(e)) { e.Handled = true; return; }
         if (e.Key == Key.A && CanSelect && e.KeyModifiers is KeyModifiers.None or KeyModifiers.Alt)
         { SelectionRequested?.Invoke(e.KeyModifiers == KeyModifiers.Alt ? [] : SelectionPoints().Select(p => p.Index).ToArray(), SelectionOperation.Replace); e.Handled = true; }

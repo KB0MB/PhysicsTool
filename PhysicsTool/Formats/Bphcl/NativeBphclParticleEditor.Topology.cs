@@ -45,12 +45,15 @@ internal sealed partial class NativeBphclParticleEditor
         var collider = document.Colliders.ElementAtOrDefault(colliderIndex) ?? throw new ArgumentOutOfRangeException(nameof(colliderIndex));
         var cloth = document.Cloths[clothIndex];
         var edit = new NativeBphclParticleEditor(document);
-        foreach (var sim in cloth.SimCloths)
+        var simulations = cloth.SimCloths.Where(sim => sim.CollidableItemIndices.Contains(collider.ItemIndex)).DistinctBy(sim => sim.ItemIndex).ToArray();
+        if (simulations.Length == 0) return document;
+        ValidateColliderSimulationOwnership(document, clothIndex, simulations);
+        foreach (var sim in simulations)
         {
             var slots = sim.CollidableItemIndices.Select((item, index) => (item, index))
                 .Where(p => p.item == collider.ItemIndex).Select(p => p.index).ToHashSet();
             if (slots.Count == 0) continue;
-            if (sim.CollidableItemIndices.Count > 31) throw new InvalidOperationException("Collider deletion cannot remap this extended collision-mask layout.");
+            var keptSlots = Enumerable.Range(0, sim.CollidableItemIndices.Count).Where(slot => !slots.Contains(slot)).ToArray();
             var field = sim.DataOffset + 208;
             var storage = document.GetReferenceArray(field);
             edit.Rewrite(field, 8, (r, i) => slots.Contains(i) ? null : r);
@@ -65,13 +68,7 @@ internal sealed partial class NativeBphclParticleEditor
             edit.Rewrite(sim.DataOffset + 232, 4, (r, _) =>
             {
                 var mask = BinaryPrimitives.ReadUInt32LittleEndian(r);
-                foreach (var slot in slots.OrderDescending())
-                {
-                    var lower = mask & ((1u << slot) - 1);
-                    var upper = ((mask & 0x7fffffffu) >> (slot + 1)) << slot;
-                    mask = lower | upper | (mask & 0x80000000u);
-                }
-                BinaryPrimitives.WriteUInt32LittleEndian(r, mask);
+                BinaryPrimitives.WriteUInt32LittleEndian(r, RemapColliderMaskAfterDeletion(mask, keptSlots));
                 return r;
             });
             foreach (var op in cloth.Operators.Where(o => o.ClassName == "hclSimulateOperator" && o.SimulationClothIndex == sim.Index))
@@ -84,6 +81,17 @@ internal sealed partial class NativeBphclParticleEditor
         }
         // Outer collider objects may be shared by other cloths or registrations; retain ownership there.
         return edit.Finish();
+    }
+
+    internal static uint RemapColliderMaskAfterDeletion(uint mask, IReadOnlyList<int> keptSlots)
+    {
+        var result = mask & 0x80000000u;
+        // Deletion preserves order. Slots leaving TotK's shared bit-30 group inherit its value;
+        // all slots still in that group therefore agree, without wrapping at slot 32.
+        for (var slot = 0; slot < keptSlots.Count; slot++)
+            if ((mask & (1u << Math.Min(keptSlots[slot], 30))) != 0)
+                result |= 1u << Math.Min(slot, 30);
+        return result;
     }
 
     internal static bool CanRemoveRelationship(NativeBphclConstraintSet set, ParticleRelationshipRow row) =>

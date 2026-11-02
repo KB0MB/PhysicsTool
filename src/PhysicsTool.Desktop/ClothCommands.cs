@@ -34,7 +34,8 @@ public sealed partial class MainWindow
             options.Validate(); SimulationOptions = options;
             if (_solver != null) options.ApplyTo(_solver);
             if (_ragdollSolver != null) options.ApplyTo(_ragdollSolver);
-        }).ShowDialog(this);
+        }, !IsActorMode && Session.CanManageCloth && !Session.Document.IsBphcl ? Session : null,
+            () => _solver?.SetWindProfile(Session.SelectedWindProfile), _actorScene?.HasBphysicsWind == true).ShowDialog(this);
     }
     private void RefreshKeepingSelection(int[] indices)
     {

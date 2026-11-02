@@ -58,6 +58,17 @@ public sealed class HkclPreviewSimulator
     private Matrix4x4 _previousTransferMotionDelta = Matrix4x4.Identity;
     private bool _hasPreviousTransferMotionDelta;
     private readonly Random _windRandom = new();
+    private readonly BotwClothWind _botwWind = new();
+    private readonly float _totalMass;
+    private BotwClothWindSample _botwWindSample;
+    public BotwClothWindProfile? WindProfile { get; private set; }
+    public void SetWindProfile(BotwClothWindProfile? profile)
+    {
+        profile?.Validate();
+        WindProfile = _profile == ClothSolverProfile.TotkExperimental ? null : profile;
+        _botwWind.Reset();
+        _botwWindSample = default;
+    }
     private float _windTime;
     private float _previousIntegrationStep;
     private int _subStepIndex;
@@ -70,6 +81,7 @@ public sealed class HkclPreviewSimulator
     public HkclPreviewSimulator(ParticlePreviewData source)
     {
         _profile = source.SolverProfile;
+        _totalMass = source.TotalMass ?? source.Particles.Sum(p => p.Mass);
         _particles = source.Particles.ToDictionary(
             particle => particle.Index,
             particle => new SimParticle(particle));
@@ -166,6 +178,8 @@ public sealed class HkclPreviewSimulator
         _previousIntegrationStep = 0.0f;
         RememberInputPose();
         _nextRandomWindChange = 0.0f;
+        _botwWind.Reset();
+        _botwWindSample = default;
         _currentWindDirection = Vector3.UnitX;
         _targetWindDirection = Vector3.UnitX;
         _previousTransferMotionDelta = Matrix4x4.Identity;
@@ -1125,6 +1139,9 @@ public sealed class HkclPreviewSimulator
         var constraintIterations = _authoredSolveIterations * Math.Clamp(SolverIterations, 1, 24);
         var subStep = step / subSteps;
         _windTime += step;
+        _botwWindSample = WindEnabled && WindProfile != null
+            ? _botwWind.Step(WindProfile, GetWindDirection(step) * Math.Max(0, WindSpeed), step, (float)_windRandom.NextDouble())
+            : default;
         ApplyTransferMotion(step);
         var frameInput = new Dictionary<int, Matrix4x4>(_inputBoneDeltas);
         if (!_hasInputHistory) RememberInputPose();
@@ -1144,9 +1161,9 @@ public sealed class HkclPreviewSimulator
             SampleInputPose(frameInput, (subStepIndex + 1f) / subSteps);
             var colliders = _colliders.Select(source => new MovingCollider(
                 GetSubstepCollider(source, motions[source], (subStepIndex + 1f) / subSteps), motions[source])).ToArray();
-            var windDirection = GetWindDirection(subStep);
+            var windDirection = WindProfile == null ? GetWindDirection(subStep) : Vector3.Zero;
             var gust = 1.0f + MathF.Sin(_windTime * 1.8f) * Math.Clamp(WindGustiness, 0.0f, 1.0f);
-            var wind = WindEnabled ? windDirection * Math.Max(0.0f, WindSpeed) * gust : Vector3.Zero;
+            var wind = WindEnabled && WindProfile == null ? windDirection * Math.Max(0.0f, WindSpeed) * gust : Vector3.Zero;
             Integrate(subStep, wind, fixedInputs, (subStepIndex + 1f) / subSteps);
             for (var iteration = 0; iteration < constraintIterations; iteration++)
             {
@@ -1257,16 +1274,19 @@ public sealed class HkclPreviewSimulator
                 continue;
             }
 
+            var nativeWind = WindProfile != null ? _botwWindSample.Acceleration(
+                (particle.Position - particle.PreviousPosition) * (timeRatio / deltaSeconds),
+                particle.Mass, particle.EffectiveInverseMass, _totalMass, deltaSeconds) : Vector3.Zero;
             var velocity = ClampMagnitude(
                 (particle.Position - particle.PreviousPosition) * (damping * timeRatio),
                 MaximumPreviewSpeed * deltaSeconds);
             particle.PreviousPosition = particle.Position;
             // TotK 710059aee0 integrates (actionForce + gravity * mass) * inverseMass.
-            // Preview wind remains an acceleration, not a reconstructed game action.
+            // Unprofiled wind retains the generic preview behavior; BPHYSICS uses the native drag action.
             var gravityWeight = _profile == ClothSolverProfile.TotkExperimental
                 ? particle.Mass * particle.EffectiveInverseMass : 1f;
             var forceAcceleration = _particleForces.GetValueOrDefault(particle.Index) * particle.EffectiveInverseMass;
-            particle.Position += velocity + (_gravity * (Math.Max(0.0f, GravityScale) * gravityWeight) + forceAcceleration + wind) * (deltaSeconds * deltaSeconds);
+            particle.Position += velocity + (_gravity * (Math.Max(0.0f, GravityScale) * gravityWeight) + forceAcceleration + wind + nativeWind) * (deltaSeconds * deltaSeconds);
         }
     }
 
@@ -1714,8 +1734,14 @@ public sealed class HkclPreviewSimulator
     private bool IsPinchCollider(ColliderPreviewShape collider) =>
         _colliderPinching.TryGetValue(collider.CollisionBit, out var settings) && settings.Enabled;
 
-    private static bool CanCollide(SimParticle particle, ColliderPreviewShape collider) =>
-        collider.CollisionBit is >= 0 and < 31 && (particle.CollisionMask & (1u << collider.CollisionBit)) != 0;
+    private bool CanCollide(SimParticle particle, ColliderPreviewShape collider)
+    {
+        var slot = collider.CollisionBit;
+        if (slot < 0 || (_profile != ClothSolverProfile.TotkExperimental && slot >= 31)) return false;
+        // TotK shares bit 30 across the remaining instance slots; bit 31 is not an instance slot.
+        var bit = Math.Min(slot, 30);
+        return (particle.CollisionMask & (1u << bit)) != 0;
+    }
 
     private void ResolveOrdinaryContact(SimParticle particle, MovingCollider moving, float dt)
     {

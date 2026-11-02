@@ -24,6 +24,7 @@ internal sealed partial class BotwActorResources
     public List<BotwActorAnimationReference> Animations { get; } = new();
     public List<string> PhysicsFiles { get; } = new();
     public byte[]? PhysicsParameters { get; private set; }
+    public string? PhysicsParametersPath { get; private set; }
 
     public BotwActorResources(string path, IEnumerable<string>? roots = null, string? actorEntry = null)
     {
@@ -180,9 +181,11 @@ internal sealed partial class BotwActorResources
         var physicsName = Link("PhysicsUser", "Physics", ".bphysics");
         if (physicsName != "Dummy")
         {
-            PhysicsParameters = Read($"Actor/Physics/{physicsName}.bphysics");
+            var physicsPath = $"Actor/Physics/{physicsName}.bphysics";
+            PhysicsParameters = Read(physicsPath);
             if (PhysicsParameters != null)
             {
+                PhysicsParametersPath = physicsPath;
                 var physics = BotwAampReader.Read(PhysicsParameters).Root;
                 foreach (var value in Objects(physics).SelectMany(o => o.Parameters).Where(p => p.Type is 7 or 8 or 15 or 20).Select(p => p.AsString()))
                 {

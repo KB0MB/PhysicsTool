@@ -19,6 +19,16 @@ internal static class TexToGoTexture
     }
     internal static string Key(string name, int surface) => surface == 0 ? name : $"{name}#surface{surface}";
 
+    internal static VisualModelTexture DecodeBntx(byte[] data, string name, int surface = 0)
+    {
+        using var stream = new MemoryStream(data, false);
+        var container = new Syroot.NintenTools.NSW.Bntx.BntxFile(stream);
+        var texture = container.Textures.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? (container.Textures.Count == 1 ? container.Textures[0] : null);
+        if (texture == null) throw new InvalidDataException("BNTX does not contain the requested texture.");
+        return ToolboxActorTexture.Decode(texture, surface);
+    }
+
     internal static VisualModelTexture Decode(byte[] file, string name, int surface = 0)
     {
         if (file.Length < 80 || !file.AsSpan(4, 4).SequenceEqual("6PK0"u8))
@@ -37,8 +47,8 @@ internal static class TexToGoTexture
         CompressionFormat? bc = format switch {
             0x202 or 0x203 or 0x302 => CompressionFormat.Bc1WithAlpha,
             0x505 => CompressionFormat.Bc3,
-            0x602 or 0x606 or 0x607 => CompressionFormat.Bc4,
-            0x702 or 0x703 or 0x707 => CompressionFormat.Bc5,
+            0x602 or 0x605 or 0x606 or 0x607 => CompressionFormat.Bc4,
+            0x702 or 0x703 or 0x705 or 0x707 => CompressionFormat.Bc5,
             0x901 => CompressionFormat.Bc7,
             0x101 or 0x102 or 0x105 or 0x109 => null,
             _ => throw new NotSupportedException($"TexToGo format 0x{format:X} is not supported.") };
@@ -65,7 +75,18 @@ internal static class TexToGoTexture
                 int blockHeight = BaseBlockHeight(h);
                 int expected = checked(((w * bytes + 63) / 64) * 512 * blockHeight * ((h + blockHeight * 8 - 1) / (blockHeight * 8)));
                 using var decoder = new Decompressor();
-                var tiled = decoder.Unwrap(file.AsSpan(payload, (int)length), expected).ToArray();
+                // Some base surfaces include extra array/alignment padding. Bound the
+                // allocation without treating the minimum tiled footprint as an exact size.
+                int limit = Math.Max(expected, checked(width * height * 16 + 65536));
+                var tiled = decoder.Unwrap(file.AsSpan(payload, (int)length), limit).ToArray();
+                // A few shrine textures use the shared 0x102/0x105 tag but store
+                // 4x4 ASTC blocks. Accept that variant only on an exact footprint match.
+                if (bc == null && bx == 8 && by == 8 && U32(68) == 32563 && tiled.Length > expected)
+                {
+                    int w4 = (width + 3) / 4, h4 = (height + 3) / 4, bh4 = BaseBlockHeight(h4);
+                    int size4 = checked(((w4 * 16 + 63) / 64) * 512 * bh4 * ((h4 + bh4 * 8 - 1) / (bh4 * 8)));
+                    if (tiled.Length == size4) { bx = by = 4; w = w4; h = h4; blockHeight = bh4; }
+                }
                 var raw = ToolboxActorTexture.Deswizzle(tiled, w, h, bytes, 0, System.Numerics.BitOperations.Log2((uint)blockHeight));
                 var pixels = bc is { } compression
                     ? MemoryMarshal.AsBytes(new BcDecoder().DecodeRaw(raw, width, height, compression).AsSpan()).ToArray()
@@ -107,8 +128,10 @@ internal static class TexToGoTexture
                     try
                     {
                         var data = resources.Read($"TexToGo/{name}.txtg");
-                        if (data == null) { resources.Warnings.Add($"Missing TexToGo/{name}.txtg"); continue; }
-                        textures[key] = Decode(data, name, surface);
+                        if (data != null) textures[key] = Decode(data, name, surface);
+                        else if (resources.Read($"TexToGo/{name}.bntx") is { } bntx)
+                            textures[key] = DecodeBntx(bntx, name, surface);
+                        else resources.Warnings.Add($"Missing TexToGo/{name} (.txtg or .bntx/.bntx.zs)");
                     }
                     catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
                     { resources.Warnings.Add($"Texture {name}: {UserFacingExceptionFormatter.Format(ex)}"); }

@@ -24,7 +24,7 @@ public static class HelperPoseEvaluation
         {
             var evaluation = document.EvaluateSidecarPose(current, rest, groups);
             missing.UnionWith(evaluation.MissingDriverBones);
-            foreach (var pose in evaluation.Poses.Where(p => p.IsDriven))
+            foreach (var pose in SidecarPreviewEvaluator.BindDrivenPoses(evaluation, current))
                 overrides[pose.Name] = Matrix4x4.CreateScale(pose.Scale) * Matrix4x4.CreateFromQuaternion(pose.Rotation) * Matrix4x4.CreateTranslation(pose.Position);
             var worlds = new Dictionary<int, Matrix4x4>(); var visiting = new HashSet<int>();
             Matrix4x4 Visit(VisualModelBone bone)

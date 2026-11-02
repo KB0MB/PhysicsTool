@@ -6,7 +6,9 @@ namespace HKCLTool;
 
 public sealed partial class HkclService
 {
-    public void ValidateWholeClothMirror(int clothIndex)
+    public void ValidateWholeClothMirror(int clothIndex) => ValidateWholeClothMirror(clothIndex, false);
+
+    private void ValidateWholeClothMirror(int clothIndex, bool allowSharedColliders)
     {
         if (!HasDocument || IsHelperBoneSidecar || IsHkrg) throw new InvalidOperationException("Select a cloth to mirror.");
         var allowed = new HashSet<string>(StringComparer.Ordinal) {
@@ -16,7 +18,7 @@ public sealed partial class HkclService
         if (unsupported.Length > 0) throw new InvalidOperationException("Whole-cloth mirroring is not yet validated for: " + string.Join(", ", unsupported) + ". No data was changed.");
         var colliders = GetColliderRows(clothIndex).Select(c => c.Index).ToHashSet();
         for (var i = 0; i < GetClothSummaries().Count; i++)
-            if (i != clothIndex && GetColliderRows(i).Any(c => colliders.Contains(c.Index)))
+            if (!allowSharedColliders && i != clothIndex && GetColliderRows(i).Any(c => colliders.Contains(c.Index)))
                 throw new InvalidOperationException("This cloth shares colliders with another cloth. Duplicate the cloth first to isolate its collision data before mirroring.");
         var skin = GetSkinOperatorData(clothIndex);
         var supported = new HashSet<string>(StringComparer.Ordinal) { "hclObjectSpaceSkinPOperator", "hclBoneSpaceSkinPOperator", "hclSimpleMeshBoneDeformOperator",

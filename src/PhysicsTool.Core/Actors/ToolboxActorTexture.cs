@@ -45,12 +45,13 @@ internal static class ToolboxActorTexture
         SwizzleChannels(pixels, [(int)tex.CompSelR, (int)tex.CompSelG, (int)tex.CompSelB, (int)tex.CompSelA], false);
         return Texture(tex.Name, width, height, pixels);
     }
-    public static VisualModelTexture Decode(NxTexture tex)
+    public static VisualModelTexture Decode(NxTexture tex, int surface = 0)
     {
         int width = checked((int)tex.Width), height = checked((int)tex.Height); Validate(width, height);
         var format = Format(tex.Format.ToString());
         int w = (width + format.Block - 1) / format.Block, h = (height + format.Block - 1) / format.Block;
-        var raw = Deswizzle(tex.TextureData[0][0], w, h, format.Bytes, (int)tex.TileMode, (int)tex.BlockHeightLog2);
+        surface = Math.Clamp(surface, 0, tex.TextureData.Count - 1);
+        var raw = Deswizzle(tex.TextureData[surface][0], w, h, format.Bytes, (int)tex.TileMode, (int)tex.BlockHeightLog2);
         var pixels = DecodeSurface(raw, width, height, format);
         SwizzleChannels(pixels, [(int)tex.ChannelRed, (int)tex.ChannelGreen, (int)tex.ChannelBlue, (int)tex.ChannelAlpha], true);
         return Texture(tex.Name, width, height, pixels);

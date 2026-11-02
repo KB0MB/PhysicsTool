@@ -9,17 +9,45 @@ namespace PhysicsTool.Desktop.Rendering;
 public sealed unsafe class ModelGlRenderer : IDisposable
 {
     private readonly GL _gl;
+    private readonly bool _es;
     private readonly uint _standardProgram, _botwProgram, _totkProgram, _wireProgram;
     private uint _program;
     private readonly GridGlRenderer _grid;
     private readonly Dictionary<(uint Program, string Name), int> _locations = new();
     private readonly Dictionary<VisualModelTexture, uint> _textures = new();
     private readonly List<GpuMesh> _meshes = new();
-    private sealed record GpuMesh(uint Vao, uint Vbo, uint Ebo, VisualModelMesh Source, uint[] Textures, uint WireEbo = 0, int WireIndexCount = 0);
+    private sealed record GpuMesh(uint Vao, uint Vbo, uint Ebo, VisualModelMesh Source, uint[] Textures, uint WireEbo = 0, int WireIndexCount = 0)
+    {
+        internal Vector3 Minimum { get; init; }
+        internal Vector3 Maximum { get; init; }
+    }
+    private int[] _sceneOrder = [];
+    public int LastVisibleMeshes { get; private set; }
+    public int LastMaterialUpdates { get; private set; }
+    private static GpuMesh WithBounds(GpuMesh mesh)
+    {
+        Vector3 min = new(float.MaxValue), max = new(float.MinValue);
+        var v = mesh.Source.Vertices;
+        for (int i = 0; i < v.Length; i += 8) { var p = new Vector3(v[i], v[i + 1], v[i + 2]); min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
+        return mesh with { Minimum = min, Maximum = max };
+    }
+    private static bool Outside(GpuMesh mesh, Matrix4x4 camera)
+    {
+        int common = 63;
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Vector4.Transform(new Vector4((i & 1) == 0 ? mesh.Minimum.X : mesh.Maximum.X,
+                (i & 2) == 0 ? mesh.Minimum.Y : mesh.Maximum.Y, (i & 4) == 0 ? mesh.Minimum.Z : mesh.Maximum.Z, 1), camera);
+            int mask = (p.X < -p.W ? 1 : 0) | (p.X > p.W ? 2 : 0) | (p.Y < -p.W ? 4 : 0) | (p.Y > p.W ? 8 : 0) | (p.Z < -p.W ? 16 : 0) | (p.Z > p.W ? 32 : 0);
+            common &= mask;
+            if (common == 0) return false;
+        }
+        return common != 0;
+    }
     private VisualModelData? _model;
     public ModelGlRenderer(GL gl, bool es)
     {
-        _gl = gl;
+        _gl = gl; _es = es;
         _standardProgram = CreateProgram("Model.frag", es);
         try
         {
@@ -77,10 +105,12 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     private void V(string name, Vector3 value) => _gl.Uniform3(Location(name), value.X, value.Y, value.Z);
     private void M(string name, Matrix4x4 value) => _gl.UniformMatrix4(Location(name), 1, false, (float*)&value);
 
-    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false, ModelDisplayMode displayMode = ModelDisplayMode.Textured)
+    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false, ModelDisplayMode displayMode = ModelDisplayMode.Textured, bool staticScene = false)
     {
         var gl = _gl;
         gl.Viewport(0, 0, (uint)width, (uint)height); gl.Disable(EnableCap.ScissorTest);
+        if (_es) { gl.DepthRange(0f, 1f); gl.ClearDepth(1f); }
+        else { gl.DepthRange(0d, 1d); gl.ClearDepth(1d); }
         gl.ColorMask(true, true, true, true); gl.DepthMask(true);
         var clear = background ?? new Vector3(36 / 255f, 40 / 255f, 41 / 255f);
         gl.ClearColor(clear.X, clear.Y, clear.Z, 1); gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
@@ -92,10 +122,13 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             _model = model;
         }
         if (model == null) return;
+        var excluded = new HashSet<int>(hidden);
+        for (int i = 0; i < _meshes.Count; i++) if (!excluded.Contains(i) && Outside(_meshes[i], camera)) excluded.Add(i);
+        LastVisibleMeshes = _meshes.Count - excluded.Count; LastMaterialUpdates = 0;
         gl.Enable(EnableCap.DepthTest); gl.Disable(EnableCap.CullFace); gl.Disable(EnableCap.Blend);
         if (displayMode == ModelDisplayMode.Wireframe)
         {
-            DrawWireframe(hidden, camera, clear);
+            DrawWireframe(excluded, camera, clear);
             return;
         }
         var right = Vector3.Cross(Vector3.UnitY, direction);
@@ -115,38 +148,80 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         }
         try
         {
-            gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
-            DrawMeshes();
-            gl.ColorMask(true, true, true, true); gl.DepthMask(false); gl.DepthFunc(DepthFunction.Lequal);
-            gl.Enable(EnableCap.Blend); gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-            DrawMeshes();
+            if (staticScene)
+            {
+                // Seals are coplanar decorative layers, not occluders. Including
+                // them in the character depth prepass punches holes in walls.
+                gl.DepthFunc(DepthFunction.Lequal);
+                DrawMeshes(_sceneOrder.Where(i => _meshes[i].Source.Material.Totk is not { IsSeal: true } and not { IsTranslucent: true }), true);
+                gl.DepthMask(false); gl.Enable(EnableCap.Blend);
+                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                gl.Enable(EnableCap.PolygonOffsetFill); gl.PolygonOffset(-1f, -2f);
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk?.IsSeal == true)
+                    .OrderBy(i => _meshes[i].Source.Material.Totk!.Priority));
+                gl.Disable(EnableCap.PolygonOffsetFill);
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk is { IsSeal: false, IsTranslucent: true })
+                    .OrderBy(i => _meshes[i].Source.Material.Totk!.Priority).ThenByDescending(SceneDepth));
+            }
+            else
+            {
+                gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
+                DrawMeshes();
+                gl.ColorMask(true, true, true, true); gl.DepthMask(false); gl.DepthFunc(DepthFunction.Lequal);
+                gl.Enable(EnableCap.Blend); gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                DrawMeshes();
+            }
         }
         finally
         {
-            if (edgedFaces) gl.Disable(EnableCap.PolygonOffsetFill);
+            gl.Disable(EnableCap.PolygonOffsetFill);
+            gl.Disable(EnableCap.CullFace);
         }
         if (edgedFaces)
         {
             gl.Disable(EnableCap.Blend);
-            DrawWireframe(hidden, camera, clear, overlay: true);
+            DrawWireframe(excluded, camera, clear, overlay: true);
         }
         gl.DepthMask(true); gl.Disable(EnableCap.Blend); gl.Disable(EnableCap.DepthTest); gl.BindVertexArray(0); gl.UseProgram(0);
 
-        void DrawMeshes()
+        float SceneDepth(int index)
         {
-            for (int index = 0; index < _meshes.Count; index++)
+            var mesh = _meshes[index];
+            var clip = Vector4.Transform(new Vector4((mesh.Minimum + mesh.Maximum) * .5f, 1), camera);
+            return clip.W;
+        }
+
+        void DrawMeshes(IEnumerable<int>? drawOrder = null, bool writeDepth = false)
+        {
+            object? lastTotkMaterial = null;
+            IEnumerable<int> order = drawOrder ?? Enumerable.Range(0, _meshes.Count);
+            foreach (int index in order)
             {
-                if (hidden.Contains(index)) continue;
+                if (excluded.Contains(index)) continue;
                 var gpu = _meshes[index]; var m = gpu.Source.Material;
+                if (staticScene)
+                {
+                    gl.DepthMask(writeDepth && (m.Totk?.DepthWrite ?? true));
+                    if (m.Totk?.DisplayFace is "front" or "back")
+                    {
+                        gl.Enable(EnableCap.CullFace); gl.FrontFace(FrontFaceDirection.Ccw);
+                        gl.CullFace(m.Totk.DisplayFace == "front" ? TriangleFace.Back : TriangleFace.Front);
+                    }
+                    else gl.Disable(EnableCap.CullFace);
+                }
                 var program = m.Totk != null ? _totkProgram : m.UseBotwPreviewShader ? _botwProgram : _standardProgram;
                 if (_program != program)
                 {
+                    lastTotkMaterial = null;
                     _program = program; gl.UseProgram(program);
                     M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
                     V("uViewDirection", direction); V("uKeyLight", keyLight); V("uFillLight", fillLight);
                 }
                 if (m.Totk is { } totk)
                 {
+                    if (!ReferenceEquals(lastTotkMaterial, m))
+                    {
+                    LastMaterialUpdates++;
                     V("specLightDirection", keyLight);
                     I("useNormalMap", m.UseNormal ? 1 : 0); I("renderVertColor", 1);
                     I("renderDiffuse", 1); I("renderSpecular", m.UseSpm ? 1 : 0); I("renderFresnel", 1); I("colorOverride", 0);
@@ -158,6 +233,8 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                     {
                         gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + t));
                         gl.BindTexture(TextureTarget.Texture2D, gpu.Textures[t]); I($"Texture{t}", t);
+                    }
+                    lastTotkMaterial = m;
                     }
                     gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
                     continue;
@@ -225,10 +302,11 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         for (int i = 0; i < _meshes.Count; i++)
         {
             var gpu = _meshes[i]; var source = model.Meshes[i];
+            if (ReferenceEquals(gpu.Source, source)) continue;
             var vertices = ModelVertices.Build(source);
             _gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.Vbo);
             fixed (float* v = vertices) _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.DynamicDraw);
-            _meshes[i] = gpu with { Source = source };
+            _meshes[i] = WithBounds(gpu with { Source = source });
         }
     }
     private void Upload(VisualModelData model)
@@ -236,7 +314,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         foreach (var source in model.Meshes)
         {
             var gl = _gl; var vao = gl.GenVertexArray(); var vbo = gl.GenBuffer(); var ebo = gl.GenBuffer();
-            var gpu = new GpuMesh(vao, vbo, ebo, source, new uint[8]); _meshes.Add(gpu);
+            var gpu = WithBounds(new GpuMesh(vao, vbo, ebo, source, new uint[8])); _meshes.Add(gpu);
             gl.BindVertexArray(vao); gl.BindBuffer(BufferTargetARB.ArrayBuffer, vbo);
             var vertices = ModelVertices.Build(source);
             fixed (float* v = vertices) gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.StaticDraw);
@@ -248,6 +326,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             VisualModelTexture?[] textures = source.Material.Totk?.Textures ?? [source.Texture ?? (source.UseMissingTextureFallback ? ModelTextures.Default : null), source.SpecularTexture, source.NormalTexture, source.AmbientOcclusionTexture, source.AuxiliaryTexture, source.EyeGlintTexture];
             for (int t = 0; t < textures.Length; t++) if (textures[t] is { } texture) gpu.Textures[t] = UploadTexture(texture);
         }
+        _sceneOrder = Enumerable.Range(0, _meshes.Count).GroupBy(i => _meshes[i].Source.Material, ReferenceEqualityComparer.Instance).SelectMany(g => g).ToArray();
     }
     private uint UploadTexture(VisualModelTexture texture)
     {

@@ -47,6 +47,7 @@ public sealed partial class PhysicsViewport : Control
     {
         get
         {
+            if (FlyNavigation) return FlyMatrix;
             var w = Math.Max(1, Bounds.Width); var h = Math.Max(1, Bounds.Height);
             var scale = Math.Min(w, h) * .78 / _extent * _zoom;
             return Matrix4x4.CreateTranslation(-_center) * Rotation * Matrix4x4.CreateScale((float)(2 * scale / w), (float)(2 * scale / h), -1 / (_extent * 100))
@@ -75,7 +76,7 @@ public sealed partial class PhysicsViewport : Control
     private Point _last;
     private Point _pan;
     private bool _orbit, _panning;
-    public PhysicsViewport() { ClipToBounds = true; Focusable = true; ConfigureNavigation(); ConfigureCameraTransitions(); ActualThemeVariantChanged += (_, _) => Changed(); }
+    public PhysicsViewport() { ClipToBounds = true; Focusable = true; ConfigureNavigation(); ConfigureCameraTransitions(); ConfigureFlyCamera(); ActualThemeVariantChanged += (_, _) => Changed(); }
     public void Fit()
     {
         var points = Data.Particles.Select(p => p.Position).Concat(Data.Bones.Select(b => b.Position))
@@ -85,6 +86,12 @@ public sealed partial class PhysicsViewport : Control
     }
     public Point Project(Vector3 p)
     {
+        if (FlyNavigation)
+        {
+            var clip = Vector4.Transform(new Vector4(p, 1), CameraMatrix);
+            if (clip.W <= .01f) return new Point(-100000, -100000);
+            return new Point((clip.X / clip.W + 1) * Bounds.Width / 2, (1 - clip.Y / clip.W) * Bounds.Height / 2);
+        }
         var v = Vector3.Transform(p - _center, _renderingOverlay ? _renderRotation : Rotation);
         var scale = _renderingOverlay ? _renderScale : Math.Min(Bounds.Width, Bounds.Height) * .78 / _extent * _zoom;
         return new Point(Bounds.Width / 2 + v.X * scale + _pan.X, Bounds.Height / 2 - v.Y * scale + _pan.Y);
@@ -105,6 +112,13 @@ public sealed partial class PhysicsViewport : Control
     {
         if (Model == null || !GpuReady) context.FillRectangle(new SolidColorBrush(ViewportBackground), Bounds.WithX(0).WithY(0));
         else context.FillRectangle(Brushes.Transparent, Bounds.WithX(0).WithY(0));
+        if (ModelSelectionBounds is { } selection)
+        {
+            var corners = BoundsCorners(selection.Minimum, selection.Maximum).Select(Project).ToArray();
+            var pen = new Pen(Brushes.Orange, 1.5);
+            for (int i = 0; i < 8; i++)
+                foreach (int axis in new[] { 1, 2, 4 }) if ((i & axis) == 0 && corners[i].X != -100000 && corners[i | axis].X != -100000) context.DrawLine(pen, corners[i], corners[i | axis]);
+        }
         if (Model == null || !GpuReady)
         foreach (var line in GridLines)
         {

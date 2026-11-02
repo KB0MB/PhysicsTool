@@ -48,7 +48,11 @@ public sealed class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-            desktop.MainWindow = new MainWindow(desktop.Args?.FirstOrDefault(a => !a.StartsWith('-')));
+        {
+            var main = new MainWindow(desktop.Args?.FirstOrDefault(a => !a.StartsWith('-')));
+            WindowPlacement.Attach(main);
+            desktop.MainWindow = main;
+        }
         base.OnFrameworkInitializationCompleted();
     }
 }

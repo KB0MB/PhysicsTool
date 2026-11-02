@@ -34,6 +34,7 @@ public sealed partial class MainWindow
             cancellation.ThrowIfCancellationRequested();
             if (request != _modelRequest || !ReferenceEquals(old, _actorScene)) throw new OperationCanceledException();
             // Prepare the new pose before replacing the currently usable outfit.
+            MergeActorAnimations(replacement.Animations, _actorImportedAnimations);
             var clip = replacement.Animations.FirstOrDefault(a => a.Name == clipName && a.ResourceName == clipResource);
             var frame = Math.Clamp(_actorFrame, 0, clip?.FrameCount ?? 0);
             replacement.ConfigureSimulation(SimulationOptions.ApplyTo);

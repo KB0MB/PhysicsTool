@@ -7,9 +7,28 @@ using Res = Syroot.NintenTools.NSW.Bfres;
 
 internal static class TotkMaterialChecks
 {
+    internal static VisualModelMesh SealFixture(VisualModelMesh mesh, byte alpha)
+    {
+        var material = new Res.Material { ShaderAssign = new(), TextureRefs = ["seal"], SamplerDict = new(), RenderInfos = [], ShaderParams = [], ShaderParamData = [] };
+        material.SamplerDict.Add("_a0");
+        material.ShaderAssign.ShaderOptionDict = new(); material.ShaderAssign.ShaderOptions = [];
+        material.ShaderAssign.ShaderOptionDict.Add("o_albedo_color"); material.ShaderAssign.ShaderOptions.Add("0");
+        void Info(string name, string value)
+        {
+            var info = new Res.RenderInfo { Name = name }; info.SetValue([value]); material.RenderInfos.Add(info);
+        }
+        Info("gsys_pass", "seal"); Info("gsys_render_state_mode", "translucent");
+        Info("gsys_depth_test_write", "false"); Info("gsys_render_state_display_face", "front");
+        var threshold = new Res.RenderInfo { Name = "gsys_alpha_test_value" }; threshold.SetValue(new[] { .5f }); material.RenderInfos.Add(threshold);
+        ToolboxTotkMaterial.Apply(material, mesh, new() { [TexToGoTexture.Key("seal", 0)] = new() { Width = 1, Height = 1, Pixels = [255, 0, 0, alpha] } });
+        Require(mesh.Material.Totk is { IsSeal: true, IsTranslucent: true, DepthWrite: false, DisplayFace: "front" }, "Seal render metadata lost");
+        Require(mesh.Material.Totk!.Scalars["gsys_alpha_test_ref_value"] == .5f, "Render-info alpha threshold ignored");
+        return mesh;
+    }
     private static void Require(bool ok, string message) { if (!ok) throw new Exception(message); }
     public static void Run()
     {
+        SealFixture(new VisualModelMesh(), 128);
         foreach (var (height, expected) in new[] { (1, 1), (10, 1), (11, 2), (21, 2), (22, 4), (42, 4), (43, 8), (85, 8), (86, 16), (256, 16), (1024, 16) })
             Require(TexToGoTexture.BaseBlockHeight(height) == expected, $"TXTG inferred block height incorrect for {height}");
         TallTexture();

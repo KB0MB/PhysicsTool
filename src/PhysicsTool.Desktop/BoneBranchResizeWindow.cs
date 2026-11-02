@@ -15,10 +15,10 @@ internal sealed class BoneBranchResizeWindow : Window
     private readonly Button _apply;
     private readonly TextBlock _error;
     private readonly Action<Vector3, bool> _preview;
-    public BoneBranchResizeWindow(string boneName, Vector3 initialScale, Action<Vector3, bool> preview)
+    public BoneBranchResizeWindow(string boneName, Vector3 initialScale, Action<Vector3, bool> preview, bool allCloths = false)
     {
         _preview = preview;
-        Title = "Resize bone branch"; Width = 360; SizeToContent = SizeToContent.Height;
+        Title = allCloths ? "Resize all cloths" : "Resize bone branch"; Width = 360; SizeToContent = SizeToContent.Height;
         CanResize = false; ShowInTaskbar = false; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var panel = new StackPanel { Margin = new Thickness(16), Spacing = 12 };
         panel.Children.Add(new TextBlock { Text = boneName, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap });
@@ -26,18 +26,18 @@ internal sealed class BoneBranchResizeWindow : Window
         {
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("80,*") };
             row.Children.Add(new TextBlock { Text = "Scale " + "XYZ"[i], Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center });
-            _size[i] = new NumericUpDown { Name = "BranchResize" + "XYZ"[i], Minimum = .001m, Maximum = 1000m, Increment = .01m,
+            _size[i] = new NumericUpDown { Name = (allCloths ? "AllClothsResize" : "BranchResize") + "XYZ"[i], Minimum = .001m, Maximum = 1000m, Increment = .01m,
                 Value = (decimal)(i == 0 ? initialScale.X : i == 1 ? initialScale.Y : initialScale.Z), FormatString = "0.000" };
             Grid.SetColumn(_size[i], 1); row.Children.Add(_size[i]); panel.Children.Add(row);
         }
-        _colliders = new CheckBox { Name = "BranchResizeColliders", Content = "Resize attached colliders", IsChecked = true };
-        ToolTip.SetTip(_colliders, "Resize collision shapes bound to this branch. Other body colliders are not resized.");
+        _colliders = new CheckBox { Name = allCloths ? "AllClothsResizeColliders" : "BranchResizeColliders", Content = allCloths ? "Resize colliders" : "Resize attached colliders", IsChecked = true };
+        ToolTip.SetTip(_colliders, allCloths ? "Resize collision shapes with all cloths around the file origin." : "Resize collision shapes bound to this branch. Other body colliders are not resized.");
         panel.Children.Add(_colliders);
         _error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.OrangeRed, IsVisible = false }; panel.Children.Add(_error);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
         var reset = new Button { Content = "Reset" }; reset.Click += (_, _) => { foreach (var input in _size) input.Value = 1; PreviewNow(); };
         var cancel = new Button { Content = "Cancel", IsCancel = true }; cancel.Click += (_, _) => Close(false);
-        _apply = new Button { Name = "ApplyBranchResize", Content = "Apply", IsDefault = true }; _apply.Click += (_, _) => { if (PreviewNow()) Close(true); };
+        _apply = new Button { Name = allCloths ? "ApplyAllClothsResize" : "ApplyBranchResize", Content = "Apply", IsDefault = true }; _apply.Click += (_, _) => { if (PreviewNow()) Close(true); };
         actions.Children.Add(reset); actions.Children.Add(cancel); actions.Children.Add(_apply); panel.Children.Add(actions); Content = panel;
         void Queue() { _apply.IsEnabled = false; _delay.Stop(); _delay.Start(); }
         foreach (var input in _size) input.ValueChanged += (_, _) => Queue();

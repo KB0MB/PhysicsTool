@@ -79,6 +79,7 @@ internal static class SupportHierarchyChecks
         if (Vector3.Distance(preview.Poses.Single(b => b.Name == "UnlistedChild").Position, Vector3.UnitX * 3) > 1e-5f)
             throw new Exception("Standalone helper preview failed to move an unlisted child with its affected parent.");
         if (service.CaptureState() != state || preview.Missing.Count > 0) throw new Exception("Helper preview mutated the document or missed a present driver.");
+        CheckLinkBinding(root, boneList, original, "physsb", "BPHYSSB:");
         Console.WriteLine("PASS: same-group helper parents, dependent driver sampling and input-pose isolation.");
     }
 
@@ -201,7 +202,45 @@ internal static class SupportHierarchyChecks
                 throw new Exception($"TotK child helper lost its updated parent: duplicate={duplicateSkeleton}, childFirst={childFirst}");
             if (original[1].Position != Vector3.Zero || original[2].Position != Vector3.UnitX)
                 throw new Exception("TotK helper evaluation mutated the source skeleton");
+            CheckLinkBinding(root, list, original, "phhb", "BPHHB:", groups);
         }
         Console.WriteLine("PASS: TotK helper parent/child ordering, equipped skeleton aliases, and source-pose isolation.");
+    }
+
+    private static void CheckLinkBinding(AampListNode root, AampListNode names, IReadOnlyList<VisualModelBone> model, string archiveType, string statePrefix,
+        IReadOnlyList<SidecarDriverGroup>? preparedGroups = null)
+    {
+        var service = new HkclService();
+        service.RestoreState(statePrefix + Convert.ToBase64String(WriteArchive(archiveType, root)));
+        (IReadOnlyList<VisualBoneOverride> Poses, IReadOnlyList<string> Missing) Evaluate(IReadOnlyList<VisualModelBone> input)
+        {
+            if (preparedGroups == null) return HelperPoseEvaluation.Evaluate(service, input, input);
+            var evaluation = service.EvaluateSidecarPose(input, input, preparedGroups);
+            return (SidecarPreviewEvaluator.BindDrivenPoses(evaluation, input), evaluation.MissingDriverBones);
+        }
+        var baseline = Evaluate(model);
+        var authoredNames = names.Objects.Select(b => b.Parameters[0]).ToArray();
+        foreach (var (physicsPrefix, modelPrefix) in new[] { ("Link:", ""), ("", "Link:"), ("Link:", "Link:"), ("link:", "") })
+        {
+            for (int i = 0; i < names.Objects.Count; i++)
+                names.Objects[i].Parameters[0] = AampParameterNode.String256Value("name", physicsPrefix + model.First(b => b.Index == i).Name);
+            service.RestoreState(statePrefix + Convert.ToBase64String(WriteArchive(archiveType, root)));
+            var snapshot = service.CaptureState();
+            var prefixedModel = model.Select(b => new VisualModelBone { Index = b.Index, ParentIndex = b.ParentIndex, Name = modelPrefix + b.Name,
+                Position = b.Position, Rotation = b.Rotation, Scale = b.Scale }).ToArray();
+            var actual = Evaluate(prefixedModel);
+            if (actual.Missing.Count != 0) throw new Exception($"{archiveType} Link: driver did not bind");
+            foreach (var (expected, pose) in baseline.Poses.Zip(actual.Poses))
+            {
+                if (pose.Name != modelPrefix + expected.Name || Vector3.Distance(pose.Position, expected.Position) > 1e-5f || Math.Abs(Quaternion.Dot(pose.Rotation, expected.Rotation)) < .99999f)
+                    throw new Exception($"{archiveType} Link: helper override was lost for {pose.Name}");
+            }
+            var evaluation = service.EvaluateSidecarPose(prefixedModel, prefixedModel, preparedGroups);
+            var overrides = SidecarPreviewEvaluator.BindDrivenPoses(evaluation, prefixedModel);
+            if (overrides.Count == 0 || overrides.Any(p => !prefixedModel.Any(b => b.Name == p.Name)))
+                throw new Exception($"{archiveType} actor helper overrides did not use model names");
+            if (service.CaptureState() != snapshot) throw new Exception("Prefix binding changed saved helper data");
+        }
+        for (int i = 0; i < names.Objects.Count; i++) names.Objects[i].Parameters[0] = authoredNames[i];
     }
 }

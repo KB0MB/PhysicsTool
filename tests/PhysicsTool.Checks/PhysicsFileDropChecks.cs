@@ -22,7 +22,7 @@ internal static class PhysicsFileDropChecks
         var path = Path.GetFullPath(Path.Combine(output, "manual-0.hkcl"));
         var window = new MainWindow(graphics: false); window.Show();
         Require(DragDrop.GetAllowDrop(window), "Window does not accept file drops");
-        foreach (var extension in new[] { ".HKCL", ".bphcl", ".bphyssb", ".bphhb", ".hkrg" })
+        foreach (var extension in new[] { ".HKCL", ".bphcl", ".bphyssb", ".bphhb", ".hkrg", ".BPHYSICS" })
             Require(MainWindow.IsPhysicsFilePath("test" + extension), "Physics extension rejected");
         Require(!MainWindow.IsPhysicsFilePath("test.bfres") && !MainWindow.IsPhysicsFilePath("test.hkcl.exe"), "Unrelated file accepted");
         var file = window.StorageProvider.TryGetFileFromPathAsync(path).GetAwaiter().GetResult()

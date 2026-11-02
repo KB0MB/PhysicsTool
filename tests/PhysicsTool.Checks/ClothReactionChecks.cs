@@ -44,7 +44,8 @@ internal static class ClothReactionChecks
         var session = new EditorSession(); session.New("Ribbon", 2);
         var sidecar = session.Document.CreateBphysicsDocument("Test/Test.hkcl");
         Require(sidecar.SubWindSpeed == 25f && sidecar.SubWindFrequency == 5f &&
-            sidecar.Cloths[0].WindFrequency == 4.5f && sidecar.Cloths[0].WindDrag == 8f &&
+            sidecar.Cloths[0].WindFrequency == 4.5f &&
+            sidecar.Cloths[0].WindDrag == Math.Min(8f, 4f * session.Document.GetSimulationRuntimeData(0).TotalMass) &&
             sidecar.Cloths[0].WindMinSpeed == -2f && sidecar.Cloths[0].WindMaxSpeed == 12f &&
             sidecar.Cloths[0].SubWindFactorMain == 1f && sidecar.Cloths[0].SubWindFactorAdd == 0f,
             "Generic export did not use the balanced armor wind defaults");

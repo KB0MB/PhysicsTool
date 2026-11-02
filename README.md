@@ -2,7 +2,7 @@
 
 A tool for editing and previewing cloth, helper-bone, ragdoll and collision data from **The Legend of Zelda: Breath of the Wild** and **Tears of the Kingdom**.
 
-Version 2.0 brings an updated Avalonia interface, improved simulation and conversion, and builds for Windows, Linux and macOS.
+Available for Windows, Linux and macOS with an Avalonia interface.
 
 ## Features
 
@@ -10,6 +10,8 @@ Version 2.0 brings an updated Avalonia interface, improved simulation and conver
 - Support/helper-bone editing, response curves and BPHYSSB/BPHHB conversion.
 - HKRG ragdoll editing and collision generation, including TotK polytopes.
 - BotW/TotK actor viewing with BFRES models, textures, animations and physics previews.
+- BPHYSICS editing and mass-aware wind settings for converted cloths.
+- Experimental TotK shrine editing with actor placement, existing GroundControl groups and supported collision updates.
 - English, French, Spanish and Japanese interfaces, with translated in-app documentation.
 
 Open **Documentation** in the tool for editing guides, constraints, colliders and shortcuts. Keep an original copy of your files as a backup!

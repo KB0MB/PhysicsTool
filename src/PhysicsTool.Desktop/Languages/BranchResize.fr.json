@@ -2,6 +2,14 @@
   "Resize bone branch": "Redimensionner la branche d'os",
   "Resize attached colliders": "Redimensionner les colliders liés",
   "Resize collision shapes bound to this branch. Other body colliders are not resized.": "Redimensionne les formes de collision liées à cette branche. Les autres colliders du corps gardent leur taille.",
-  "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. HKCL only.": "Redimensionne la branche et son tissu autour de l'os sélectionné. Modifie les positions et les dimensions des contraintes sans changer l'échelle des os. HKCL uniquement.",
-  "Enter a scale factor.": "Saisissez un facteur d'échelle."
+  "Resize the selected bone's branch and its cloth around that bone. Bakes positions and constraint dimensions without changing bone scale values. Unsupported layouts are left unchanged.": "Redimensionne la branche et son tissu autour de l'os sélectionné. Modifie les positions et les dimensions des contraintes sans changer l'échelle des os. Les structures non prises en charge restent inchangées.",
+  "Enter a scale factor.": "Saisissez un facteur d'échelle.",
+  "All": "Tous",
+  "All cloths": "Tous les tissus",
+  "Resize all cloths": "Redimensionner tous les tissus",
+  "Resize colliders": "Redimensionner les colliders",
+  "Scale every cloth together around the file origin (0, 0, 0).": "Redimensionne tous les tissus ensemble autour de l'origine du fichier (0, 0, 0).",
+  "Resize collision shapes with all cloths around the file origin.": "Redimensionne les formes de collision avec tous les tissus autour de l'origine du fichier.",
+  "Select an individual cloth before editing items.": "Sélectionnez un tissu individuel avant de modifier ses éléments.",
+  "Select an individual cloth before importing animations.": "Sélectionnez un tissu individuel avant d'importer des animations."
 }

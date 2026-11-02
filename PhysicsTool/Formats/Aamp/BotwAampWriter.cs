@@ -154,8 +154,13 @@ internal static class BotwAampWriter
     private static void CollectLists(AampListNode list, ICollection<AampListNode> result)
     {
         result.Add(list);
-        foreach (var child in list.Children)
-            CollectLists(child, result);
+        AddChildren(list);
+        // Each list points at a contiguous array of its immediate children.
+        void AddChildren(AampListNode parent)
+        {
+            foreach (var child in parent.Children) result.Add(child);
+            foreach (var child in parent.Children) AddChildren(child);
+        }
     }
 
     private static void AddZeroes(List<byte> bytes, int count)

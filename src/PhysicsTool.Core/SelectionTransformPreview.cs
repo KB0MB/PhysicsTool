@@ -26,7 +26,7 @@ public sealed class SelectionTransformPreview
         if (_ragdoll) _follow = false;
         _bones = kind == PhysicsSelectionKind.Bones ? document.GetBoneRows(cloth) : [];
         _particles = kind == PhysicsSelectionKind.Bones && (_follow || bakeBoneScale) ? document.GetParticleRows(cloth) : [];
-        _colliders = kind != PhysicsSelectionKind.Particles ? document.GetColliderRows(cloth) : [];
+        _colliders = kind != PhysicsSelectionKind.Particles ? document.GetColliderEditRows(cloth) : [];
         _attachments = kind == PhysicsSelectionKind.Bones && (_follow || bakeBoneScale) ? document.GetParticleBoneAttachments(cloth) : [];
         _world = BoneEditGeometry.WorldTransforms(_bones);
         if (bakeBoneScale)

@@ -30,6 +30,8 @@ internal sealed class BotwActorScene : IDisposable
     public Dictionary<PlayerWeaponKind, PlayerWeaponSelection> Weapons { get; } = new();
     internal Dictionary<int, PlayerEquipmentAttachment> EquipmentAttachments { get; } = new();
     private readonly List<BotwActorResources> _outfitResources = new();
+    private readonly List<BotwActorResources> _exportResources = new();
+    public IReadOnlyList<BotwActorResources> ExportResources => _exportResources;
     private readonly List<BotwActorModelReference> _modelReferences = new();
     public List<ToolboxActorAnimation> Animations { get; } = new();
     public ParticlePreviewData Overlay { get; } = new();
@@ -45,6 +47,7 @@ internal sealed class BotwActorScene : IDisposable
     public int TextureCount { get; private set; }
     public bool WindEnabled { get; set; }
     public float WindSpeed { get; set; } = HkclPreviewSimulator.DefaultWindSpeed;
+    public bool HasBphysicsWind => _layers.Any(layer => layer.Solver.WindProfile != null);
     private ToolboxActorAnimation? _previousAnimation;
     private double _previousFrame;
     private bool _previousSimulating;
@@ -170,6 +173,7 @@ internal sealed class BotwActorScene : IDisposable
     }
     private void LoadModels(BotwActorResources resources, IReadOnlySet<string> hiddenMaterials, IProgress<string>? progress, CancellationToken cancellation)
     {
+        _exportResources.Add(resources);
         var documents = new Dictionary<string, ToolboxBfresDocument>();
         resources.PrepareTotkStrings();
         var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
@@ -238,10 +242,10 @@ internal sealed class BotwActorScene : IDisposable
                     try { source = service.IsBphcl ? service.GetTotkSimulationPreview(c) : service.GetParticlePreview(c); }
                     catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
                     { Resources.Warnings.Add($"Cloth {service.GetClothName(c)}: {UserFacingExceptionFormatter.Format(ex)}"); continue; }
-                    var clothProfile = profile?.Cloths.FirstOrDefault(p => cloths[c].Contains(p.Name, StringComparison.OrdinalIgnoreCase));
+                    var windProfile = BotwClothWindProfile.Find(profile, service.GetClothName(c));
                     if (!service.IsBphcl && !service.IsHkrg)
                         AddParticlePoseReferences(source, service.GetParticleBoneAttachments(c));
-                    AddLayer(source, clothProfile);
+                    AddLayer(source, windProfile);
                 }
             }
             catch (Exception ex) { Resources.Warnings.Add($"Physics {Path.GetFileName(resource)}: {UserFacingExceptionFormatter.Format(ex)}"); }
@@ -255,8 +259,9 @@ internal sealed class BotwActorScene : IDisposable
             if (!Animations.Any(a => a.Name == animation.Name && a.ResourceName == name)) Animations.Add(animation);
         }
     }
-    private void AddLayer(ParticlePreviewData source, BphysicsClothProfile? profile)
+    private void AddLayer(ParticlePreviewData source, BotwClothWindProfile? windProfile)
     {
+        var profile = windProfile?.Cloth;
         BindPreviewBoneNames(source, RestModel.Bones);
         var ownershipSolver = new HkclPreviewSimulator(source);
         var bones = source.Bones.ToDictionary(b => b.Index);
@@ -277,6 +282,7 @@ internal sealed class BotwActorScene : IDisposable
             if (attachment.BoneWeights.Count > 0) source.ParticleAttachments.Add(attachment);
         }
         var layer = new Layer(source, new HkclPreviewSimulator(source), Next(Overlay.Particles.Select(p => p.Index)), Next(Overlay.Bones.Select(b => b.Index)), Next(Overlay.Colliders.Select(c => c.Index)));
+        layer.Solver.SetWindProfile(windProfile);
         _layers.Add(layer);
         foreach (var p in source.Particles) Overlay.Particles.Add(new() { Index = p.Index + layer.ParticleOffset, Position = p.Position, Fixed = p.Fixed, Radius = p.Radius });
         foreach (var b in source.Bones) Overlay.Bones.Add(new() { Index = b.Index + layer.BoneOffset, ParentIndex = b.ParentIndex < 0 ? -1 : b.ParentIndex + layer.BoneOffset,
@@ -371,7 +377,7 @@ internal sealed class BotwActorScene : IDisposable
             var evaluation = service.EvaluateSidecarPose(clean.Bones, RestModel.Bones, _supportGroups[service]);
             // Helpers provide the input pose even for bones later written by
             // cloth. Cloth overrides replace these only after the solve.
-            foreach (var pose in evaluation.Poses.Where(p => p.IsDriven))
+            foreach (var pose in SidecarPreviewEvaluator.BindDrivenPoses(evaluation, clean.Bones))
                 overrides[pose.Name] = new(pose.Name, pose.Position, pose.Rotation, pose.Scale);
             if (evaluation.Poses.Any(p => p.IsDriven)) clean = Skeleton(animation, frame, overrides, simulate);
         }

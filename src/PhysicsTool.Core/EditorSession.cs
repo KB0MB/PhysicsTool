@@ -33,7 +33,26 @@ public sealed class EditorSession
     public HkclService Document { get; private set; } = new();
     public HkclPlatform Platform { get; set; } = HkclPlatform.WiiU;
     public string? Path { get; private set; }
+    private BphysicsDocument? _windParameters;
+    public string? WindParametersPath { get; private set; }
+    public BotwClothWindProfile? SelectedWindProfile => HasSelectedEntry
+        ? BotwClothWindProfile.Find(_windParameters, Document.GetClothName(ClothIndex)) : null;
+    public void LoadWindParameters(string? path)
+    {
+        var parameters = path == null ? null : BphysicsService.Load(path);
+        if (parameters != null)
+        {
+            foreach (var cloth in parameters.Cloths)
+                new BotwClothWindProfile(cloth, parameters.SubWindDirection, parameters.SubWindFrequency, parameters.SubWindSpeed).Validate();
+        }
+        _windParameters = parameters;
+        WindParametersPath = path;
+    }
+    public const int AllClothsIndex = -1;
     public int ClothIndex { get; set; }
+    public bool CanSelectAllCloths => Document.HasDocument && !Document.IsHelperBoneSidecar && !Document.IsHkrg
+        && Document.GetClothSummaries().Count > 0;
+    public bool AllClothsSelected => ClothIndex == AllClothsIndex && CanSelectAllCloths;
     public bool IsDirty => Document.HasDocument && Document.CaptureState() != _savedState;
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
@@ -50,13 +69,16 @@ public sealed class EditorSession
     {
         if (!CanSimulate)
             throw new InvalidOperationException("The selected cloth cannot be simulated with the available kernels.");
-        return new(Document.IsBphcl ? Document.GetTotkSimulationPreview(ClothIndex) : Document.GetParticlePreview(ClothIndex));
+        var solver = new HkclPreviewSimulator(Document.IsBphcl ? Document.GetTotkSimulationPreview(ClothIndex) : Document.GetParticlePreview(ClothIndex));
+        solver.SetWindProfile(SelectedWindProfile);
+        return solver;
     }
 
     public void New(string name, int format)
     {
         var document = HkclService.CreateBlankCloth(name, format == 2);
         Document = document;
+        LoadWindParameters(null);
         Platform = format == 0 ? HkclPlatform.WiiU : HkclPlatform.Switch;
         ModelBoneReferences = new Dictionary<Guid, ModelBoneReference>();
         _entryIds = new();
@@ -76,6 +98,7 @@ public sealed class EditorSession
 
         Document = document;
         Platform = platform;
+        LoadWindParameters(null);
         Path = path;
         ClothIndex = 0;
         ModelBoneReferences = new Dictionary<Guid, ModelBoneReference>();
@@ -94,6 +117,7 @@ public sealed class EditorSession
     public void Clear()
     {
         Document = new();
+        LoadWindParameters(null);
         Path = null;
         ClothIndex = 0;
         Platform = HkclPlatform.WiiU;
@@ -114,6 +138,8 @@ public sealed class EditorSession
         if (ReferenceEquals(this, other) || !Document.HasDocument || !other.Document.HasDocument)
             throw new InvalidOperationException("Load both a current file and a donor before swapping.");
         (Document, other.Document) = (other.Document, Document);
+        (_windParameters, other._windParameters) = (other._windParameters, _windParameters);
+        (WindParametersPath, other.WindParametersPath) = (other.WindParametersPath, WindParametersPath);
         (ModelBoneReferences, other.ModelBoneReferences) = (other.ModelBoneReferences, ModelBoneReferences);
         (Path, other.Path) = (other.Path, Path);
         (Platform, other.Platform) = (other.Platform, Platform);
@@ -280,6 +306,7 @@ public sealed class EditorSession
         target.Push(before);
         _entryIds = snapshot.EntryIds.ToList();
         ModelBoneReferences = snapshot.ModelReferences;
-        ClothIndex = Math.Clamp(snapshot.ClothIndex, 0, Math.Max(0, Document.GetClothSummaries().Count - 1));
+        ClothIndex = snapshot.ClothIndex == AllClothsIndex && CanSelectAllCloths ? AllClothsIndex
+            : Math.Clamp(snapshot.ClothIndex, 0, Math.Max(0, Document.GetClothSummaries().Count - 1));
     }
 }

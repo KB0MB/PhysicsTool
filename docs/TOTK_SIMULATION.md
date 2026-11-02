@@ -14,6 +14,7 @@ This is a reconstruction of a supported steady-state subset, not the complete Ha
 - Object-space packed position decoding and bone-space reference inputs, including full bind transforms. Fixed MoveParticles targets and local-range reference vertices must resolve exact skin inputs, not guessed neighboring bones.
 - Authored standard/stretch/bend links, local-range softness and four-particle bending, including TotK's conditional squared-height cutoff. Repeated schedule entries and collision calls retain their order.
 - Collision-slot masks and simulate-config instance selection. Duplicate references do not collapse motion records. Native transform-map bone indices and offset matrices drive each collider; names do not select bindings.
+- TotK instance slots 0-29 use individual mask bits; slots 30 and above all use bit 30. The actual slot still selects collider transforms, per-config enablement and pinch records. Bit 31 is not reused for an instance collider, and slot indices never wrap modulo 32.
 - Existing sphere/capsule/tapered-capsule/plane contact kernels, moving-surface friction, and native-style triangle-to-bone output.
 - Read-only runtime state, reset, animation input/loop rebasing, and editor Run/Stop/Space recovery.
 
@@ -41,9 +42,13 @@ The existing TotK `main` Ghidra project was examined with headless Ghidra in rea
 | `710048f830` | Steady-state dispatcher: transfer motion, drive colliders using skeleton transforms and map offsets, apply per-config collider enablement, substep colliders/fixed particles, integrate, then solve. |
 | `710059aee0` | Particle integration consumes per-particle action forces plus gravity times stored mass, then multiplies by stored inverse mass and squared step. |
 | `7100495020`, `7100495280` | Implicit versus explicit constraint scheduling, including collision calls. |
+| `71004956f0` | Collision dispatcher iterates the full instance list and passes the actual slot to the contact kernel. |
+| `71004aac70`, `71004a71d0`, `7100496260` | Primitive contact kernels clamp the instance mask index to `min(slot, 30)` while retaining the original collider slot for motion data. This supports more than 31 colliders without expanding the 32-bit particle mask. |
 | `71003db640`, `71003db8b0` | Clamped versus unclamped rest-bend kernels. The clamped path disables a correction beyond the authored squared-height limit; it does not simply cap curvature. |
 
 Fresh output: `HKCL/Research/totk-native-runtime-20261007.txt`. Prior supporting outputs: `totk-constraint-schedule-20261001.txt` and `totk-ribbon-curvature-20261007.txt` in the same research directory.
+
+Collision-mask evidence: `HKCL/Research/totk-collider-mask-20261031.txt` and `totk-contact-masks-20261031.txt`, generated from the same local project in read-only mode. Regression tests exercise slots 29, 30, 31, 32, 35 and 63 with independent, shared, empty and landscape-only masks, with the BotW path kept unchanged.
 
 ## Guarded and Unfinished
 

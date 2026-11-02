@@ -82,8 +82,6 @@ public sealed partial class HkclService
                 blockers.Add("The constraint schedule contains an invalid set index.");
             if (simulation.Particles.Any(p => !float.IsFinite(p.Mass) || !float.IsFinite(p.InverseMass) || p.Mass < 0 || p.InverseMass < 0))
                 blockers.Add("Particle mass/inverse mass must be finite and nonnegative.");
-            if (simulation.CollidableItemIndices.Count > 31)
-                blockers.Add("More than 31 instance collision slots are not supported.");
             if (config?.InstanceCollidablesUsed.Any(slot => slot < 0 || slot >= simulation.CollidableItemIndices.Count) == true)
                 blockers.Add("The simulation configuration contains an invalid collision slot.");
             if (simulation.Runtime.TransferMotionEnabled && simulation.Runtime.TransferMotionData.TransformSetIndex != 0)
@@ -116,7 +114,6 @@ public sealed partial class HkclService
         var config = cloth.Operators.Single(op => op.ClassName == "hclSimulateOperator").SimulateConfigs[0];
         var preview = GetParticlePreview(clothIndex);
         preview.SolverProfile = ClothSolverProfile.TotkExperimental;
-        var frames = BoneEditGeometry.WorldTransforms(GetBoneRows(clothIndex));
 
         // Do not synthesize fixed/reference inputs from nearby particles. Native
         // MoveParticles and LocalRange must resolve their exact skinned vertices.
@@ -131,34 +128,7 @@ public sealed partial class HkclService
                 throw new NotSupportedException($"Local range for particle {range.ParticleIndex} has no decoded reference vertex.");
 
         preview.Colliders.Clear();
-        var map = simulation.CollidableTransformMap;
-        for (var slot = 0; slot < simulation.CollidableItemIndices.Count; slot++)
-        {
-            var collider = document.Colliders.Single(c => c.ItemIndex == simulation.CollidableItemIndices[slot]);
-            if (!collider.Enabled || !config.UseAllInstanceCollidables && !config.InstanceCollidablesUsed.Contains(slot)) continue;
-            var bone = map.TransformSetIndex >= 0 ? checked((int)map.TransformIndices[slot]) : -1;
-            // TotK 710048f830: drive each instance slot with bone * offset
-            // (offset * bone for System.Numerics row vectors). Never infer by name.
-            var transform = bone >= 0 ? map.Offsets[slot] * frames[bone] : GetNativeColliderTransform(collider);
-            var shape = collider.Shape;
-            var kind = shape.TypeName switch
-            {
-                "hclSphereShape" => ColliderPreviewKind.Sphere,
-                "hclCapsuleShape" => ColliderPreviewKind.Capsule,
-                "hclTaperedCapsuleShape" => ColliderPreviewKind.TaperedCapsule,
-                _ => ColliderPreviewKind.Plane
-            };
-            var start = kind == ColliderPreviewKind.Plane ? new Vector4(GetPlanePoint(shape.PlaneEquation), 0) : shape.Start;
-            preview.Colliders.Add(new ColliderPreviewShape
-            {
-                Index = collider.Index, CollisionBit = slot, Name = collider.Name, BoneIndex = bone,
-                Start = TransformHkclColliderPoint(transform, start),
-                End = TransformHkclColliderPoint(transform, kind == ColliderPreviewKind.Plane ? start : shape.End),
-                TransformOrigin = transform.Translation, Radius = shape.Radius, EndRadius = shape.EndRadius,
-                PlaneNormal = TransformHkclColliderDirection(transform, new(shape.PlaneEquation.X, shape.PlaneEquation.Y, shape.PlaneEquation.Z)),
-                Kind = kind
-            });
-        }
+        AddNativeBphclPreviewColliders(preview, document, clothIndex, config);
         preview.PinchDetectionEnabled = simulation.Runtime.PinchDetectionEnabled;
         for (var i = 0; i < simulation.Runtime.PerParticlePinchDetectionEnabledFlags.Count; i++)
             if (simulation.Runtime.PerParticlePinchDetectionEnabledFlags[i]) preview.PinchEnabledParticles.Add(i);

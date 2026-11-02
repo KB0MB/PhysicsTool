@@ -20,6 +20,22 @@ public sealed record SidecarPreviewEvaluation(
 /// </summary>
 internal static class SidecarPreviewEvaluator
 {
+    internal static IReadOnlyList<VisualBoneOverride> BindDrivenPoses(
+        SidecarPreviewEvaluation evaluation, IEnumerable<VisualModelBone> modelBones)
+    {
+        var driven = evaluation.Poses.Where(p => p.IsDriven).ToArray();
+        var exact = driven.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+        var aliases = driven.GroupBy(p => NormalizeBoneName(p.Name), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+        var result = new List<VisualBoneOverride>();
+        foreach (var bone in modelBones.DistinctBy(b => b.Name, StringComparer.OrdinalIgnoreCase))
+            if (exact.TryGetValue(bone.Name, out var pose) || aliases.TryGetValue(NormalizeBoneName(bone.Name), out pose))
+                // Model overrides use the model's spelling; authored sidecar names stay intact.
+                result.Add(new(bone.Name, pose.Position, pose.Rotation, pose.Scale));
+        return result;
+    }
+
     private const uint NameHash = 1579384326u;
     private const uint BoneIdHash = 3407736066u;
     private const uint BaseBoneIdHash = 4279981158u;

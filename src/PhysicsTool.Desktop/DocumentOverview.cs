@@ -4,6 +4,7 @@ using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Input;
 using Avalonia.Media;
+using Avalonia.Threading;
 using HKCLTool;
 using PhysicsTool.Core;
 
@@ -90,6 +91,27 @@ public sealed class DocumentOverview : UserControl
         };
         _donorList.KeyDown += (_, e) => { if (e.Key == Key.M && _merge.IsEnabled) { MergeRequested?.Invoke(); e.Handled = true; } };
     }
+    internal void RestoreCurrentFocus()
+    {
+        // Replacing ItemsSource recreates virtualized rows. Focus the new row only
+        // after layout, rather than restoring focus to the list's obsolete container.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!IsEffectivelyVisible || !_current.IsEffectivelyVisible) return;
+            if (_current.SelectedIndex >= 0)
+            {
+                _current.ScrollIntoView(_current.SelectedIndex);
+                _current.UpdateLayout();
+                if (_current.ContainerFromIndex(_current.SelectedIndex) is { } row)
+                {
+                    row.Focus(NavigationMethod.Directional);
+                    return;
+                }
+            }
+            _current.Focus();
+        }, DispatcherPriority.Loaded);
+    }
+
     public void Update(EditorSession session, EditorSession donor)
     {
         _session = session; _donorSession = donor; _refreshing = true;
@@ -126,7 +148,7 @@ public sealed class DocumentOverview : UserControl
     }
     private void ShowCurrentBones()
     {
-        if (_session != null && _session.Document.GetClothSummaries().Count > 0) ShowBones(_session.Document, _session.ClothIndex, "Current bones");
+        if (_session?.HasSelectedEntry == true) ShowBones(_session.Document, _session.ClothIndex, "Current bones");
         else { _bones.ItemsSource = Array.Empty<BoneEditRow>(); _bonesEmpty.IsVisible = true; _bonesTitle.Text = "Bones"; }
     }
     public void ShowDonorBones()
