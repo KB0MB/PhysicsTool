@@ -18,13 +18,13 @@ Download **2.2.1** from [Releases](https://github.com/KB0MB/PhysicsTool/releases
 - Map Editing for TotK shrines and MainField scenes, including terrain, water, caves, wells and actor links. Add Static/Dynamic actors or edit placements with undo/redo; existing GroundControl and supported collision editing remain available.
 - English, French, Spanish and Japanese interfaces, with translated in-app documentation.
 
-Open **Documentation** in the tool for editing guides, constraints, colliders and shortcuts. Keep an original copy of your files as a backup!
+Open **Documentation** in the tool for editing guides, constraints, colliders and shortcuts.
 
-You need your own game resources for actor/model viewing. No game files are included. Simulation and material previews can still differ from the games, and some editing operations remain unsupported.
+Actor/model viewing requires your own game resources. No game files are included.
 
 ## Preview Limits
 
-- OoT support targets the newer BPHCL/Havok `20250200` resources described in the [OoT guide](docs/OOT.md), not the original N64 ROM format. Simulation and conversion are experimental; Malon Adult's sitting skirt is a known remaining mismatch.
+- OoT simulation and conversion are experimental; Malon Adult's sitting skirt is a known remaining mismatch. See the [OoT guide](docs/OOT.md) for supported editing operations.
 - Placement-only map edits do not change baked collision. Cave and well geometry is preview-only.
 - BotW uses neutral preview lighting, not the complete in-game weather, shadows, reflections or post-processing.
 - Windows x64 has local regression coverage. ARM64 and macOS cross-builds still need native UI/GPU validation; macOS builds are not notarized.
