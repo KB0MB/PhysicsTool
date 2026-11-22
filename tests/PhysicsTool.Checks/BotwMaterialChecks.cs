@@ -29,6 +29,24 @@ internal static class BotwMaterialChecks
             Require(mesh.Material.NormalUvSet == "_u0", "unsupported UV preserves fallback");
         }
         Require(warnings.Count == 7, "unsupported UV warnings");
+        options["uking_texture2_texcoord"] = "1";
+        options["uking_texture3_texcoord"] = "1";
+        options["uking_texcoord1_mapping"] = "0";
+        ToolboxBotwMaterial.Apply("uking_mat", options, new Dictionary<string, string>(), mesh, warnings);
+        Require(mesh.Material.NormalUvSet == "_u0" && mesh.Material.AmbientOcclusionUvSet == "_u0", "generated output routing includes AO");
+        options["uking_texcoord1_mapping"] = "1";
+        ToolboxBotwMaterial.Apply("uking_mat", options, new Dictionary<string, string>(), mesh, warnings);
+        Require(mesh.Material.AmbientOcclusionUvSet == "_u1", "Link AO uses second UV set");
+        options["uking_material_behave"] = "101";
+        mesh.Material.ShaderModel = VisualModelShaderModel.Cloth;
+        ToolboxBotwMaterial.Apply("other_game", options, new Dictionary<string, string>(), mesh, warnings);
+        Require(mesh.Material.ShaderModel == VisualModelShaderModel.Cloth, "BotW behavior does not affect other games");
+        ToolboxBotwMaterial.Apply("uking_mat", options, new Dictionary<string, string>(), mesh, warnings);
+        Require(mesh.Material.ShaderModel == VisualModelShaderModel.Skin, "native skin behavior overrides name-based cloth fallback");
+        options["uking_material_behave"] = "0";
+        mesh.Material.ShaderModel = VisualModelShaderModel.Eyelash;
+        ToolboxBotwMaterial.Apply("uking_mat", options, new Dictionary<string, string>(), mesh, warnings);
+        Require(mesh.Material.ShaderModel == VisualModelShaderModel.Eyelash, "other behaviors retain specialized fallback");
         foreach (var path in paths) Native(path);
         Console.WriteLine($"PASS: BotW shader routing, independent UVs, attribute remaps, normal tangents, invalid selectors, and {paths.Length} native models/actors.");
     }
@@ -39,8 +57,13 @@ internal static class BotwMaterialChecks
         if (Path.GetExtension(path) is ".bfres" or ".sbfres") documents = [new(File.ReadAllBytes(path))];
         else
         {
-            var resources = new BotwActorResources(path);
+            var resources = new BotwActorResources(path, actorEntry: Path.GetFileName(path) == "TitleBG.pack" ? "Actor/Pack/GameROMPlayer.sbactorpack" : null);
             documents = resources.Models.Select(m => m.Resource).Distinct().Select(n => new ToolboxBfresDocument(resources.ReadModel(n)!)).ToArray();
+        }
+        if (documents.All(d => d.Models.Length == 0))
+        {
+            Require(documents.Sum(CheckTextureColorSpaces) > 0, "texture-only fixture contains textures");
+            return;
         }
         var checkedMaterials = 0;
         foreach (var document in documents)
@@ -65,10 +88,24 @@ internal static class BotwMaterialChecks
                 foreach (var mesh in imported.RestPose.Meshes.Where(m => m.Name.EndsWith("__" + name)))
                 {
                     Require(mesh.Material.UseBotwPreviewShader, "native BotW detection");
-                    var uv = new[] { mesh.Material.AlbedoUvSet, mesh.Material.SpmUvSet, mesh.Material.NormalUvSet };
+                    if (archive == "uking_mat")
+                    {
+                        var native = mesh.Material.Botw;
+                        Require(native != null && ReferenceEquals(mesh.Material.Clone().Botw, native), "native uking_mat binding and clone");
+                        Require(native!.Parameters.Count > 0 && native.Parameters.Values.SelectMany(v => v).All(float.IsFinite), "native material constants loaded");
+                        Require(native.Parameters.Where(p => p.Key.StartsWith("tex_srt")).All(p => p.Value.Length == 8), "texture SRT unpacked to native 2x4 matrices");
+                        Require(ModelVertices.Build(mesh).Length == mesh.Vertices.Length / 8 * 24, "native four-UV vertex layout");
+                        Require(native.VertexColors.Length == mesh.Vertices.Length / 8, "native vertex colors loaded");
+                    }
+                    if (options.GetValueOrDefault("uking_material_behave") == "101")
+                        Require(mesh.Material.ShaderModel == VisualModelShaderModel.Skin, "native skin shading, including Mt_Head");
+                    var uv = new[] { mesh.Material.AlbedoUvSet, mesh.Material.SpmUvSet, mesh.Material.NormalUvSet, mesh.Material.AmbientOcclusionUvSet };
                     for (var slot = 0; slot < uv.Length; slot++)
-                        if (options.TryGetValue($"uking_texture{slot}_texcoord", out var channel) && mesh.UvSets.Any(u => u.Name == "_u" + channel))
-                            Require(uv[slot] == "_u" + channel, "native material UV choice");
+                        if (options.TryGetValue($"uking_texture{slot}_texcoord", out var channel) && int.TryParse(channel, out var output) && output is >= 0 and <= 5)
+                        {
+                            var input = options.GetValueOrDefault($"uking_texcoord{channel}_mapping", channel);
+                            if (mesh.UvSets.Any(u => u.Name == "_u" + input)) Require(uv[slot] == "_u" + input, "native material UV choice");
+                        }
                     Require(ModelVertices.Build(mesh).All(float.IsFinite), "finite native GPU vertex data");
                     checkedMaterials++;
                 }
@@ -76,6 +113,40 @@ internal static class BotwMaterialChecks
         }
         Require(checkedMaterials > 0, "native BotW materials tested");
         Console.WriteLine($"  {Path.GetFileName(path)}: {checkedMaterials} material/mesh bindings verified");
+        foreach (var document in documents) CheckTextureColorSpaces(document);
+        if (Path.GetExtension(path) is ".bfres" or ".sbfres")
+        {
+            string texturePath = Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + ".Tex.sbfres");
+            if (File.Exists(texturePath)) CheckTextureColorSpaces(new(File.ReadAllBytes(texturePath)));
+        }
+    }
+
+    private static int CheckTextureColorSpaces(ToolboxBfresDocument document)
+    {
+        var decoded = new Dictionary<string, VisualModelTexture>();
+        var warnings = new List<string>();
+        document.ReadTextures(decoded, warnings);
+        Require(warnings.Count == 0, "texture color-space fixtures decoded successfully");
+        int count = 0, srgbCount = 0;
+        void Check(string name, string format)
+        {
+            bool srgb = format.Contains("SRGB", StringComparison.OrdinalIgnoreCase);
+            Require(decoded.TryGetValue(name, out var texture) && texture.IsSrgb == srgb,
+                $"{name}: preserve {format} color space (sRGB={srgb})");
+            count++; if (srgb) srgbCount++;
+        }
+        if (document.Resource is ResU.ResFile wii)
+            foreach (var texture in wii.Textures.Values) Check(texture.Name, texture.Format.ToString());
+        else if (document.Resource is ResS.ResFile nx)
+            foreach (var file in nx.ExternalFiles)
+            {
+                if (!file.Data.AsSpan().StartsWith("BNTX"u8)) continue;
+                using var stream = new MemoryStream(file.Data, false);
+                var bntx = new Syroot.NintenTools.NSW.Bntx.BntxFile(stream);
+                foreach (var texture in bntx.Textures) Check(texture.Name, texture.Format.ToString());
+            }
+        if (count > 0) Console.WriteLine($"  {(document.IsSwitch ? "Switch" : "Wii U")}: {count} texture color spaces verified ({srgbCount} sRGB, {count - srgbCount} linear).");
+        return count;
     }
 
     private static void Require(bool condition, string message)
@@ -85,7 +156,7 @@ internal static class BotwMaterialChecks
 
     internal static void Survey(string path)
     {
-        var resources = new BotwActorResources(path);
+        var resources = new BotwActorResources(path, actorEntry: Path.GetFileName(path) == "TitleBG.pack" ? "Actor/Pack/GameROMPlayer.sbactorpack" : null);
         resources.PrepareTotkStrings();
         foreach (var modelRef in resources.Models)
         {

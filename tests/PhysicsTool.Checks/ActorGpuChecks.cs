@@ -35,7 +35,8 @@ internal sealed class ActorGpuChecks : Application
                     await window.LoadAnimationPathAsync(PathToAnimation);
                     window.SelectEditorAnimation(-1);
                 }
-                else await window.LoadActorPathAsync(PathToActor, ResourceRoots);
+                else await window.LoadActorPathAsync(PathToActor, ResourceRoots,
+                    System.IO.Path.GetFileName(PathToActor) == "TitleBG.pack" ? "Actor/Pack/GameROMPlayer.sbactorpack" : null);
                 window.Viewport.ShowPhysics = false;
                 var first = await Capture("actor-rest.png");
                 var lenses = window.Viewport.Model!.Meshes.Select((m, i) => (Mesh: m, Index: i))
@@ -94,7 +95,7 @@ internal sealed class ActorGpuChecks : Application
                     Console.WriteLine("PASS: TexToGo sampling, exact restoration, and normal-map GPU pixel differences.");
                 }
                 var previewMaterials = window.Viewport.Model!.Meshes.Select(m => m.Material).Distinct()
-                    .Where(m => m.UseBotwPreviewShader && (int)m.ShaderModel < 2).ToArray();
+                    .Where(m => m.Botw == null && m.UseBotwPreviewShader && (int)m.ShaderModel < 2).ToArray();
                 if (previewMaterials.Length > 0)
                 {
                     foreach (var material in previewMaterials) material.UseBotwPreviewShader = false;
@@ -106,6 +107,47 @@ internal sealed class ActorGpuChecks : Application
                 }
                 var animations = window.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Name == "ActorAnimation");
                 var armorButton = window.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "PlayerArmor");
+                if (System.IO.Path.GetFileName(PathToActor) == "TitleBG.pack")
+                {
+                    if (!armorButton.IsVisible) throw new Exception("BotW equipment controls are hidden");
+                    var head = window.Viewport.Model!.Meshes.First(m => m.Name.EndsWith("__Mt_Head"));
+                    if (head.Material.ShaderModel != HKCLTool.VisualModelShaderModel.Skin)
+                        throw new Exception("Link's head must use skin shading.");
+                    var headPoints = Enumerable.Range(0, head.Vertices.Length / 8)
+                        .Select(i => new System.Numerics.Vector3(head.Vertices[i * 8], head.Vertices[i * 8 + 1], head.Vertices[i * 8 + 2])).ToArray();
+                    window.Viewport.ModelSelectionBounds = (headPoints.Aggregate(System.Numerics.Vector3.Min), headPoints.Aggregate(System.Numerics.Vector3.Max));
+                    window.Viewport.SetView(CameraView.Front, false);
+                    window.Viewport.Orbit(-.65f, .05f);
+                    window.Viewport.FrameSelected();
+                    await Task.Delay(400);
+                    var skinHead = await Capture("botw-head-skin.png");
+                    int nativeBehavior = head.Material.Botw?.Options.GetValueOrDefault("uking_material_behave") ?? 0;
+                    if (head.Material.Botw is {} nativeHead) nativeHead.Options["uking_material_behave"] = 0;
+                    head.Material.ShaderModel = HKCLTool.VisualModelShaderModel.Cloth;
+                    var clothHead = await Capture("botw-head-previous-cloth.png");
+                    head.Material.ShaderModel = HKCLTool.VisualModelShaderModel.Skin;
+                    if (head.Material.Botw is {} restoredNativeHead) restoredNativeHead.Options["uking_material_behave"] = nativeBehavior;
+                    var restoredHead = await Capture("botw-head-restored.png");
+                    if (SHA256.HashData(skinHead).SequenceEqual(SHA256.HashData(clothHead)))
+                        throw new Exception("Head skin routing did not change GPU shading.");
+                    if (!SHA256.HashData(skinHead).SequenceEqual(SHA256.HashData(restoredHead)))
+                        throw new Exception("Head skin shading did not restore exactly.");
+                    window.Viewport.ModelSelectionBounds = null;
+                    window.Viewport.ResetView();
+                    var camera = window.Viewport.CameraState;
+                    await window.SwapPlayerArmorAsync(Enum.GetValues<HKCLTool.PlayerArmorSlot>().ToDictionary(s => s, s => "Armor_009_" + s), default);
+                    await Capture("botw-009-current.png");
+                    await window.SwapPlayerArmorAsync(Enum.GetValues<HKCLTool.PlayerArmorSlot>().ToDictionary(s => s, s => "Armor_001_" + s), default);
+                    if (window.Viewport.CameraState != camera) throw new Exception("BotW armor swap reset the camera");
+                    await Capture("botw-player-001-armor.png");
+                    await window.SwapPlayerEquipmentAsync(Enum.GetValues<HKCLTool.PlayerArmorSlot>().ToDictionary(s => s, s => "Armor_001_" + s),
+                        new Dictionary<HKCLTool.PlayerWeaponKind, HKCLTool.PlayerWeaponSelection> {
+                            [HKCLTool.PlayerWeaponKind.Sword] = new("Weapon_Sword_001", true),
+                            [HKCLTool.PlayerWeaponKind.Shield] = new("Weapon_Shield_001", true),
+                            [HKCLTool.PlayerWeaponKind.Bow] = new("Weapon_Bow_001") }, default);
+                    await Capture("botw-player-weapons.png");
+                    Console.WriteLine("PASS: BotW equipment button, armor swap, camera preservation and weapon rendering.");
+                }
                 if (System.IO.Path.GetFileName(PathToActor) == "Player.pack.zs")
                 {
                     if (!armorButton.IsVisible) throw new Exception("Player armor controls are hidden");
@@ -164,17 +206,20 @@ internal sealed class ActorGpuChecks : Application
                     await Capture("player-equipment-cleared.png");
                     Console.WriteLine("PASS: Player default/equipped/1151 armor rendering, frame and camera preservation, cancellation and failed-load rollback.");
                 }
-                else if (armorButton.IsVisible) throw new Exception("Armor controls visible for a non-Player actor");
+                else if (armorButton.IsVisible && System.IO.Path.GetFileName(PathToActor) != "TitleBG.pack") throw new Exception("Armor controls visible for a non-Player actor");
                 if (animations.ItemCount >= 2)
                 {
-                animations.SelectedIndex = 1;
+                var playbackScene = (HKCLTool.BotwActorScene)typeof(MainWindow).GetField("_actorScene", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(window)!;
+                var playbackClip = playbackScene.Animations.FirstOrDefault(a => a.Name == "Wait" && a.FrameCount > 30)
+                    ?? playbackScene.Animations.First(a => a.FrameCount > 30);
+                animations.SelectedIndex = playbackScene.Animations.ToList().IndexOf(playbackClip) + 1;
                 var timeline = window.GetVisualDescendants().OfType<Slider>().Single(s => s.Name == "ActorTimeline");
                 timeline.Value = timeline.Maximum / 2;
                 var posed = await Capture("actor-posed.png");
                 if (SHA256.HashData(first).SequenceEqual(SHA256.HashData(posed))) throw new Exception("Actor pose did not update GPU geometry.");
                 var play = window.GetVisualDescendants().OfType<Button>().Single(b => Equals(ToolTip.GetTip(b), "Play / pause animation"));
                 var before = timeline.Value; play.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                await Task.Delay(250);
+                for (int attempt = 0; attempt < 30 && timeline.Value == before; attempt++) await Task.Delay(100);
                 play.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 if (timeline.Value == before) throw new Exception("Actor playback clock did not advance.");
                 window.ToggleSimulation(); play.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(250);

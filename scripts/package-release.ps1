@@ -1,8 +1,9 @@
 param(
-    [string]$Version = '2.2.0',
+    [string]$Version = '2.2.1',
     [ValidateSet('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','osx-arm64')]
     [string[]]$Runtimes = @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','osx-arm64'),
-    [switch]$SkipSource
+    [switch]$SkipSource,
+    [switch]$IncludeWorkingTree
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zip-unix.ps1')
@@ -11,6 +12,11 @@ $root = Split-Path $PSScriptRoot
 $releaseNotes = Join-Path $root "docs/RELEASE_$Version.md"
 if (-not (Test-Path -LiteralPath $releaseNotes)) { throw "Release notes missing: $releaseNotes" }
 $output = Join-Path $root "artifacts/releases/$Version"
+$excludedFeature = '(?i)(^|/)(umii[^/]*|[^/]*miiicons[^/]*)(/|$)'
+Push-Location $root
+try { $trackedFeature = @(git -c core.quotepath=false ls-files | Where-Object { $_ -match $excludedFeature }) }
+finally { Pop-Location }
+if ($trackedFeature.Count) { throw "Unreleased appearance-editor files are tracked: $($trackedFeature -join ', ')" }
 $work = Join-Path $root ('artifacts/package-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $output,$work -Force | Out-Null
 function Zip-Folder([string]$Directory, [string]$File) {
@@ -19,6 +25,7 @@ function Zip-Folder([string]$Directory, [string]$File) {
     try {
         foreach ($item in Get-ChildItem -LiteralPath $Directory -Recurse -File | Sort-Object FullName) {
             $relative = [IO.Path]::GetRelativePath($Directory, $item.FullName).Replace('\','/')
+            if ($relative -match $excludedFeature) { throw "Unreleased feature in archive: $relative" }
             $entry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $item.FullName, $relative, [IO.Compression.CompressionLevel]::Optimal)
             $executable = $item.Name -in @('PhysicsTool','PhysicsTool.MeshCodec') -or $item.Extension -in @('.sh','.dylib','.so')
             $entry.ExternalAttributes = $(if ($executable) { 0x81ED } else { 0x81A4 }) -shl 16
@@ -114,7 +121,12 @@ if (-not $SkipSource) {
     $sourceStage = Join-Path $work 'source'
     $sourceRoot = Join-Path $sourceStage "PhysicsTool-$Version-source"
     Push-Location $root
-    try { $files = @(git -c core.quotepath=false ls-files -c --exclude-standard) | Sort-Object -Unique }
+    try {
+        $gitArguments = @('-c', 'core.quotepath=false', 'ls-files', '-c', '--exclude-standard')
+        if ($IncludeWorkingTree) { $gitArguments += '-o' }
+        $files = @(& git @gitArguments) | Sort-Object -Unique
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to enumerate release source.' }
+    }
     finally { Pop-Location }
     foreach ($relative in $files) {
         if ($relative -match '^(artifacts/|PhysicsTool/NativeFbx/|PhysicsTool/ThirdParty/VCRuntime/)' -or

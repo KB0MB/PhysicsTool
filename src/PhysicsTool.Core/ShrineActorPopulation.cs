@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using BymlLibrary;
+using System.Numerics;
+using HKCLTool;
 
 namespace PhysicsTool.Core;
 
@@ -8,10 +10,46 @@ internal sealed partial class ShrinePlacementEditor
 {
     private readonly Dictionary<(int Original, bool Delete), string?> _populationRestrictions = new();
 
+    internal IReadOnlyList<string> AdditionSources => _sources.Keys.Where(p =>
+        Path.GetFullPath(p).Equals(Path.GetFullPath(_original.Model.SourcePath), StringComparison.OrdinalIgnoreCase) ||
+        Path.GetFullPath(p).Equals(ShrineSceneCatalog.Companion(Path.GetFullPath(_original.Model.SourcePath)), StringComparison.OrdinalIgnoreCase))
+        .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+
+    internal int AddActor(string name, string source, Vector3 position, VisualModelData model)
+    {
+        if (!PlacementOnly) throw new InvalidOperationException("Enable Placement only before adding actors. Collision rebuilding for new actors is not supported yet.");
+        source = AdditionSources.FirstOrDefault(p => Path.GetFullPath(p).Equals(Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException("Choose a Static or Dynamic source belonging to this scene.");
+        if (string.IsNullOrWhiteSpace(name) || name.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '_') ||
+            name.StartsWith("GroundControlActor", StringComparison.Ordinal) || name.StartsWith("FldObj_Tar_MergeParts_", StringComparison.Ordinal))
+            throw new ArgumentException("Choose an individual actor. GroundControl and MergeParts need coordinated scene data.");
+        new ShrineTransform(position, Vector3.Zero, Vector3.One).Validate();
+        if (Scene.Actors.Count >= 100000) throw new InvalidOperationException("Scene exceeds the 100,000 actor limit.");
+        var used = Scene.Actors.SelectMany(a => new[] { a.Hash, a.PlacementId }).ToHashSet();
+        foreach (var bytes in _sources.Values) CollectIds(Byml.FromBinary(bytes), used);
+        ulong hash; do { hash = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)); } while (hash == 0 || !used.Add(hash));
+        uint srt; do { srt = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4)); } while (srt == 0 || !used.Add(srt));
+        int key = _nextKey++;
+        var actor = new ShrineActor(key, name, "", hash, position, Vector3.Zero, Vector3.One, 0, 0, 0, "", [], [])
+        { SourceScene = source, SourceIndex = -1, LocalPosition = position, WorldTransform = Matrix4x4.CreateTranslation(position) };
+        Commit(_state with { Additions = new(_state.Additions) { [key] = new(actor, srt, model) } });
+        return Array.IndexOf(_keys, key);
+    }
+
+    private static Byml AddedRecord(ShrineActor actor, uint srtHash)
+    {
+        Byml Vector(Vector3 v) => new(new List<Byml> { new(v.X), new(v.Y), new(v.Z) });
+        return new Byml(new Dictionary<string, Byml> {
+            ["Gyaml"] = new(actor.Name), ["Hash"] = new(actor.Hash), ["SRTHash"] = new(srtHash),
+            ["Translate"] = Vector(actor.LocalPosition), ["Rotate"] = Vector(actor.Rotation), ["Scale"] = Vector(actor.Scale)
+        });
+    }
+
     internal string? PopulationRestriction(int index, bool delete)
     {
         if (EditRestriction(index) is { } restriction) return restriction;
         int key = _keys[index];
+        if (_state.Additions.ContainsKey(key)) return null;
         // Copies were admitted without external links and are safe to remove again.
         if (_state.Copies.ContainsKey(key)) return null;
         if (_populationRestrictions.TryGetValue((key, delete), out var cached)) return cached;
@@ -69,8 +107,8 @@ internal sealed partial class ShrinePlacementEditor
     {
         var selected = indices.Distinct().ToArray(); if (selected.Length == 0) return [];
         foreach (int index in selected) if (PopulationRestriction(index, false) is { } reason) throw new NotSupportedException(reason);
-        var next = _state with { Copies = new(_state.Copies), Transforms = new(_state.Transforms) };
-        var used = Scene.Actors.SelectMany(a => new[] { a.Hash, a.PlacementId }).Concat(_original.Compound!.ActorLinks.Select(l => l.Hash)).ToHashSet();
+        var next = _state with { Copies = new(_state.Copies), Transforms = new(_state.Transforms), Additions = new(_state.Additions) };
+        var used = Scene.Actors.SelectMany(a => new[] { a.Hash, a.PlacementId }).Concat(_original.Compound?.ActorLinks.Select(l => l.Hash) ?? []).ToHashSet();
         // Avoid every ID present in loaded scene metadata, not just visible actors.
         foreach (var bytes in _sources.Values) CollectIds(Byml.FromBinary(bytes), used);
         ulong NewId()
@@ -82,6 +120,13 @@ internal sealed partial class ShrinePlacementEditor
         var added = new List<int>();
         foreach (int index in selected)
         {
+            if (_state.Additions.TryGetValue(_keys[index], out var addition))
+            {
+                int addedKey = _nextKey++;
+                uint addedSrt; do { addedSrt = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4)); } while (addedSrt == 0 || !used.Add(addedSrt));
+                next.Additions[addedKey] = addition with { Actor = addition.Actor with { Index = addedKey, Hash = NewId() }, SrtHash = addedSrt };
+                next.Transforms[addedKey] = ShrineTransform.Local(Scene.Actors[index]); added.Add(addedKey); continue;
+            }
             var actor = Scene.Actors[index]; int original = _state.Copies.GetValueOrDefault(_keys[index])?.Original ?? _keys[index];
             ulong hash = NewId(), placement = actor.PlacementId == 0 ? 0 : actor.PlacementId == actor.Hash ? hash : NewId();
             uint srt;
@@ -97,11 +142,11 @@ internal sealed partial class ShrinePlacementEditor
     {
         var selected = indices.Distinct().ToArray(); if (selected.Length == 0) return;
         foreach (int index in selected) if (PopulationRestriction(index, true) is { } reason) throw new NotSupportedException(reason);
-        var next = _state with { Copies = new(_state.Copies), Transforms = new(_state.Transforms), Deleted = new(_state.Deleted) };
+        var next = _state with { Copies = new(_state.Copies), Transforms = new(_state.Transforms), Deleted = new(_state.Deleted), Additions = new(_state.Additions) };
         foreach (int index in selected)
         {
             int key = _keys[index];
-            if (!next.Copies.Remove(key)) next.Deleted.Add(key);
+            if (!next.Additions.Remove(key) && !next.Copies.Remove(key)) next.Deleted.Add(key);
             next.Transforms.Remove(key);
         }
         Commit(next);

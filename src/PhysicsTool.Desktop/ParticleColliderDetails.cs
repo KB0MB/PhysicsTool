@@ -14,10 +14,10 @@ public sealed partial class MainWindow
         public override string ToString() => Index < 0 ? "None" : $"{Index}: {Name}";
     }
 
-    private void DetailApply(string id, Action action)
+    private void DetailApply(string id, Action action, string label = "Apply")
     {
         var error = new TextBlock { Name = id + "Error", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.IndianRed };
-        var apply = new Button { Name = id, Content = "Apply", HorizontalAlignment = HorizontalAlignment.Stretch };
+        var apply = new Button { Name = id, Content = label, HorizontalAlignment = HorizontalAlignment.Stretch };
         _details.Children.Add(error); _details.Children.Add(apply);
         apply.Click += (_, _) => { try { action(); } catch (Exception ex) { error.Text = ex.Message; _status.Text = ex.Message; } };
     }

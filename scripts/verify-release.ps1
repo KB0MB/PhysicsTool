@@ -1,7 +1,8 @@
-param([string]$Version = '2.2.0', [switch]$SkipSource)
+param([string]$Version = '2.2.1', [switch]$SkipSource)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zip-unix.ps1')
 $root = Split-Path $PSScriptRoot
+$excludedFeature = '(?i)(^|/)(umii[^/]*|[^/]*miiicons[^/]*)(/|$)'
 $directory = Join-Path $root "artifacts/releases/$Version"
 function Read-Entry($Archive, [string]$Name) {
     $entry = $Archive.GetEntry($Name)
@@ -35,11 +36,12 @@ foreach ($rid in @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','os
         $app = $prefix + $(if ($rid.StartsWith('osx-')) { 'PhysicsTool.app/Contents/MacOS/' } else { '' })
         $resources = if ($rid.StartsWith('osx-')) { $prefix + 'PhysicsTool.app/Contents/Resources/' } else { $app }
         foreach ($entry in $zip.Entries) {
+            if ($entry.FullName -match $excludedFeature) { throw "Unreleased feature in binary archive: $($entry.FullName)" }
             if ($entry.FullName -match '(^/|(^|/)\.\.(/|$)|^[A-Za-z]:)' -or
                 $entry.FullName -match '(?i)(\.pdb$|/settings\.json$|/actor-folders\.json$|/actor-catalog-[^/]+\.json$|\.(hkcl|bphcl|bphyssb|bphhb|hkrg|sbfres|bfres|pack|sbactorpack|txtg|zs)$)') { throw "Unexpected private/unsafe file: $($entry.FullName)" }
         }
         foreach ($required in @('LICENSE','THIRD_PARTY_NOTICES.txt','Licenses/Inter-OFL.txt','Licenses/DotNetRuntime/LICENSE.TXT',
-            'Licenses/DotNetRuntime/THIRD-PARTY-NOTICES.TXT','Licenses/MeshCodec-source.zip','Licenses/Tkmm.BymlLibrary-1.2.3-source.zip')) {
+            'Licenses/DotNetRuntime/THIRD-PARTY-NOTICES.TXT','Licenses/Killz-BotW-Shaders.txt','Licenses/MeshCodec-source.zip','Licenses/Tkmm.BymlLibrary-1.2.3-source.zip')) {
             $base = if ($required.StartsWith('Licenses/')) { $resources } else { $app }
             if (-not $zip.GetEntry($base + $required)) { throw "Missing notice or source: $rid $required" }
         }
@@ -60,6 +62,9 @@ foreach ($rid in @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','os
         }
         foreach ($binary in @('PhysicsTool.dll', 'PhysicsTool.Core.dll', "Tools/MeshCodec/$rid/PhysicsTool.MeshCodec$suffix")) {
             $text = [Text.Encoding]::UTF8.GetString((Read-Entry $zip ($app + $binary)))
+            if ($binary -in @('PhysicsTool.dll', 'PhysicsTool.Core.dll') -and $text -match '(?i)(UmiiView|UmiiPreview|UmiiDocument|UmiiIcons|UmiiGame|UmiiAppearance)') {
+                throw "Unreleased appearance-editor code/resource in $rid $binary"
+            }
             foreach ($privatePath in @($root, $root.Replace('\','/'), $HOME, $HOME.Replace('\','/'))) {
                 if ($text.Contains($privatePath, [StringComparison]::OrdinalIgnoreCase)) { throw "Developer path leaked into $rid $binary" }
             }
@@ -76,6 +81,7 @@ if (-not $SkipSource) {
 $source = [IO.Compression.ZipFile]::OpenRead((Join-Path $directory "PhysicsTool-$Version-source.zip"))
 try {
     foreach ($entry in $source.Entries) {
+        if ($entry.FullName -match $excludedFeature) { throw "Unreleased feature in source archive: $($entry.FullName)" }
         if ($entry.FullName -match '/(\.git|artifacts|bin|obj|VCRuntime|NativeFbx)/' -or $entry.FullName -match '\.(pdb|log|hkcl|bphcl|sbfres|sbactorpack)$') { throw "Unexpected source archive file: $($entry.FullName)" }
     }
     if (-not $source.GetEntry("PhysicsTool-$Version-source/PhysicsTool.slnx")) { throw 'Primary solution missing from source archive.' }

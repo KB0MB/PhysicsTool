@@ -76,6 +76,7 @@ internal sealed partial class ShrinePlacementEditor
         var controller = selected.Name.StartsWith("GroundControlActor", StringComparison.Ordinal) ? selected :
             Scene.Actors.FirstOrDefault(a => selected.GroupGuid != 0 && a.GroupGuid == selected.GroupGuid && a.Name.StartsWith("GroundControlActor", StringComparison.Ordinal));
         if (controller == null) return null;
+        if (PlacementOnly) return new(controller.Index, -1, [], "GroundControl requires coordinated collision editing. Reopen the scene without Placement only.", "GroundControl requires coordinated collision editing.");
         var body = Compound?.Bodies.SingleOrDefault(b => b.PlacementGroupId != 0 && b.PlacementGroupId == controller.GroupGuid);
         var members = Scene.Actors.Where(a => a.GroupGuid != 0 && a.GroupGuid == controller.GroupGuid).Select(a => a.Index).ToArray();
         string? restriction = null, moveRestriction = null;
@@ -116,6 +117,7 @@ internal sealed partial class ShrinePlacementEditor
 
     internal string? GroundControlParameterRestriction(int index)
     {
+        if (PlacementOnly) return "GroundControl editing is unavailable in Placement only mode.";
         var actor = Scene.Actors[index];
         if (!actor.Name.StartsWith("GroundControlActor", StringComparison.Ordinal) || actor.GroupGuid == 0 || actor.GroupId == 0 ||
             Compound?.Bodies.Count(b => b.PlacementGroupId == actor.GroupGuid && b.GroupId == actor.GroupId) != 1)

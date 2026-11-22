@@ -11,11 +11,16 @@ public sealed partial class NativeBphclDocument
         Bytes = bytes;
         Header = header;
         TagFile = tagFile;
+        SdkVersion = tagFile.Children.FirstOrDefault(s => s.Signature == "SDKV") is { } sdk
+            ? System.Text.Encoding.ASCII.GetString(bytes, sdk.PayloadOffset, sdk.PayloadSize).TrimEnd('\0') : "";
     }
 
     public byte[] Bytes { get; }
     public NativeBphclHeader Header { get; }
     public NativeBphclSection TagFile { get; }
+    public string SdkVersion { get; }
+    public bool IsOot => SdkVersion == "20250200";
+    public bool IsPreviewOnly => SdkVersion != "20220100";
     public NativeBphclSection? DataSection => TagFile.Children.FirstOrDefault(x => x.Signature == "DATA");
     public NativeBphclSection? TypeSection => TagFile.Children.FirstOrDefault(x => x.Signature == "TYPE");
     public NativeBphclSection? IndexSection => TagFile.Children.FirstOrDefault(x => x.Signature == "INDX");
@@ -67,6 +72,8 @@ public sealed partial class NativeBphclDocument
             TypeNames = NativeBphclTagFileReader.ReadTypeNames(tagFile),
             TypeDefinitions = NativeBphclTagFileReader.ReadTypeDefinitions(tagFile)
         };
+        if (document.SdkVersion is not ("20220100" or "20250200"))
+            throw new NotSupportedException($"BPHCL SDK version '{document.SdkVersion}' is not supported. Expected TotK 20220100 or OoT 20250200.");
         document.RootVariants = document.ReadRootVariants();
         document.ReadClothAndSkeletonLists();
         document.Aamp = NativeAampMetadata.Read(bytes, header.ParameterOffset, header.ParameterSize);

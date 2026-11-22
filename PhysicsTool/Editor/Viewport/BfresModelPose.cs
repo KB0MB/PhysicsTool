@@ -16,10 +16,11 @@ internal sealed class BfresModelPose
     public BfresModelPose(string path)
     {
         _path = Path.GetFullPath(path);
-        var document = new ToolboxBfresDocument(File.ReadAllBytes(_path));
+        var document = new ToolboxBfresDocument(new TotkResourceCompression().Decode(File.ReadAllBytes(_path), TotkResourceCompression.Roots(_path)), _path);
         var textures = new Dictionary<string, VisualModelTexture>(StringComparer.Ordinal);
         document.ReadTextures(textures, _warnings);
         _embedded = textures.Count;
+        OotModelTextures.Load(document, _path, textures, _warnings);
         var stem = Path.Combine(Path.GetDirectoryName(_path)!, Path.GetFileNameWithoutExtension(_path));
         foreach (var suffix in document.IsSwitch ? new[] { ".Tex.bfres", ".Tex.sbfres" } : new[] { ".Tex1.bfres", ".Tex1.sbfres" })
         {
@@ -29,7 +30,7 @@ internal sealed class BfresModelPose
             catch (Exception ex) when (ex is not OutOfMemoryException) { _warnings.Add($"Texture resource {Path.GetFileName(companion)}: {ex.GetType().Name}"); }
         }
         _external = textures.Count - _embedded;
-        foreach (var model in document.Models) _models.Add(new ToolboxActorModel(document, (string)model.Name, textures));
+        foreach (var model in document.Models) _models.Add(new ToolboxActorModel(document, (string)model.Name, textures, warnings: _warnings));
         if (_models.Count == 0) throw new InvalidDataException("This BFRES contains no models. Select the model resource, not a texture or animation resource.");
         foreach (var model in _models)
             foreach (var bone in model.RestPose.Bones) _canonicalBones.TryAdd(BoneName(bone.Name), bone);
@@ -46,13 +47,14 @@ internal sealed class BfresModelPose
             {
                 var name = BoneName(pose.Name);
                 if (!_canonicalBones.TryGetValue(name, out var rest)) continue;
-                if (pose.Position == rest.Position && pose.Rotation == rest.Rotation && pose.Scale == rest.Scale)
+                if (pose.WorldMatrix == rest.WorldMatrix || (pose.AffineTransform == null &&
+                    pose.Position == rest.Position && pose.Rotation == rest.Rotation && pose.Scale == rest.Scale))
                     deltas[name] = Matrix4x4.Identity;
                 else
                 {
-                    if (!Matrix4x4.Invert(Matrix(rest.Position, rest.Rotation, rest.Scale), out var inverse))
+                    if (!Matrix4x4.Invert(rest.WorldMatrix, out var inverse))
                         throw new InvalidDataException($"BFRES bone '{name}' has a singular bind transform.");
-                    deltas[name] = inverse * Matrix(pose.Position, pose.Rotation, pose.Scale);
+                    deltas[name] = inverse * pose.WorldMatrix;
                 }
             }
         }
@@ -68,7 +70,7 @@ internal sealed class BfresModelPose
             var offset = result.Bones.Count;
             result.Bones.AddRange(pose.Bones.Select(b => new VisualModelBone { Index = b.Index + offset,
                 ParentIndex = b.ParentIndex < 0 ? -1 : b.ParentIndex + offset, Name = b.Name,
-                Position = b.Position, Rotation = b.Rotation, Scale = b.Scale }));
+                Position = b.Position, Rotation = b.Rotation, Scale = b.Scale, AffineTransform = b.AffineTransform }));
             foreach (var mesh in pose.Meshes)
             {
                 var i = result.Meshes.Count;
@@ -76,6 +78,7 @@ internal sealed class BfresModelPose
                 result.Meshes.Add(new VisualModelMesh { Name = _models.Count > 1 ? model.Name + "/" + mesh.Name : mesh.Name,
                     UseMissingTextureFallback = mesh.UseMissingTextureFallback,
                     Vertices = mesh.Vertices, Indices = mesh.Indices, BaseColor = source.BaseColor, CullingMode = source.CullingMode,
+                    Tangents = mesh.Tangents, TangentUvSet = mesh.TangentUvSet,
                     Texture = source.Texture, SpecularTexture = source.SpecularTexture, NormalTexture = source.NormalTexture,
                     AmbientOcclusionTexture = source.AmbientOcclusionTexture, AuxiliaryTexture = source.AuxiliaryTexture,
                     EyeGlintTexture = source.EyeGlintTexture, UvSets = source.UvSets, Material = source.Material });
@@ -92,6 +95,4 @@ internal sealed class BfresModelPose
         return result;
     }
     private static string BoneName(string name) => name[(name.LastIndexOf(':') + 1)..];
-    private static Matrix4x4 Matrix(Vector3 position, Quaternion rotation, Vector3 scale) =>
-        Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rotation) * Matrix4x4.CreateTranslation(position);
 }

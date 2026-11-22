@@ -29,13 +29,13 @@ internal sealed partial class BphscDocument
         return Parse(ReadResource(path, roots));
     }
 
-    internal static byte[] ReadResource(string path, IEnumerable<string>? roots = null)
+    internal static byte[] ReadResource(string path, IEnumerable<string>? roots = null, TotkResourceCompression? compression = null)
     {
         if (new FileInfo(path).Length > 256 * 1024 * 1024) throw new InvalidDataException("Resource exceeds the 256 MiB input limit.");
         var bytes = File.ReadAllBytes(path);
         if (bytes.Length >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(bytes) == 0xfd2fb528 && Decompressor.GetDecompressedSize(bytes) > 512 * 1024 * 1024)
             throw new InvalidDataException("Resource exceeds the 512 MiB decoded limit or has an unknown decoded size.");
-        return new TotkResourceCompression().Decode(bytes, (roots ?? []).Concat(TotkResourceCompression.Roots(path)));
+        return (compression ?? new TotkResourceCompression()).Decode(bytes, (roots ?? []).Concat(TotkResourceCompression.Roots(path)));
     }
 
     internal static BphscDocument Parse(byte[] bytes) => new(bytes);

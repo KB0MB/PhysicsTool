@@ -116,7 +116,10 @@ internal static class ShrinePopulationChecks
             editor.Scene.Actors.Any(a => a.Hash == copy.Hash), "Delete removed the wrong actor");
         editor.Undo(); Require(editor.Compound!.Snapshot().SequenceEqual(moved), "Delete undo did not restore exact collision");
         editor.Redo();
+        Require(assets.Model.Meshes.Where(m => ShrineSceneAssets.MeshActorIndex(m) == null).All(editor.Model.Meshes.Contains),
+            "Duplicate/delete or undo/redo changed scene terrain");
         string saved = editor.Save(output);
+        Require(!Directory.Exists(Path.Combine(saved, "romfs", "TerrainArc")), "Actor export unexpectedly wrote terrain resources");
         var path = Path.Combine(saved, "romfs", Path.GetRelativePath(root, actor.SourceScene));
         var scene = ShrineSceneDocument.Load(path);
         Require(scene.Actors.All(a => a.Hash != actor.Hash) && scene.Actors.Single(a => a.Hash == copy.Hash).Position == copy.LocalPosition + new Vector3(4, 1, 2), "Saved duplicate/delete or pose is incorrect");

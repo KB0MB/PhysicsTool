@@ -26,7 +26,8 @@ public sealed class ImportedModelRig(VisualModelData rest, Func<IReadOnlyList<Vi
                     AnimationSourcePath = source.AnimationSourcePath, AnimationFrame = source.AnimationFrame };
                 foreach (var bone in source.Bones)
                     result.Bones.Add(new() { Index = bone.Index, ParentIndex = bone.ParentIndex, Name = bone.Name,
-                        Position = bone.Position + offset, Rotation = bone.Rotation, Scale = bone.Scale, Sources = bone.Sources });
+                        Position = bone.Position + offset, Rotation = bone.Rotation, Scale = bone.Scale, Sources = bone.Sources,
+                        AffineTransform = bone.AffineTransform.HasValue ? bone.WorldMatrix * Matrix4x4.CreateTranslation(offset) : null });
                 return result;
             }
         };

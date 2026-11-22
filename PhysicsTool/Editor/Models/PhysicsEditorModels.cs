@@ -414,7 +414,7 @@ public sealed class HkrgConstraintEditRow
     public float? HingeDamping { get; set; }
     public float? AngularFriction { get; set; }
 }
-public enum ClothSolverProfile { BotwPreview, TotkExperimental }
+public enum ClothSolverProfile { BotwPreview, TotkExperimental, OotExperimental }
 
 public sealed class ParticlePreviewData
 {
@@ -441,6 +441,15 @@ public sealed class ParticlePreviewData
     public bool HasAntiPinchConstraints { get; set; }
     public HashSet<int> PinchEnabledParticles { get; } = new();
     public List<ParticlePreviewColliderPinch> ColliderPinching { get; } = new();
+    public List<ParticlePreviewAntiPinch> AntiPinchRecovery { get; } = new();
+    public NativeVirtualCollisionData? VirtualCollisionData { get; set; }
+    public OotContactSurface? OotContactSurface { get; set; }
+    public OotContactSurface? OotWindSurface { get; set; }
+    public OotAerodynamicsData? OotAerodynamics { get; set; }
+    public List<VolumeConstraintSetData> OotVolumeConstraints { get; } = new();
+    public List<OotBonePlane> OotBonePlanes { get; } = new();
+    // Native runtime configuration, not an authored cloth-file field.
+    internal bool OotDirectConstraintVelocity { get; set; } = true;
     public int SimulationSubSteps { get; set; } = 1;
     public int SimulationSolveIterations { get; set; } = 1;
     public bool AdaptConstraintStiffness { get; set; }
@@ -468,6 +477,13 @@ public sealed class ParticlePreviewConstraintSet
 }
 
 public sealed record ParticlePreviewColliderPinch(int CollisionBit, bool Enabled, int Priority, float Radius);
+
+public sealed record OotBonePlane(int ConstraintSetIndex, int ParticleIndex, int BoneIndex,
+    Vector3 RestNormal, Vector3 RestOrigin, float Offset, float Stiffness);
+
+public sealed record ParticlePreviewAntiPinch(int ParticleIndex, int ReferenceBufferIndex, int ReferenceVertex,
+    float ToAnimationPeriod, float ToSimulationPeriod, float ToSimulationMaxDistance,
+    IReadOnlyList<ParticlePreviewBoneWeight> ReferenceBoneWeights);
 
 // hclMoveParticlesOperator copies selected reference-buffer vertices into the
 // simulation. These weights identify the animated skeleton transforms that
@@ -615,6 +631,7 @@ public enum ColliderPreviewKind
 
 public sealed class ColliderPreviewShape
 {
+    public bool VirtualCollisionEnabled { get; set; }
     public int Index { get; set; }
     public int CollisionBit { get; set; } = -1;
     public string Name { get; set; } = string.Empty;

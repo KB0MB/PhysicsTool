@@ -8,8 +8,8 @@ internal static class ClothSkinReferenceChecks
     private static IReadOnlyDictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>> Decode(
         SkinOperatorData skin, IReadOnlyDictionary<int, Matrix4x4> frames) =>
         (IReadOnlyDictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>>)typeof(HkclService)
-            .GetMethod("BuildSkinVertexBoneWeights", BindingFlags.Static | BindingFlags.NonPublic)!
-            .Invoke(null, new object[] { skin, frames })!;
+            .GetMethod("BuildSkinVertexBoneWeights", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(new HkclService(), new object[] { skin, frames })!;
 
     public static void Run(string directory)
     {

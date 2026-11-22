@@ -57,9 +57,9 @@ internal static class EditorAnimationChecks
         }
         window.ToggleEditorPlayback(); window.AdvanceEditorPreview(1f / 60); window.ToggleEditorPlayback();
         Require(window.EditorAnimationFrame > imported.EndFrame / 2, "Standalone playback did not advance");
-        window.SeekEditorAnimation(0); window.AnimationPlaybackFps = 30; window.ToggleEditorPlayback(); window.AdvanceEditorPreview(.2f); window.ToggleEditorPlayback();
-        Require(Math.Abs(window.EditorAnimationFrame - 3) < .001, "30 fps did not run at half speed");
-        window.SeekEditorAnimation(0); window.AnimationPlaybackFps = 60; window.ToggleEditorPlayback(); window.AdvanceEditorPreview(.2f); window.ToggleEditorPlayback();
+        window.SeekEditorAnimation(0); window.ViewportFps = 30; window.ToggleEditorPlayback(); window.AdvanceEditorPreview(.2f); window.ToggleEditorPlayback();
+        Require(Math.Abs(window.EditorAnimationFrame - 6) < .001, "30 FPS changed animation speed");
+        window.SeekEditorAnimation(0); window.ViewportFps = 60; window.ToggleEditorPlayback(); window.AdvanceEditorPreview(.2f); window.ToggleEditorPlayback();
         Require(Math.Abs(window.EditorAnimationFrame - 6) < .001, "60 fps did not run at normal speed");
         var loop = window.GetVisualDescendants().OfType<CheckBox>().Single(c => Equals(c.Content, "Loop"));
         loop.IsChecked = false;

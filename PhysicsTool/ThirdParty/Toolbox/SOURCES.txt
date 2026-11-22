@@ -18,6 +18,13 @@ required by that decoder. Viewer, scene binding, resource resolution and
 animation adapters live in PhysicsTool/Formats/Actors and are PhysicsTool code.
 
 The Syroot.*.dll assemblies are the readers distributed in Toolbox/Lib.
+The NSW BFRES reader was updated from the user's current Toolbox/Lib snapshot
+for OoT 10.4 preview support. Its SHA-256 is
+36C400A1515A7356C26C6F564C344212614543BB8A11A5D4BF5B3D447082C11E.
+Rendering/Shaders/OOT.frag and the OoT material adapter derive from Toolbox's
+BFRES_Oot.frag and BFRES_Oot.cs under the same GPL-3.0 license.
+Portable Orin texture addressing follows Toolbox's tools/tegra-swizzle
+gob_offset_orin implementation; no native decoder is required for this path.
 The tegra_swizzle_x64.dll binary is the one distributed in Toolbox/Toolbox.
 
 Reader source projects:

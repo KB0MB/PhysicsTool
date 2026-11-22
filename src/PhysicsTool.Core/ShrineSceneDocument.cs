@@ -4,6 +4,7 @@ using BymlLibrary;
 namespace PhysicsTool.Core;
 
 internal sealed record ShrineActorLink(ulong Destination, string Name);
+internal sealed record ShrineActorGroup(ulong Hash, string Logic, IReadOnlyList<ulong> Members);
 internal sealed record ShrineActor(int Index, string Name, string Label, ulong Hash, Vector3 Position, Vector3 Rotation,
     Vector3 Scale, ulong PlacementId, uint GroupId, ulong GroupGuid, string MergedPath,
     IReadOnlyList<ShrineActorLink> Links, IReadOnlyList<string> Parameters)
@@ -13,6 +14,8 @@ internal sealed record ShrineActor(int Index, string Name, string Label, ulong H
     internal int SourceIndex { get; init; }
     internal int ParentIndex { get; init; } = -1;
     internal Vector3 LocalPosition { get; init; }
+    internal IReadOnlyList<ShrineActorGroup> Groups { get; init; } = [];
+    internal bool IsMergeParts => Name.StartsWith("FldObj_Tar_MergeParts_", StringComparison.Ordinal);
     public override string ToString() => string.IsNullOrWhiteSpace(Label) ? Name : Name + " / " + Label;
 }
 
@@ -26,12 +29,16 @@ internal sealed class ShrineSceneDocument
         var hashes = actors.Select(a => a.Hash).ToHashSet();
         UnresolvedLinkCount = actors.Sum(a => a.Links.Count(l => !hashes.Contains(l.Destination)));
     }
-    internal static ShrineSceneDocument Load(string path, IEnumerable<string>? roots = null) => Parse(BphscDocument.ReadResource(path, roots));
-    internal static ShrineSceneDocument Parse(byte[] bytes)
+    internal static ShrineSceneDocument Load(string path, IEnumerable<string>? roots = null, bool allowMissingActors = false) => Parse(BphscDocument.ReadResource(path, roots), allowMissingActors);
+    internal static ShrineSceneDocument Parse(byte[] bytes, bool allowMissingActors = false)
     {
         var root = Byml.FromBinary(bytes).GetMap();
-        if (!root.TryGetValue("Actors", out var array) || array.Type != BymlNodeType.Array)
+        if (!root.TryGetValue("Actors", out var array))
+        {
+            if (allowMissingActors) return new([]);
             throw new InvalidDataException("This BANC does not contain an Actors list.");
+        }
+        if (array.Type != BymlNodeType.Array) throw new InvalidDataException("This BANC has an invalid Actors list.");
         if (array.GetArray().Count > 100000) throw new InvalidDataException("Scene exceeds the 100,000 actor limit.");
         var actors = new List<ShrineActor>();
         foreach (var item in array.GetArray())
@@ -46,6 +53,25 @@ internal sealed class ShrineSceneDocument
                 Unsigned(placement, "ID"), checked((uint)Unsigned(placement, "GroupID")), Unsigned(placement, "GroupGUID"), Text(dynamic, "BancPath"), links, parameters));
         }
         if (actors.Select(a => a.Hash).Distinct().Count() != actors.Count) throw new InvalidDataException("Duplicate actor hashes in this BANC; scene selection would be ambiguous.");
+        var groupsByActor = new Dictionary<ulong, List<ShrineActorGroup>>();
+        if (root.TryGetValue("AiGroups", out var groups) && groups.Type == BymlNodeType.Array)
+        {
+            foreach (var item in groups.GetArray())
+            {
+                var map = item.GetMap();
+                if (!map.TryGetValue("References", out var references) || references.Type != BymlNodeType.Array) continue;
+                var members = references.GetArray().Select(r => r.GetMap()).Where(r => r.ContainsKey("Reference"))
+                    .Select(r => Unsigned(r, "Reference")).Distinct().ToArray();
+                var group = new ShrineActorGroup(Unsigned(map, "Hash"), Text(map, "Logic"), members);
+                foreach (ulong hash in members)
+                {
+                    if (!groupsByActor.TryGetValue(hash, out var list)) groupsByActor[hash] = list = [];
+                    list.Add(group);
+                }
+            }
+        }
+        for (int i = 0; i < actors.Count; i++)
+            if (groupsByActor.TryGetValue(actors[i].Hash, out var membership)) actors[i] = actors[i] with { Groups = membership };
         return new(actors);
     }
     private static IDictionary<string, Byml> Child(IDictionary<string, Byml> map, string key) => map.TryGetValue(key, out var node) ? node.GetMap() : new Dictionary<string, Byml>();

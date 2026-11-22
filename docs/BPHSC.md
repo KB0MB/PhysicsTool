@@ -53,6 +53,45 @@ tests, not proof of in-game compatibility for every edit.
 
 ## Shrine Placement Editing
 
+Placement only is an explicit opt-in for editing BANC actors when matching or
+supported BPHSC collision is unavailable. It supports position, rotation, scale,
+and duplication/deletion of unlinked individual actors with undo/redo. Exports
+contain BANC files only; loaded BPHSC bytes, terrain, water and navigation data
+stay unchanged. Baked objects can leave invisible collision behind when moved
+or removed. GroundControl, rails, physics constraints, shared-source children,
+and protected MergeParts remain guarded. Reopen the scene to change modes after
+editing so undo history cannot mix coordinated and placement-only changes.
+
+Map Editing lists BANC scenes with usable actor placements. Empty files,
+non-placement data and files containing only hidden MergeParts are omitted.
+Static and Dynamic files remain grouped; a populated companion is kept even
+when the other file has no Actors list. Scans cache eligibility and refresh it
+when a file or the dump's compression dictionary changes.
+
+Cave and well shells intersecting the selected MainField cell load automatically
+from `Cave/cave017`, including compressed geometry pages and `MaterialAlb.txtg`.
+They are read-only surroundings: actor edits and scene saves do not modify cave
+files. Cave material blending is approximate. This does not add cave sculpting,
+cave collision rebuilding, or general sky terrain support.
+
+MainField grid scenes (A-1 through J-8) also load their surface terrain from
+TerrainArc. Only the selected map cell is meshed, with reduced-detail geometry
+for navigation. Terrain is read-only: actor edits leave it unchanged, and scene
+exports do not rewrite terrain files. Underground and sky terrain are not loaded
+by this surface-terrain reader. Surface materials are an approximation of the
+game's terrain shader.
+
+Terrain uses 512-pixel surface textures per 100-metre chunk. Water tiles are
+loaded separately and clipped against the ground at shorelines. Water shading
+is approximate; game waves and refraction are not reproduced. Both terrain and
+water are preview-only and are not rewritten when exporting actor edits.
+
+Actor origins also shows connections from actor links and shared AI groups,
+including Korok puzzles. Selecting a group member makes it the center of that
+group's lines. These show relationships, not gameplay order. Turning Actor
+origins off hides both points and lines. AI logic itself is not simulated, so
+runtime-spawned actors such as the carrier for CreateToby chests are not shown.
+
 The embedded scene catalog lists all BANC files under the configured TotK romfs.
 Opening a scene loads its static/dynamic partner, recursively expands merged
 placements, reads its matching BPHSC, and renders actor BFRES models with TexToGo
@@ -63,7 +102,7 @@ parameters are available for inspection. Missing assets and unsupported
 texture/material features are reported. Collision surfaces are not rendered yet.
 
 Position, rotation (radians) and scale fields edit the actor's source-local pose.
-G/R/S apply viewport transforms, including axis restrictions. Multi-selection
+G/R/Shift+S apply viewport transforms, including axis restrictions. Plain S moves the camera backwards. Multi-selection
 rotation and scaling use the selection center as pivot. Transforming
 a merged-scene parent updates its descendants in the preview and collision while
 preserving child-local placement values. Shared merged children and GroundControl

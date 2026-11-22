@@ -8,6 +8,7 @@
     <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="Umii/**/*.cs" />
     <Compile Include="../../PhysicsTool/Formats/**/*.cs" Exclude="../../PhysicsTool/Formats/Actors/ToolboxActorTexture.cs" LinkBase="Formats" />
     <Compile Include="../../PhysicsTool/Editor/Viewport/BfresModelPose.cs" Link="Models/BfresModelPose.cs" />
     <Compile Include="../../PhysicsTool/UI/UserFacingExceptionFormatter.cs" Link="UserFacingExceptionFormatter.cs" />

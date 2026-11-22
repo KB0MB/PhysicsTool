@@ -40,7 +40,6 @@ internal sealed class CollisionView : UserControl
     internal ModelGlControl? ModelSurface { get; }
     internal bool Busy => _busy;
     internal Func<string?, Task>? OpenStaticCompound { get; set; }
-    internal Action? OpenShrineScene { get; set; }
     private Window OwnerWindow => TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("Collision workspace is not attached.");
     private IStorageProvider StorageProvider => OwnerWindow.StorageProvider;
 
@@ -51,7 +50,6 @@ internal sealed class CollisionView : UserControl
         _open = Button("Open actor / collision", async () => await Open(false)); bar.Children.Add(_open);
         _import = Button("Import mesh", async () => await Open(true)); bar.Children.Add(_import);
         bar.Children.Add(Button("Static compound...", async () => { if (!_busy && OpenStaticCompound != null) await OpenStaticCompound(null); }));
-        bar.Children.Add(Button("Shrine scene...", () => { if (!_busy) OpenShrineScene?.Invoke(); return Task.CompletedTask; }));
         _actorButton = Button("Current actor", async () => { if (_actorPath != null) await LoadPathAsync(_actorPath, false, _actorEntry); });
         bar.Children.Add(_actorButton); SetActorSource(actorPath, actorEntry);
         var wire = new CheckBox { Content = "Wireframe", Margin = new Thickness(12, 0, 0, 0) };

@@ -6,7 +6,8 @@ and ZSTD_DISABLE_ASM for builds that do not compile the upstream assembly.
 scripts/build-meshcodec-cross.ps1 in the main repository reproduces Zig 0.13.0
 cross-builds. The Linux helper is statically linked; the desktop app is not.
 
-This separate executable calls dt-12345/MeshCodec's DecompressMC API directly.
+This separate executable calls dt-12345/MeshCodec's DecompressMC API directly
+for models, or DecompressChunk with `--chunk` for cave geometry pages.
 Upstream: https://github.com/dt-12345/MeshCodec
 Reference revision: b3600954872dbc2893a1bcc9e851c1e364f303ab.
 The former Toolbox native wrapper is not used or distributed. Native/main.cpp

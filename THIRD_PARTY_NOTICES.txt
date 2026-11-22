@@ -1,4 +1,11 @@
-PhysicsTool 2.0 distribution notices
+PhysicsTool 2.2.1 distribution notices
+
+BotW uking_mat shader reconstruction by Killz.
+PhysicsTool includes Killz\'s reverse-engineered BotW shaders with redistribution
+permission confirmed by the project maintainer on 2026-11-21. The original
+20 shader files are preserved verbatim; PhysicsTool supplies the integration.
+No separate license text was supplied. See Licenses/Killz-BotW-Shaders.txt
+for provenance and scope. Thank you to Killz for sharing this work.
 
 BPHSC format research used Starlight-Dev's PhiveStaticCompoundFile declarations
 as a reference, checked against local game data. PhysicsTool's bounded parser,

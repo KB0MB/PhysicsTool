@@ -13,6 +13,7 @@ out vec2 f_raw_texcoord1;
 out vec2 f_raw_texcoord2;
 out vec2 f_raw_texcoord3;
 out vec3 normal;
+out vec3 objectPosition;
 out vec3 tangent;
 out vec3 bitangent;
 out vec4 vertexColor;
@@ -20,6 +21,7 @@ void main()
 {
     gl_Position = uMvp * vec4(aPosition, 1.0);
     normal = normalize(aNormal);
+    objectPosition = aPosition;
     tangent = normalize(aTangent.xyz);
     bitangent = cross(normal, tangent) * aTangent.w;
     f_raw_texcoord0 = aAlbedoUv;

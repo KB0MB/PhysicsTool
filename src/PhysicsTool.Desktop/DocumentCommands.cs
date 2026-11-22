@@ -12,7 +12,8 @@ public sealed partial class MainWindow
     private static readonly FilePickerFileType[] PhysicsFileTypes =
     [new("Physics") { Patterns = ["*.hkcl", "*.bphcl", "*.bphyssb", "*.bphhb", "*.hkrg"] }];
     private static readonly FilePickerFileType[] OpenPhysicsFileTypes =
-    [new("Physics") { Patterns = ["*.hkcl", "*.bphcl", "*.bphyssb", "*.bphhb", "*.hkrg", "*.bphysics"] }];
+    [new("Physics") { Patterns = ["*.hkcl", "*.bphcl", "*.bphyssb", "*.bphhb", "*.hkrg", "*.bphysics"] },
+     new("OoT helper parameters") { Patterns = ["*.phive__HelperBoneParam.bgyml", "*.bgyml"] }];
 
     private async Task RunCommand(Func<Task> command)
     {

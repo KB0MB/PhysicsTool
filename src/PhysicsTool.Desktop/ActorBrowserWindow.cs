@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Platform.Storage;
 using HKCLTool;
 using System.Text.Json;
+using PhysicsTool.Core;
 
 namespace PhysicsTool.Desktop;
 
@@ -12,6 +13,8 @@ internal sealed class ActorBrowserPaths
 {
     public string Botw { get; set; } = "";
     public string Totk { get; set; } = "";
+    public string Oot { get; set; } = "";
+    public bool OotSelected { get; set; }
     public bool TotkSelected { get; set; }
 
     internal static ActorBrowserPaths Read(string path)
@@ -43,12 +46,13 @@ internal sealed class ActorBrowserPaths
 
 internal sealed class ActorBrowserWindow : Window
 {
-    private sealed class GameTab(bool totk)
+    private sealed class GameTab(bool totk, bool oot = false)
     {
         public bool Totk { get; } = totk;
-        public TextBox Root { get; } = new() { Name = totk ? "TotkActorRoot" : "BotwActorRoot", PlaceholderText = totk ? "TOTK romfs folder" : "BOTW game resource folder", HorizontalAlignment = HorizontalAlignment.Stretch };
-        public TextBox Search { get; } = new() { Name = totk ? "TotkActorSearch" : "BotwActorSearch", PlaceholderText = "Search actors" };
-        public ListBox Actors { get; } = new() { Name = totk ? "TotkActors" : "BotwActors" };
+        public bool Oot { get; } = oot;
+        public TextBox Root { get; } = new() { Name = oot ? "OotActorRoot" : totk ? "TotkActorRoot" : "BotwActorRoot", PlaceholderText = oot ? "OOT romfs folder" : totk ? "TOTK romfs folder" : "BOTW game resource folder", HorizontalAlignment = HorizontalAlignment.Stretch };
+        public TextBox Search { get; } = new() { Name = oot ? "OotActorSearch" : totk ? "TotkActorSearch" : "BotwActorSearch", PlaceholderText = "Search actors" };
+        public ListBox Actors { get; } = new() { Name = oot ? "OotActors" : totk ? "TotkActors" : "BotwActors" };
         public TextBlock Status { get; } = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
         public Button Scan { get; } = new() { Content = "Scan" };
         public Button Browse { get; } = new() { Content = "Browse" };
@@ -61,14 +65,14 @@ internal sealed class ActorBrowserWindow : Window
             .Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    private readonly GameTab _botw = new(false), _totk = new(true);
+    private readonly GameTab _botw = new(false), _totk = new(true), _oot = new(false, true);
     private readonly TabControl _tabs = new() { Name = "ActorGameTabs" };
     private readonly CancellationTokenSource _cancellation = new();
     private readonly string _settings;
     private readonly bool _clothReactionsOnly;
     private readonly Func<string[], bool, IProgress<string>, CancellationToken, Task<BotwActorCatalogResult>> _scan;
     private bool _opened;
-    private GameTab Selected => _clothReactionsOnly || _tabs.SelectedIndex == 1 ? _totk : _botw;
+    private GameTab Selected => _clothReactionsOnly || _tabs.SelectedIndex == 1 ? _totk : _tabs.SelectedIndex == 2 ? _oot : _botw;
     internal string[] ResourceRoots => Selected.ResourceRoots;
 
     internal ActorBrowserWindow(string? settingsPath = null,
@@ -80,13 +84,14 @@ internal sealed class ActorBrowserWindow : Window
         _scan = scan ?? ((roots, totk, progress, token) => Task.Run(() => new BotwActorCatalog(
             AppDataPaths.CacheFile(totk ? "actor-catalog-totk.json" : "actor-catalog-botw.json")).Scan(roots, progress, token), token));
         var paths = ActorBrowserPaths.Read(_settings);
-        _botw.Root.Text = paths.Botw; _totk.Root.Text = paths.Totk;
+        _botw.Root.Text = paths.Botw; _totk.Root.Text = paths.Totk; _oot.Root.Text = paths.Oot;
         Title = "Actors with cloth or helper bones"; Width = 800; Height = 660; MinWidth = 560; MinHeight = 420;
         if (_clothReactionsOnly) { Title = "TotK cloth reactions"; _totk.Open.Content = "Read TotK actor..."; }
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         if (!_clothReactionsOnly) _tabs.Items.Add(new TabItem { Header = "BOTW", Content = Build(_botw) });
         _tabs.Items.Add(new TabItem { Header = "TOTK", Content = Build(_totk) });
-        _tabs.SelectedIndex = !_clothReactionsOnly && paths.TotkSelected ? 1 : 0;
+        if (!_clothReactionsOnly) _tabs.Items.Add(new TabItem { Header = "OOT", Content = Build(_oot) });
+        _tabs.SelectedIndex = !_clothReactionsOnly && paths.OotSelected ? 2 : !_clothReactionsOnly && paths.TotkSelected ? 1 : 0;
         _tabs.Margin = new Thickness(16, 8, 16, 16); Content = _tabs;
         _tabs.SelectionChanged += async (_, e) => { if (e.Source == _tabs && _opened) await ScanIfNeeded(Selected); };
         Opened += async (_, _) => { _opened = true; await ScanIfNeeded(Selected); };
@@ -100,11 +105,11 @@ internal sealed class ActorBrowserWindow : Window
         var row = new Grid { ColumnDefinitions = new("*,Auto,Auto"), ColumnSpacing = 8 };
         row.Children.Add(tab.Root); Grid.SetColumn(tab.Browse, 1); row.Children.Add(tab.Browse);
         Grid.SetColumn(tab.Scan, 2); row.Children.Add(tab.Scan); folders.Children.Add(row);
-        ToolTip.SetTip(tab.Root, tab.Totk ? "TOTK game resources, including Pack/Actor and Pack/ZsDic.pack.zs." : "BOTW game resources. Both Wii U and Switch dumps are supported.");
+        ToolTip.SetTip(tab.Root, tab.Oot ? "OoT game resources, including Pack/Actor and Phive/Cloth." : tab.Totk ? "TOTK game resources, including Pack/Actor and Pack/ZsDic.pack.zs." : "BOTW game resources. Both Wii U and Switch dumps are supported.");
         layout.Children.Add(folders);
         tab.Browse.Click += async (_, _) =>
         {
-            var path = await PickFolder(tab.Totk ? "TOTK romfs folder" : "BOTW game resource folder");
+            var path = await PickFolder(tab.Oot ? "OOT romfs folder" : tab.Totk ? "TOTK romfs folder" : "BOTW game resource folder");
             if (path != null) { tab.Root.Text = path; await Scan(tab); }
         };
         tab.Scan.Click += async (_, _) => await Scan(tab);
@@ -154,7 +159,7 @@ internal sealed class ActorBrowserWindow : Window
         {
             var paths = ActorBrowserPaths.Read(_settings);
             paths.Totk = _totk.Root.Text?.Trim() ?? "";
-            if (!_clothReactionsOnly) { paths.Botw = _botw.Root.Text?.Trim() ?? ""; paths.TotkSelected = Selected.Totk; }
+            if (!_clothReactionsOnly) { paths.Botw = _botw.Root.Text?.Trim() ?? ""; paths.TotkSelected = Selected.Totk; paths.Oot = _oot.Root.Text?.Trim() ?? ""; paths.OotSelected = Selected.Oot; }
             AtomicFile.WriteAllBytes(_settings, JsonSerializer.SerializeToUtf8Bytes(paths));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { tab.Status.Text += " Folder settings could not be saved."; }
@@ -171,9 +176,12 @@ internal sealed class ActorBrowserWindow : Window
         {
             var root = Path.GetFullPath(tab.Root.Text!.Trim());
             var progress = new Progress<string>(message => { if (!_cancellation.IsCancellationRequested && tab.Busy) tab.Status.Text = "Scanning " + message; });
-            var result = await _scan([root], tab.Totk, progress, _cancellation.Token);
+            var result = tab.Oot
+                ? await Task.Run(() => OotActorResources.Scan(root, progress, _cancellation.Token,
+                    AppDataPaths.CacheFile("actor-catalog-oot.json")), _cancellation.Token)
+                : await _scan([root], tab.Totk, progress, _cancellation.Token);
             if (_cancellation.IsCancellationRequested) return;
-            tab.Entries = result.Actors.Where(a => a.IsTotk == tab.Totk && (!_clothReactionsOnly || a.HasCloth)).ToArray();
+            tab.Entries = result.Actors.Where(a => a.IsOot == tab.Oot && a.IsTotk == tab.Totk && (!_clothReactionsOnly || a.HasCloth)).ToArray();
             tab.WarningCount = result.Warnings.Count; tab.Busy = false; Filter(tab); SavePaths(tab);
         }
         catch (OperationCanceledException) { }

@@ -10,16 +10,18 @@ public sealed unsafe class ModelGlRenderer : IDisposable
 {
     private readonly GL _gl;
     private readonly bool _es;
-    private readonly uint _standardProgram, _botwProgram, _totkProgram, _wireProgram;
+    private readonly uint _standardProgram, _botwProgram, _totkProgram, _ootProgram, _wireProgram;
     private uint _program;
     private readonly GridGlRenderer _grid;
+    private readonly BotwNativeRenderer _botwNative;
     private readonly Dictionary<(uint Program, string Name), int> _locations = new();
-    private readonly Dictionary<VisualModelTexture, uint> _textures = new();
+    private readonly Dictionary<(VisualModelTexture Texture, bool Srgb, BotwPreviewSampler? Sampler), uint> _textures = new();
     private readonly List<GpuMesh> _meshes = new();
     private sealed record GpuMesh(uint Vao, uint Vbo, uint Ebo, VisualModelMesh Source, uint[] Textures, uint WireEbo = 0, int WireIndexCount = 0)
     {
         internal Vector3 Minimum { get; init; }
         internal Vector3 Maximum { get; init; }
+        internal float[]? PackedPose { get; set; }
     }
     private int[] _sceneOrder = [];
     public int LastVisibleMeshes { get; private set; }
@@ -48,11 +50,13 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     public ModelGlRenderer(GL gl, bool es)
     {
         _gl = gl; _es = es;
+        _botwNative = new(gl, es);
         _standardProgram = CreateProgram("Model.frag", es);
         try
         {
             _botwProgram = CreateProgram("BOTW.frag", es);
             _totkProgram = CreateProgram("TOTK.frag", es);
+            _ootProgram = CreateProgram("OOT.frag", es);
             _wireProgram = CreateProgram("Wireframe.frag", es);
             _grid = new GridGlRenderer(gl, es);
         }
@@ -61,6 +65,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             gl.DeleteProgram(_standardProgram);
             if (_botwProgram != 0) gl.DeleteProgram(_botwProgram);
             if (_totkProgram != 0) gl.DeleteProgram(_totkProgram);
+            if (_ootProgram != 0) gl.DeleteProgram(_ootProgram);
             if (_wireProgram != 0) gl.DeleteProgram(_wireProgram);
             throw;
         }
@@ -68,7 +73,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     private uint CreateProgram(string fragment, bool es)
     {
         var gl = _gl;
-        uint vs = Compile(ShaderType.VertexShader, Source(fragment == "TOTK.frag" ? "TOTK.vert" : "Model.vert", es));
+        uint vs = Compile(ShaderType.VertexShader, Source(fragment is "TOTK.frag" or "OOT.frag" ? "TOTK.vert" : "Model.vert", es));
         uint fs = 0, program = 0;
         try
         {
@@ -153,23 +158,23 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                 // Seals are coplanar decorative layers, not occluders. Including
                 // them in the character depth prepass punches holes in walls.
                 gl.DepthFunc(DepthFunction.Lequal);
-                DrawMeshes(_sceneOrder.Where(i => _meshes[i].Source.Material.Totk is not { IsSeal: true } and not { IsTranslucent: true }), true);
+                DrawMeshes(_sceneOrder.Where(i => _meshes[i].Source.Material.Totk is not { IsSeal: true } && !SceneTranslucent(_meshes[i].Source)), true);
                 gl.DepthMask(false); gl.Enable(EnableCap.Blend);
                 gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                 gl.Enable(EnableCap.PolygonOffsetFill); gl.PolygonOffset(-1f, -2f);
                 DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk?.IsSeal == true)
                     .OrderBy(i => _meshes[i].Source.Material.Totk!.Priority));
                 gl.Disable(EnableCap.PolygonOffsetFill);
-                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk is { IsSeal: false, IsTranslucent: true })
-                    .OrderBy(i => _meshes[i].Source.Material.Totk!.Priority).ThenByDescending(SceneDepth));
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk is not { IsSeal: true } && SceneTranslucent(_meshes[i].Source))
+                    .OrderBy(i => _meshes[i].Source.Material.Totk?.Priority ?? 0).ThenByDescending(SceneDepth));
             }
             else
             {
                 gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
-                DrawMeshes();
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk is not { IsOot: true, IsTranslucent: true } && _meshes[i].Source.Material.Botw is not { Translucent: true }));
                 gl.ColorMask(true, true, true, true); gl.DepthMask(false); gl.DepthFunc(DepthFunction.Lequal);
                 gl.Enable(EnableCap.Blend); gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-                DrawMeshes();
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).OrderBy(i => _meshes[i].Source.Material.Totk is { IsOot: true, IsTranslucent: true } || _meshes[i].Source.Material.Botw is { Translucent: true } ? 1 : 0));
             }
         }
         finally
@@ -209,13 +214,35 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                     }
                     else gl.Disable(EnableCap.CullFace);
                 }
-                var program = m.Totk != null ? _totkProgram : m.UseBotwPreviewShader ? _botwProgram : _standardProgram;
+                if (m.Totk is { IsOot: true }) gl.BlendFunc(m.Totk.Additive ? BlendingFactor.One : BlendingFactor.SrcAlpha,
+                    m.Totk.Additive ? BlendingFactor.One : BlendingFactor.OneMinusSrcAlpha);
+                else gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                if (m.Botw is {} botw && m.Totk == null)
+                {
+                    if (botw.DisplayFace is "front" or "back")
+                    {
+                        gl.Enable(EnableCap.CullFace); gl.FrontFace(FrontFaceDirection.Ccw);
+                        gl.CullFace(botw.DisplayFace == "front" ? TriangleFace.Back : TriangleFace.Front);
+                    }
+                    else gl.Disable(EnableCap.CullFace);
+                    _botwNative.Bind(botw, gpu.Textures, camera, direction, (model.BoundsMinimum + model.BoundsMaximum) * .5f,
+                        Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum), keyLight, width, height, emission);
+                    gl.VertexAttrib4(9, 1f, 1f, 1f, 1f);
+                    gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
+                    gl.Disable(EnableCap.CullFace);
+                    _program = 0; lastTotkMaterial = null; LastMaterialUpdates++;
+                    continue;
+                }
+                var program = m.Totk is { IsOot: true } ? _ootProgram : m.Totk != null ? _totkProgram : m.UseBotwPreviewShader ? _botwProgram : _standardProgram;
                 if (_program != program)
                 {
                     lastTotkMaterial = null;
                     _program = program; gl.UseProgram(program);
                     M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
                     V("uViewDirection", direction); V("uKeyLight", keyLight); V("uFillLight", fillLight);
+                    var center = (model.BoundsMinimum + model.BoundsMaximum) * .5f;
+                    var eye = center + direction * Math.Max(1, Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum) * 2);
+                    V("cameraPosition", eye); M("ootView", Matrix4x4.CreateLookAt(eye, center, Math.Abs(direction.Y) > .99f ? Vector3.UnitZ : Vector3.UnitY));
                 }
                 if (m.Totk is { } totk)
                 {
@@ -232,7 +259,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                     for (int t = 0; t < 8; t++)
                     {
                         gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + t));
-                        gl.BindTexture(TextureTarget.Texture2D, gpu.Textures[t]); I($"Texture{t}", t);
+                        gl.BindTexture(TextureTarget.Texture2D, gpu.Textures[t]); I(totk.IsOot ? $"ootTex{t}" : $"Texture{t}", t);
                     }
                     lastTotkMaterial = m;
                     }
@@ -252,6 +279,9 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             }
         }
     }
+
+    internal static bool SceneTranslucent(VisualModelMesh mesh) => mesh.Material.Totk?.IsTranslucent ?? mesh.Material.Botw?.Translucent
+        ?? (mesh.Texture?.AlphaMode == VisualModelAlphaMode.Blend || mesh.Material.Tint.W < 1);
 
     private void DrawWireframe(ISet<int> hidden, Matrix4x4 camera, Vector3 background, bool overlay = false)
     {
@@ -303,7 +333,9 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         {
             var gpu = _meshes[i]; var source = model.Meshes[i];
             if (ReferenceEquals(gpu.Source, source)) continue;
-            var vertices = ModelVertices.Build(source);
+            var vertices = gpu.PackedPose;
+            if (vertices == null || !ModelVertices.UpdateOotPose(gpu.Source, source, vertices)) vertices = ModelVertices.Build(source);
+            gpu.PackedPose = source.Material.Totk?.IsOot == true ? vertices : null;
             _gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.Vbo);
             fixed (float* v = vertices) _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.DynamicDraw);
             _meshes[i] = WithBounds(gpu with { Source = source });
@@ -317,34 +349,54 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             var gpu = WithBounds(new GpuMesh(vao, vbo, ebo, source, new uint[8])); _meshes.Add(gpu);
             gl.BindVertexArray(vao); gl.BindBuffer(BufferTargetARB.ArrayBuffer, vbo);
             var vertices = ModelVertices.Build(source);
+            gpu.PackedPose = source.Material.Totk?.IsOot == true ? vertices : null;
             fixed (float* v = vertices) gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.StaticDraw);
             gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, ebo);
             fixed (uint* i = source.Indices) gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(source.Indices.Length * 4), i, BufferUsageARB.StaticDraw);
-            int[] sizes = source.Material.Totk == null ? [3, 3, 2, 2, 2, 2, 2, 4] : [3, 3, 2, 2, 2, 2, 2, 4, 4]; int offset = 0;
-            uint stride = source.Material.Totk == null ? 80u : 96u;
+            bool extended = source.Material.Totk != null || source.Material.Botw != null;
+            int[] sizes = !extended ? [3, 3, 2, 2, 2, 2, 2, 4] : [3, 3, 2, 2, 2, 2, 2, 4, 4]; int offset = 0;
+            uint stride = !extended ? 80u : 96u;
             for (uint a = 0; a < sizes.Length; a++) { gl.VertexAttribPointer(a, sizes[a], VertexAttribPointerType.Float, false, stride, (void*)(offset * 4)); gl.EnableVertexAttribArray(a); offset += sizes[a]; }
-            VisualModelTexture?[] textures = source.Material.Totk?.Textures ?? [source.Texture ?? (source.UseMissingTextureFallback ? ModelTextures.Default : null), source.SpecularTexture, source.NormalTexture, source.AmbientOcclusionTexture, source.AuxiliaryTexture, source.EyeGlintTexture];
-            for (int t = 0; t < textures.Length; t++) if (textures[t] is { } texture) gpu.Textures[t] = UploadTexture(texture);
+            VisualModelTexture?[] textures = source.Material.Totk?.Textures ?? source.Material.Botw?.Textures ?? [source.Texture ?? (source.UseMissingTextureFallback ? ModelTextures.Default : null), source.SpecularTexture, source.NormalTexture, source.AmbientOcclusionTexture, source.AuxiliaryTexture, source.EyeGlintTexture];
+            for (int t = 0; t < textures.Length; t++) if (textures[t] is { } texture)
+            {
+                var native = source.Material.Totk == null ? source.Material.Botw : null;
+                gpu.Textures[t] = UploadTexture(texture, native != null && texture.IsSrgb, native?.Samplers[t]);
+            }
         }
         _sceneOrder = Enumerable.Range(0, _meshes.Count).GroupBy(i => _meshes[i].Source.Material, ReferenceEqualityComparer.Instance).SelectMany(g => g).ToArray();
     }
-    private uint UploadTexture(VisualModelTexture texture)
+    private uint UploadTexture(VisualModelTexture texture, bool srgb = false, BotwPreviewSampler? sampler = null)
     {
-        if (_textures.TryGetValue(texture, out var existing)) return existing;
-        var gl = _gl; var id = gl.GenTexture(); _textures.Add(texture, id);
+        if (_textures.TryGetValue((texture, srgb, sampler), out var existing)) return existing;
+        var gl = _gl; var id = gl.GenTexture(); _textures.Add((texture, srgb, sampler), id);
         gl.BindTexture(TextureTarget.Texture2D, id); gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
-        fixed (byte* pixels = texture.Pixels) gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba, (uint)texture.Width, (uint)texture.Height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
+        fixed (byte* pixels = texture.Pixels) gl.TexImage2D(TextureTarget.Texture2D, 0, srgb ? InternalFormat.Srgb8Alpha8 : InternalFormat.Rgba, (uint)texture.Width, (uint)texture.Height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.LinearMipmapLinear);
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.Repeat);
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.Repeat);
+        if (sampler != null)
+        {
+            GLEnum Wrap(int mode) => mode == 0 ? GLEnum.Repeat : mode == 1 ? GLEnum.MirroredRepeat : GLEnum.ClampToEdge;
+            var min = sampler.MipFilter == 0 ? (sampler.MinLinear ? GLEnum.Linear : GLEnum.Nearest) :
+                sampler.MipFilter == 1 ? (sampler.MinLinear ? GLEnum.LinearMipmapNearest : GLEnum.NearestMipmapNearest) :
+                sampler.MinLinear ? GLEnum.LinearMipmapLinear : GLEnum.NearestMipmapLinear;
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)min);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)(sampler.MagLinear ? GLEnum.Linear : GLEnum.Nearest));
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)Wrap(sampler.WrapU));
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)Wrap(sampler.WrapV));
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinLod, sampler.MinLod);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMaxLod, sampler.MaxLod);
+        }
         gl.GenerateMipmap(TextureTarget.Texture2D); return id;
     }
     private void ReleaseMeshes()
     {
+        _botwNative.ReleaseMaterials();
         foreach (var m in _meshes) { _gl.DeleteVertexArray(m.Vao); _gl.DeleteBuffer(m.Vbo); _gl.DeleteBuffer(m.Ebo); if (m.WireEbo != 0) _gl.DeleteBuffer(m.WireEbo); }
         foreach (var t in _textures.Values) _gl.DeleteTexture(t);
         _meshes.Clear(); _textures.Clear();
     }
-    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); _gl.DeleteProgram(_wireProgram); }
+    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _botwNative.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); _gl.DeleteProgram(_ootProgram); _gl.DeleteProgram(_wireProgram); }
 }

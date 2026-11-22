@@ -12,6 +12,7 @@ internal static class WorkspaceNavigationChecks
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }
     internal static void Run(string output)
     {
+        UiLanguage.Initialize("en");
         Directory.CreateDirectory(output);
         PlacementScreen primary = new(new(0, 0, 1920, 1040), 1, true);
         PlacementScreen secondary = new(new(1920, 0, 2560, 1400), 1.5, false);
@@ -37,9 +38,16 @@ internal static class WorkspaceNavigationChecks
         Require(!DesktopPreferences.Load(prefs).MaximizeOnStartup, "Maximize preference not cleared");
         var window = new MainWindow(graphics: false); window.Show(); Dispatcher.UIThread.RunJobs();
         var original = window.Content;
+        Require(!window.GetVisualDescendants().OfType<Button>().Any(b => b.Name == "OpenUmii" || Equals(b.Content, "UMii")), "Unreleased appearance editor menu leaked into release");
+        foreach (var assembly in new[] { typeof(MainWindow).Assembly, typeof(PhysicsTool.Core.EditorSession).Assembly })
+            Require(!assembly.GetTypes().Any(t => t.Name.StartsWith("Umii", StringComparison.OrdinalIgnoreCase)), "Unreleased appearance editor types leaked into release");
+        var mapButton = window.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "MapEditing");
+        Require(Equals(mapButton.Content, "Map Editing"), "Map Editing entry point missing");
+        using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "main-map-entry.png"));
         window.ShowCollision(false); Dispatcher.UIThread.RunJobs();
         Require(window.IsToolWorkspaceVisible && window.GetVisualDescendants().OfType<CollisionView>().Count() == 1, "Collision not embedded");
         var view = window.CollisionWorkspace;
+        Require(!view!.GetVisualDescendants().OfType<Button>().Any(b => b.Content?.ToString() is "Shrine scene..." or "Map Editing"), "Map workspace is still nested in Collision");
         Require(view!.Viewport.GetVisualAncestors().OfType<Control>().Any(c => !c.IsVisible), "Empty collision viewport is visible");
         string mesh = Path.Combine(output, "collision.obj");
         File.WriteAllText(mesh, "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n");
@@ -60,6 +68,36 @@ internal static class WorkspaceNavigationChecks
         window.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "WorkspaceBack").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Require(window.GetVisualDescendants().OfType<CollisionView>().Single() == view, "BPHSC Back lost collision view");
         using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "collision-embedded.png"));
+        void Back() => window.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "WorkspaceBack").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Back();
+        mapButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        var map = window.GetVisualDescendants().OfType<ShrineSceneView>().Single();
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        while (map.Busy && timeout.Elapsed < TimeSpan.FromSeconds(30)) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
+        Require(!map.Busy, "Map browser scan did not finish");
+        Require(window.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Map scene"), "Map scene title missing");
+        var search = map.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == "ShrineSceneSearch");
+        search.Text = "I-4";
+        using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "map-scene-browser.png"));
+        map.OpenCompound!(null).GetAwaiter().GetResult(); Dispatcher.UIThread.RunJobs();
+        Back();
+        Require(window.GetVisualDescendants().OfType<ShrineSceneView>().Single() == map, "Map compound Back did not return to map");
+        Back(); Require(ReferenceEquals(window.Content, original), "Map Back returned to Collision instead of main workspace");
+        window.ShowCollision(false); Dispatcher.UIThread.RunJobs();
+        Require(ReferenceEquals(view, window.CollisionWorkspace) && view.GetVisualDescendants().OfType<NumericUpDown>().Single(n => n.Name == "CollisionScale").Value == 2, "Map navigation lost collision state");
+        view.OpenStaticCompound!(null).GetAwaiter().GetResult(); Dispatcher.UIThread.RunJobs();
+        Back(); Require(window.GetVisualDescendants().OfType<CollisionView>().Single() == view, "Collision compound Back reused map destination");
+        Back(); mapButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        Require(window.GetVisualDescendants().OfType<ShrineSceneView>().Single() == map && search.Text == "I-4", "Map state was lost when switching workspaces");
+        foreach (string language in new[] { "fr", "es", "ja" })
+        {
+            UiLanguage.Set(language);
+            foreach (string label in new[] { "Map Editing", "Map scene", "Save scene", "Search map scenes", "Unsaved map scene" })
+                Require(UiLanguage.Text(label) != label, $"Missing {language} translation: {label}");
+            var topic = PhysicsTool.Core.ClothHelp.Topics.Single(t => t.Title == "Map scene");
+            Require(UiLanguage.Text(topic.Body) != topic.Body, $"Map documentation translation missing: {language}");
+        }
+        UiLanguage.Set("en"); Back();
         window.Close();
         string placement = Path.Combine(output, "placement.json");
         var host = new Window { Width = 1050, Height = 700 };
@@ -76,6 +114,6 @@ internal static class WorkspaceNavigationChecks
         var minimized = new Window(); WindowPlacement.Attach(minimized, placement, false); minimized.Show(); Dispatcher.UIThread.RunJobs();
         minimized.WindowState = WindowState.Minimized; minimized.Close();
         Require(JsonSerializer.Deserialize<SavedWindowPlacement>(File.ReadAllBytes(placement)) == afterMax, "Minimized bounds overwrote placement");
-        Console.WriteLine("PASS: embedded collision/BPHSC navigation, retained workspace, placement persistence, disconnected monitors, negative screen coordinates, DPI, corrupt bounds and maximize preference.");
+        Console.WriteLine("PASS: separate Map Editing and Collision navigation, contextual BPHSC Back, retained workspace state, map labels/translations, placement persistence, disconnected monitors, DPI and maximize preference.");
     }
 }

@@ -43,20 +43,33 @@ internal static class ToolboxActorTexture
         lock (Gx2Gate) raw = GX2.Decode(surface, 0, 0);
         var pixels = DecodeSurface(raw, width, height, format);
         SwizzleChannels(pixels, [(int)tex.CompSelR, (int)tex.CompSelG, (int)tex.CompSelB, (int)tex.CompSelA], false);
-        return Texture(tex.Name, width, height, pixels);
+        return Texture(tex.Name, width, height, pixels, tex.Format.ToString());
     }
-    public static VisualModelTexture Decode(NxTexture tex, int surface = 0)
+    public static VisualModelTexture Decode(NxTexture tex, int surface = 0, bool orin = false)
     {
         int width = checked((int)tex.Width), height = checked((int)tex.Height); Validate(width, height);
+        if (tex.Format.ToString().StartsWith("ASTC_", StringComparison.Ordinal))
+        {
+            var footprint = tex.Format.ToString().Split('_')[1].Split('x');
+            if (footprint.Length != 2 || !int.TryParse(footprint[0], out int bx) || !int.TryParse(footprint[1], out int by) || bx is < 4 or > 12 || by is < 4 or > 12)
+                throw new NotSupportedException("ASTC footprint " + tex.Format);
+            surface = Math.Clamp(surface, 0, tex.TextureData.Count - 1);
+            var rawAstc = Deswizzle(tex.TextureData[surface][0], (width + bx - 1) / bx, (height + by - 1) / by, 16, (int)tex.TileMode, (int)tex.BlockHeightLog2, orin);
+            byte[] rgba;
+            try { rgba = Ryujinx.Graphics.Gal.Texture.ASTCDecoder.DecodeToRGBA8888(rawAstc, bx, by, 1, width, height, 1); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { throw new InvalidDataException("Invalid ASTC texture data: " + tex.Name, ex); }
+            SwizzleChannels(rgba, [(int)tex.ChannelRed, (int)tex.ChannelGreen, (int)tex.ChannelBlue, (int)tex.ChannelAlpha], true);
+            return Texture(tex.Name, width, height, rgba, tex.Format.ToString());
+        }
         var format = Format(tex.Format.ToString());
         int w = (width + format.Block - 1) / format.Block, h = (height + format.Block - 1) / format.Block;
         surface = Math.Clamp(surface, 0, tex.TextureData.Count - 1);
-        var raw = Deswizzle(tex.TextureData[surface][0], w, h, format.Bytes, (int)tex.TileMode, (int)tex.BlockHeightLog2);
+        var raw = Deswizzle(tex.TextureData[surface][0], w, h, format.Bytes, (int)tex.TileMode, (int)tex.BlockHeightLog2, orin);
         var pixels = DecodeSurface(raw, width, height, format);
         SwizzleChannels(pixels, [(int)tex.ChannelRed, (int)tex.ChannelGreen, (int)tex.ChannelBlue, (int)tex.ChannelAlpha], true);
-        return Texture(tex.Name, width, height, pixels);
+        return Texture(tex.Name, width, height, pixels, tex.Format.ToString());
     }
-    internal static byte[] Deswizzle(byte[] source, int width, int height, int bytes, int tileMode, int log2)
+    internal static byte[] Deswizzle(byte[] source, int width, int height, int bytes, int tileMode, int log2, bool orin = false)
     {
         if (width <= 0 || height <= 0 || bytes <= 0 || log2 is < 0 or > 5 || tileMode is < 0 or > 1)
             throw new InvalidDataException("Invalid Tegra surface layout.");
@@ -71,8 +84,8 @@ internal static class ToolboxActorTexture
                 var xb = x * bytes;
                 var offset = tileMode == 1 ? y * ((width * bytes + 31) / 32 * 32) + xb
                     : y / (8 * blockHeight) * 512 * blockHeight * gobs + xb / 64 * 512 * blockHeight +
-                      y % (8 * blockHeight) / 8 * 512 + xb % 64 / 32 * 256 + y % 8 / 2 * 64 +
-                      xb % 32 / 16 * 32 + y % 2 * 16 + xb % 16;
+                      y % (8 * blockHeight) / 8 * 512 + xb % 64 / 32 * 256 +
+                      (orin ? y % 8 / 4 * 128 + xb % 32 / 16 * 64 + y % 4 * 16 : y % 8 / 2 * 64 + xb % 32 / 16 * 32 + y % 2 * 16) + xb % 16;
                 if (offset < 0 || offset > source.Length - bytes) throw new InvalidDataException("The tiled texture surface is truncated.");
                 source.AsSpan(offset, bytes).CopyTo(result.AsSpan((y * width + x) * bytes, bytes));
             }
@@ -109,9 +122,11 @@ internal static class ToolboxActorTexture
             }
         }
     }
-    private static VisualModelTexture Texture(string name, int width, int height, byte[] pixels) => new()
+    private static VisualModelTexture Texture(string name, int width, int height, byte[] pixels, string format) => new()
     {
         Name = name, SourcePath = name, Width = width, Height = height, Pixels = pixels,
+        // Decompression preserves encoded sRGB bytes; decode them only when sampling color textures.
+        IsSrgb = format.Contains("SRGB", StringComparison.OrdinalIgnoreCase),
         AlphaMode = pixels.Where((_, index) => index % 4 == 3).Any(a => a < 250) ? VisualModelAlphaMode.Cutout : VisualModelAlphaMode.Opaque
     };
 }

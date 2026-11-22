@@ -395,7 +395,11 @@ internal static class SidecarPreviewEvaluator
                 ReadOutput(GetInt(source, TargetBendVHash)),
                 boneNames,
                 current,
-                rest, botw: true);
+                rest, botw: true,
+                translationMask: (GetInt(source, TargetTranslateXHash) >= 0 ? 1 : 0) |
+                    (GetInt(source, TargetTranslateYHash) >= 0 ? 2 : 0) |
+                    (GetInt(source, TargetTranslateZHash) >= 0 ? 4 : 0),
+                preserveRotation: GetInt(source, TargetBendHHash) < 0);
             result.Add(pose);
             ApplyDrivenPose(current, pose);
         }
@@ -449,7 +453,9 @@ internal static class SidecarPreviewEvaluator
         IReadOnlyList<string> boneNames,
         IReadOnlyDictionary<string, VisualModelBone> current,
         IReadOnlyDictionary<string, VisualModelBone> rest,
-        bool botw = false)
+        bool botw = false,
+        int translationMask = 7,
+        bool preserveRotation = false)
     {
         TryGetBone(rest, name, out var restDriven);
         var currentBase = GetBone(current, boneNames, baseBoneIndex);
@@ -476,10 +482,8 @@ internal static class SidecarPreviewEvaluator
                 localScale = modelScale;
         }
 
-        // The sidecar base transform is the authored bind pose used by the
-        // runtime graph. The FBX bone is useful for display scale, but replacing
-        // this transform with the FBX rest pose disconnects support output from
-        // its declared space as soon as animation moves the driver hierarchy.
+        // Connected channels use the sidecar's authored reference transform,
+        // not the model rest pose. BotW's unconnected channels are retained below.
         var localRotation = storedRotation.LengthSquared() > 0.000001f
             ? Quaternion.Normalize(storedRotation)
             : Quaternion.Identity;
@@ -489,6 +493,19 @@ internal static class SidecarPreviewEvaluator
         var outputRotation = BuildBotwRotation(bendH, bendV, roll, aim, up);
         localRotation = Quaternion.Normalize(localRotation * outputRotation);
         localTranslation += translationOutput;
+
+        // BotW's actor update writes only connected channels (71018f0e90).
+        // Unconnected axes retain the incoming pose, not the sidecar base value.
+        if (botw && TryGetBone(current, name, out var incoming) &&
+            Matrix4x4.Decompose(RelativeMatrix(incoming!, currentBase),
+                out var incomingScale, out var incomingRotation, out var incomingTranslation))
+        {
+            if ((translationMask & 1) == 0) localTranslation.X = incomingTranslation.X;
+            if ((translationMask & 2) == 0) localTranslation.Y = incomingTranslation.Y;
+            if ((translationMask & 4) == 0) localTranslation.Z = incomingTranslation.Z;
+            if (preserveRotation) localRotation = incomingRotation;
+            localScale = incomingScale;
+        }
 
         var world = Matrix4x4.CreateScale(localScale) *
             Matrix4x4.CreateFromQuaternion(localRotation) *
@@ -667,7 +684,7 @@ internal static class SidecarPreviewEvaluator
         IReadOnlyList<string> names,
         int index) => (uint)index < (uint)names.Count && TryGetBone(bones, names[index], out var bone) ? bone : null;
 
-    private static string NormalizeBoneName(string name)
+    internal static string NormalizeBoneName(string name)
     {
         var value = name ?? string.Empty;
         var pipe = value.LastIndexOf('|');

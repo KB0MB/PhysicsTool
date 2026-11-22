@@ -6,7 +6,7 @@ public sealed partial class HkclService
 {
     private void ApplyBphclRestShape(int clothIndex, ParticlePreviewData preview,
         IReadOnlyDictionary<int, Vector3> old, IReadOnlyDictionary<int, Vector3> positions,
-        IReadOnlyDictionary<int, float> scales, IReadOnlyDictionary<int, Matrix4x4> desiredBones)
+        IReadOnlyDictionary<int, float> scales, IReadOnlyDictionary<int, Matrix4x4> desiredBones, bool preserveUnchangedReferences = false)
     {
         var native = _bphcl!.NativeDocument!;
         var cloth = native.Cloths[clothIndex];
@@ -60,6 +60,7 @@ public sealed partial class HkclService
         var referenceBefore = new Dictionary<int, Vector3>(old);
         foreach (var attachment in GetParticleBoneAttachments(clothIndex))
         {
+            if (preserveUnchangedReferences && positions[attachment.ParticleIndex] == old[attachment.ParticleIndex]) continue;
             var weights = attachment.BoneWeights;
             if (weights.Count == 0 || weights.Any(w => !w.ReferencePosition.HasValue || !float.IsFinite(w.Weight) || w.Weight <= 0)) continue;
             referenceBefore[attachment.ParticleIndex] = weights.Aggregate(Vector3.Zero, (p, w) => p + w.ReferencePosition!.Value * w.Weight) / weights.Sum(w => w.Weight);
@@ -136,6 +137,8 @@ public sealed partial class HkclService
                             var i = slot * array.BlendCount + influence; var index = blend.BoneIndices[i];
                             var weight = array.BlendCount == 1 ? 1 : blend.BoneWeights[i] / 255f;
                             if (weight == 0) continue;
+                            if (index >= skin.TransformSubset.Count || index >= skin.BoneFromSkinMeshTransforms.Count)
+                                throw new InvalidOperationException($"Skin {skin.OperatorIndex} has bone index {index} outside its {skin.TransformSubset.Count} subset / {skin.BoneFromSkinMeshTransforms.Count} bind transforms.");
                             matrix += skin.BoneFromSkinMeshTransforms[index] * frames[skin.TransformSubset[index]] * weight; total += weight;
                         }
                         if (total <= 0 || !Matrix4x4.Invert(matrix * (1 / total), out var inverse)) throw new InvalidOperationException("A skin reference has a singular bone transform.");
@@ -146,6 +149,8 @@ public sealed partial class HkclService
                         {
                             var i = slot * array.BlendCount + influence; var weight = blocks[position][i].W;
                             if (weight == 0) continue;
+                            if (blend.BoneIndices[i] >= skin.TransformSubset.Count)
+                                throw new InvalidOperationException($"Skin {skin.OperatorIndex} has bone index {blend.BoneIndices[i]} outside its {skin.TransformSubset.Count} subset.");
                             if (!Matrix4x4.Invert(frames[skin.TransformSubset[blend.BoneIndices[i]]], out var inverse)) throw new InvalidOperationException("A skin reference has a singular bone transform.");
                             blocks[position][i] += new Vector4(Vector3.TransformNormal(delta, inverse) * weight, 0);
                         }
@@ -153,7 +158,8 @@ public sealed partial class HkclService
                 }
             }
             if (changed) result.Add(new(cloth.Operators[skin.OperatorIndex].ItemIndex, packed ? "localPs" : "localUnpackedPs",
-                objectSpace && packed, blocks.Select(b => new SkinPositionBlockData(b)).ToArray()));
+                objectSpace && packed, blocks.Select((b, i) => source[i].NativePackedValues is { } raw &&
+                    b.SequenceEqual(UnpackBphclObjectSpacePositions([new(raw)])[0].Positions) ? source[i] : new SkinPositionBlockData(b)).ToArray()));
         }
         if (vertices.Any(v => !resolved.Contains(v.Key) && v.Value.Any(d => d.LengthSquared() > 1e-16f)))
             throw new InvalidOperationException("A cloth reference buffer cannot be rebuilt from its skin operators. No changes were applied.");

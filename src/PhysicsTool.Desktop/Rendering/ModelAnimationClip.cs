@@ -17,7 +17,7 @@ public sealed class ModelAnimationClip
     public IEnumerable<string> BoneNames => Native?.BoneNames ?? _tracks.Keys;
     internal ModelAnimationClip(ToolboxActorAnimation animation)
     {
-        Native = animation; Name = animation.Name; EndFrame = animation.FrameCount; FramesPerSecond = ToolboxActorAnimation.BaseFramesPerSecond;
+        Native = animation; Name = animation.Name; EndFrame = animation.FrameCount; FramesPerSecond = animation.FramesPerSecond;
     }
     internal ModelAnimationClip(Animation animation, float units)
     {
@@ -72,13 +72,17 @@ public sealed class ModelAnimationClip
         return low;
     }
     private static float Factor(double start, double end, double frame) => end > start ? (float)Math.Clamp((frame - start) / (end - start), 0, 1) : 0;
-    public static IReadOnlyList<ModelAnimationClip> Load(string path)
+    public static IReadOnlyList<ModelAnimationClip> Load(string path) => Load(path, allowEmptyBfres: false);
+
+    internal static IReadOnlyList<ModelAnimationClip> Load(string path, bool allowEmptyBfres)
     {
-        if (Path.GetExtension(path).Equals(".bfres", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".sbfres", StringComparison.OrdinalIgnoreCase))
+        if (Path.GetExtension(path).Equals(".bfres", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".sbfres", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith(".bfres.zs", StringComparison.OrdinalIgnoreCase))
         {
-            var resource = new ToolboxBfresDocument(File.ReadAllBytes(path));
+            var bytes = new TotkResourceCompression().Decode(File.ReadAllBytes(path), TotkResourceCompression.Roots(path));
+            var resource = new ToolboxBfresDocument(bytes, path);
             var clips = resource.SkeletalAnimations.Select(a => new ModelAnimationClip(new ToolboxActorAnimation((object)a, Path.GetFileName(path)))).ToArray();
-            if (clips.Length == 0) throw new InvalidDataException("The BFRES contains no skeletal animations.");
+            if (clips.Length == 0 && !allowEmptyBfres) throw new InvalidDataException("The BFRES contains no skeletal animations.");
             return clips;
         }
         if (!new[] { ".fbx", ".dae", ".gltf", ".glb" }.Contains(Path.GetExtension(path).ToLowerInvariant()))

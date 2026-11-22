@@ -35,6 +35,8 @@ public sealed partial class HkclService
     public bool HasDocument => _root != null || _bphcl != null || _bphhb != null || _bphyssb != null;
     public string? SourcePath => _path;
     public bool IsBphcl => _bphcl != null;
+    public bool IsOot => _bphcl?.NativeDocument?.IsOot == true;
+    public bool IsPreviewOnly => _bphcl?.NativeDocument?.IsPreviewOnly == true;
     public bool IsBphhb => _bphhb != null;
     public bool IsBphyssb => _bphyssb != null;
     public bool IsHelperBoneSidecar => IsBphhb || IsBphyssb;
@@ -43,8 +45,8 @@ public sealed partial class HkclService
     // BPHCL particle records have known fixed-size native layouts. Their
     // position and basic physics values can be changed safely, while BPHCL
     // structural data remains read-only until its ITEM/PTCH writer is proven.
-    public bool CanEditParticleValues => !IsHelperBoneSidecar;
-    public bool CanEditConstraintValues => !IsHelperBoneSidecar;
+    public bool CanEditParticleValues => !IsHelperBoneSidecar && !IsPreviewOnly;
+    public bool CanEditConstraintValues => !IsHelperBoneSidecar && !IsPreviewOnly;
     public string CurrentExtension => IsBphcl ? ".bphcl" : IsBphhb ? ".bphhb" : IsBphyssb ? ".bphyssb" : IsHkrg ? ".hkrg" : ".hkcl";
 
     /// <summary>
@@ -144,6 +146,17 @@ public sealed partial class HkclService
 
     public void SaveHkcl(string path, HkclPlatform platform)
     {
+        if (IsPreviewOnly && !IsOot) throw new InvalidOperationException("This physics format cannot be saved.");
+        if (IsOot)
+        {
+            if (!Path.GetExtension(path).Equals(".bphcl", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("OoT cloth must be saved as .bphcl.");
+            var bytes = _bphcl!.NativeDocument!.Bytes;
+            NativeBphclDocument.Parse(bytes);
+            AtomicFile.WriteAllBytes(path, bytes);
+            _bphcl = BphclBridge.Load(path); _path = path;
+            return;
+        }
         if (_bphcl != null)
         {
             if (!Path.GetExtension(path).Equals(".bphcl", StringComparison.OrdinalIgnoreCase))
@@ -3188,6 +3201,7 @@ public sealed partial class HkclService
         {
             var nativeCloth = bphcl.Cloths.ElementAtOrDefault(clothIndex);
             var simulation = nativeCloth?.SimCloths.FirstOrDefault();
+            preview.SolverProfile = bphcl.IsOot ? ClothSolverProfile.OotExperimental : ClothSolverProfile.TotkExperimental;
             if (simulation is null)
                 return preview;
 
@@ -5272,7 +5286,7 @@ public sealed partial class HkclService
         }
     }
 
-    private static IReadOnlyList<NativeBphclPositionBlock> UnpackBphclObjectSpacePositions(
+    internal static IReadOnlyList<NativeBphclPositionBlock> UnpackBphclObjectSpacePositions(
         IReadOnlyList<NativeBphclPackedPositionBlock> sourceBlocks)
     {
         const int packedComponentsPerPosition = 4;
@@ -7650,10 +7664,11 @@ public sealed partial class HkclService
         }
     }
 
-    private static IReadOnlyDictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>> BuildSkinVertexBoneWeights(
+    private IReadOnlyDictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>> BuildSkinVertexBoneWeights(
         SkinOperatorData skin, IReadOnlyDictionary<int, Matrix4x4> bindFrames)
     {
         var result = new Dictionary<int, IReadOnlyList<ParticlePreviewBoneWeight>>();
+        bool directBones = IsOot && skin.ClassName == "hclObjectSpaceSkinPOperator" && skin.TransformSubset.Count == 0;
         var positionBlocks = skin.LocalPositionBlocks.Count > 0
             ? skin.LocalPositionBlocks
             : skin.LocalUnpackedPositionBlocks;
@@ -7682,7 +7697,8 @@ public sealed partial class HkclService
                     if (packedIndex >= block.BoneIndices.Count)
                         continue;
                     var subsetIndex = block.BoneIndices[packedIndex];
-                    if (subsetIndex >= skin.TransformSubset.Count)
+                    if (directBones ? !bindFrames.ContainsKey(subsetIndex) || subsetIndex >= skin.BoneFromSkinMeshTransforms.Count
+                        : subsetIndex >= skin.TransformSubset.Count)
                         continue;
 
                     var weight = block.BoneWeights.Count > packedIndex
@@ -7692,7 +7708,7 @@ public sealed partial class HkclService
                             : 1f;
                     if (weight > 0.000001f)
                     {
-                        var boneIndex = skin.TransformSubset[subsetIndex];
+                        var boneIndex = directBones ? subsetIndex : skin.TransformSubset[subsetIndex];
                         Vector3? reference = null;
                         if (skin.ClassName == "hclObjectSpaceSkinPOperator" && slot < positions.Count &&
                             subsetIndex < skin.BoneFromSkinMeshTransforms.Count && bindFrames.TryGetValue(boneIndex, out var bind))
@@ -7738,7 +7754,7 @@ public sealed partial class HkclService
         return result;
     }
 
-    private static IReadOnlyList<(SkinBlendArrayData Array, int BlockIndex, int PositionIndex)> GetSkinBlockOrder(
+    internal static IReadOnlyList<(SkinBlendArrayData Array, int BlockIndex, int PositionIndex)> GetSkinBlockOrder(
         IReadOnlyList<SkinBlendArrayData> arrays, IReadOnlyList<byte> controls)
     {
         var result = new List<(SkinBlendArrayData, int, int)>();
@@ -7895,6 +7911,7 @@ public sealed partial class HkclService
                 TransformOrigin = transform.Translation,
                 Radius = shape.Radius,
                 EndRadius = shape.EndRadius,
+                VirtualCollisionEnabled = collider.VirtualCollisionPointCollisionEnabled,
                 PlaneNormal = NormalizeOr(planeNormal, Vector3.UnitY),
                 Kind = kind
             });

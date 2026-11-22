@@ -4,11 +4,29 @@ namespace PhysicsTool.Desktop.Rendering;
 // Ported from the original viewport, preserving UV-seam tangent grouping.
 public static class ModelVertices
 {
+    internal static bool UpdateOotPose(VisualModelMesh previous, VisualModelMesh source, float[] packed)
+    {
+        int count = source.Vertices.Length / 8;
+        if (source.Material.Totk is not { IsOot: true } || !ReferenceEquals(previous.Material, source.Material) ||
+            !ReferenceEquals(previous.UvSets, source.UvSets) || !ReferenceEquals(previous.Indices, source.Indices) ||
+            packed.Length != count * 24 || source.Tangents.Length != count || source.TangentUvSet != source.Material.NormalUvSet)
+            return false;
+        // UVs and vertex colours belong to the unchanged material/topology.
+        // Only positions, normals and the already-skinned tangents vary here.
+        for (int i = 0; i < count; i++)
+        {
+            Array.Copy(source.Vertices, i * 8, packed, i * 24, 6);
+            var t = source.Tangents[i];
+            WriteVisualModelTangent(packed, i, 24, new(t.X, t.Y, t.Z), t.W);
+        }
+        return true;
+    }
     public static float[] Build(VisualModelMesh source)
     {
         const int sourceStride = 8;
         var totk = source.Material.Totk;
-        int targetStride = totk == null ? 20 : 24;
+        var botw = source.Material.Botw;
+        int targetStride = totk == null && botw == null ? 20 : 24;
         var vertexCount = source.Vertices.Length / sourceStride;
         var result = new float[checked(vertexCount * targetStride)];
         var albedo = ResolveUvCoordinates(source, source.Material.AlbedoUvSet);
@@ -16,7 +34,7 @@ public static class ModelVertices
         var normal = ResolveUvCoordinates(source, source.Material.NormalUvSet);
         var ao = ResolveUvCoordinates(source, source.Material.AmbientOcclusionUvSet);
         var auxiliary = ResolveUvCoordinates(source, source.Material.AuxiliaryUvSet);
-        var rawUvs = totk?.UvSets.Select(name => ResolveUvCoordinates(source, name)).ToArray();
+        var rawUvs = (totk?.UvSets ?? botw?.UvSets)?.Select(name => ResolveUvCoordinates(source, name)).ToArray();
         if (totk != null && totk.Integers.GetValueOrDefault("totkNormalSource", -1) is >= 0 and <= 7 and var normalSlot)
         {
             // Tangents must use the same transformed UVs as the normal texture.
@@ -43,10 +61,11 @@ public static class ModelVertices
             CopyUv(normal, source.Vertices, vertex, result, targetOffset + 10);
             CopyUv(ao, source.Vertices, vertex, result, targetOffset + 12);
             CopyUv(auxiliary, source.Vertices, vertex, result, targetOffset + 14);
-            if (totk != null)
+            if (rawUvs != null)
             {
                 for (int uv = 0; uv < 4; uv++) CopyUv(rawUvs![uv], source.Vertices, vertex, result, targetOffset + 6 + uv * 2);
-                var color = vertex < totk.VertexColors.Length ? totk.VertexColors[vertex] : Vector4.One;
+                var colors = totk?.VertexColors ?? botw!.VertexColors;
+                var color = vertex < colors.Length ? colors[vertex] : Vector4.One;
                 result[targetOffset + 20] = color.X; result[targetOffset + 21] = color.Y;
                 result[targetOffset + 22] = color.Z; result[targetOffset + 23] = color.W;
             }

@@ -1,5 +1,13 @@
 # BotW Physics Research
 
+## Armor 009 Support Channels - 2026-11-14
+
+The preserved Switch decompilation in `support-update.txt`, actor update `0x71018f0e90`, distinguishes disconnected support channels from outputs with a zero value. Translation handles at support record offsets `0x1a8`, `0x1c8`, and `0x1e8` are checked against `-1`. Connected channels evaluate their output and add the authored base translation; disconnected channels retain the incoming transform in the declared space. Rotation is retained when the bendH handle at `0x148` is disconnected, and incoming scale is preserved. This differs from the unconditional base-pose construction in the preceding main-bone update `0x7101cb1550`.
+
+Armor_009_Upper demonstrates the difference without animation: `Skirt_1_FC_Armor` has local translation `(0.116857, 0.1503, 0)` but stored support base `(0.116857, 0, 0)`. Its Y channel is disconnected. Replacing that channel with zero removed the 0.1503 model-space forward offset and pulled the apron inside the trousers. Keeping incoming Y restores the authored mesh without offsets, hiding geometry, or changing files.
+
+Regression tests cover disconnected channels in parent, model and explicit-bone spaces, with current poses distinct from rest poses. Native Switch and Wii U Armor 009 tests check every rest-pose mesh and bone, plus animated previews with simulation on/off. The Switch GPU capture confirms the front cloth is visible over the trousers. These checks validate this defect, not complete equivalence with every in-game pose.
+
 ## Zelda Dress Follow-Up - 2026-10-05
 
 The reported exposed calf reproduces in `Act_Call_Hello` with simulation both enabled and disabled. Isolated renders show that this cannot be attributed solely to collision response. Zelda's skirt helper group drives 18 bones, including parents of cloth-deformed bones and `Skirt_3_C_B`, which is also a driver. The native cloth layer writes only a subset of the skirt bones.

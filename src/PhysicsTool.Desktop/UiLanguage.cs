@@ -11,7 +11,7 @@ using HKCLTool;
 namespace PhysicsTool.Desktop;
 
 internal sealed record LanguageChoice(string Code, string Name) { public override string ToString() => Name; }
-internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme = true, int AnimationFps = 60,
+internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme = true, int ViewportFps = 60,
     HkclPlatform ConversionPlatform = HkclPlatform.WiiU, bool MaximizeOnStartup = false)
 {
     internal static string FilePath => AppDataPaths.SettingsFile("settings.json");
@@ -22,7 +22,7 @@ internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme
             var root = JsonNode.Parse(File.ReadAllText(path ?? FilePath));
             var language = root?["Language"]?.GetValue<string>() ?? "en";
             return new(UiLanguage.Languages.Any(l => l.Code == language) ? language : "en", root?["DarkTheme"]?.GetValue<bool>() ?? true,
-                root?["AnimationFramesPerSecond"]?.GetValue<int>() == 30 ? 30 : 60,
+                (root?["ViewportFramesPerSecond"] ?? root?["AnimationFramesPerSecond"])?.GetValue<int>() == 30 ? 30 : 60,
                 root?["ConversionPlatform"]?.GetValue<string>() == "Switch" ? HkclPlatform.Switch : HkclPlatform.WiiU,
                 root?["MaximizeOnStartup"]?.GetValue<bool>() ?? false);
         }
@@ -32,7 +32,8 @@ internal sealed record DesktopPreferences(string Language = "en", bool DarkTheme
     {
         var file = path ?? FilePath;
         var root = File.Exists(file) ? JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? new() : new JsonObject();
-        root["Language"] = Language; root["DarkTheme"] = DarkTheme; root["AnimationFramesPerSecond"] = AnimationFps;
+        root["Language"] = Language; root["DarkTheme"] = DarkTheme; root["ViewportFramesPerSecond"] = ViewportFps;
+        root.Remove("AnimationFramesPerSecond");
         root["ConversionPlatform"] = ConversionPlatform.ToString();
         root["MaximizeOnStartup"] = MaximizeOnStartup;
         HKCLTool.AtomicFile.WriteAllBytes(file, JsonSerializer.SerializeToUtf8Bytes(root, new JsonSerializerOptions { WriteIndented = true }));

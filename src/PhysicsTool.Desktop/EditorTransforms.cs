@@ -33,7 +33,11 @@ public sealed partial class MainWindow
             kind = (PhysicsSelectionKind)_mode.SelectedIndex; valid = true;
             bakeScale = kind == PhysicsSelectionKind.Bones && !Session.Document.IsHkrg && _viewport.IsScaleTransform;
             resizePivot = _viewport.TransformPivot;
-            try { preview = new SelectionTransformPreview(Session.Document, cloth, original, kind, selected, _follow.IsChecked == true, bakeScale, resizePivot); }
+            try
+            {
+                if (Session.Document.IsOot) Session.Document.ValidateOotGeometry(cloth);
+                preview = new SelectionTransformPreview(Session.Document, cloth, original, kind, selected, _follow.IsChecked == true, bakeScale, resizePivot);
+            }
             catch (Exception ex) { valid = false; _viewport.FinishTransform(false); _status.Text = ex.Message; return; }
             _status.Text = "Transform selection";
         };
@@ -56,7 +60,25 @@ public sealed partial class MainWindow
             originalModel = null;
             if (delta is { } matrix && valid && matrix != System.Numerics.Matrix4x4.Identity)
             {
-                if (bakeScale)
+                if (Session.Document.IsOot)
+                {
+                    Try(() =>
+                    {
+                        if (kind == PhysicsSelectionKind.Bones)
+                        {
+                            var bones = SelectionTransforms.TransformBones(Session.Document.GetBoneRows(cloth), selected, matrix);
+                            Session.EditOotBonePositions(bones.ToDictionary(b => b.Index, b => new System.Numerics.Vector3(b.X, b.Y, b.Z)), _follow.IsChecked == true);
+                        }
+                        else
+                        {
+                            var positions = Session.Document.GetParticleRows(cloth).Where(p => selected.Contains(p.Index)).ToDictionary(p => p.Index,
+                                p => System.Numerics.Vector3.Transform(new(p.X, p.Y, p.Z), matrix));
+                            Session.EditOotGeometry(positions);
+                        }
+                        Refresh(); _status.Text = "Updated cloth rest shape.";
+                    });
+                }
+                else if (bakeScale)
                 {
                     try { await AdjustBoneBranchResize(selected, new(matrix.M11, matrix.M22, matrix.M33), resizePivot); }
                     catch (Exception ex) { _status.Text = ex.Message; }

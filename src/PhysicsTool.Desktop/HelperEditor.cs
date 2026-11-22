@@ -11,6 +11,7 @@ namespace PhysicsTool.Desktop;
 public sealed partial class MainWindow
 {
     private readonly WrapPanel _helperActions = new();
+    private bool _helperAdvancedExpanded;
     private readonly CheckBox _evaluateHelpers = new() { Name = "EvaluateHelpers", Content = "Evaluate helpers", IsChecked = true };
     private Button _helperCreate = null!, _helperDuplicate = null!, _helperMirror = null!, _helperUp = null!, _helperDown = null!, _helperRemove = null!, _helperDeleteIndividual = null!;
     private bool CanEditHelper => !IsActorMode && !_timer.IsEnabled && Session.Document.IsHelperBoneSidecar && Session.HasSelectedEntry;
@@ -124,6 +125,32 @@ public sealed partial class MainWindow
         });
         if (group?.DrivenBoneIndices.Contains(bone.Index) == true) ShowHelperConnections(bone);
         ShowHelperCurves();
+        var advancedContent = new StackPanel { Spacing = 8 };
+        var existing = _details.Children.ToArray(); _details.Children.Clear();
+        foreach (var child in existing) advancedContent.Children.Add(child);
+        _details.Children.Add(new TextBlock { Text = bone.Name, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap });
+        var pose = new Button { Name = "OpenHelperPoseEditor", Content = "Pose responses", HorizontalAlignment = HorizontalAlignment.Stretch,
+            IsEnabled = CanEditHelper && _importedModel != null };
+        ToolTip.SetTip(pose, _importedModel == null ? "Load a model to pose the driver and affected bones." : "Capture example poses and create native helper responses. Existing connections are kept unless you choose to replace them.");
+        pose.Click += async (_, _) => await RunCommand(EditHelperPoses);
+        _details.Children.Add(pose);
+        var advanced = new Expander { Name = "HelperAdvanced", Header = "Advanced", Content = advancedContent,
+            IsExpanded = _helperAdvancedExpanded, HorizontalAlignment = HorizontalAlignment.Stretch };
+        advanced.PropertyChanged += (_, e) => { if (e.Property == Expander.IsExpandedProperty) _helperAdvancedExpanded = advanced.IsExpanded; };
+        _details.Children.Add(advanced);
+    }
+
+    private async Task EditHelperPoses()
+    {
+        if (!CanEditHelper || _importedModel == null) return;
+        var before = Session.Document.CaptureState(); var group = Session.ClothIndex;
+        var window = new HelperPoseWindow(Session.Document, group, _importedModel);
+        await window.ShowDialog(this);
+        if (window.Result is not { } edit) return;
+        if (!CanEditHelper || Session.Document.CaptureState() != before || Session.ClothIndex != group)
+            throw new InvalidOperationException("The helper document changed while posing. Reopen Pose responses before applying.");
+        Edit((d, _) => d.ApplyHelperPoses(group, edit.Driver, edit.Channel, edit.Responses, edit.Replace));
+        _status.Text = "Applied pose responses. Other movements are unchanged.";
     }
 
     private void PoseHelperModel(VisualModelData animated)

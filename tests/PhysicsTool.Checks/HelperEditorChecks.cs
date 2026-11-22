@@ -22,7 +22,7 @@ internal static class HelperEditorChecks
             var hash = SHA256.HashData(File.ReadAllBytes(path));
             var window = new MainWindow(graphics: false); window.Show(); window.LoadPath(path); window.ShowEditor(); Dispatcher.UIThread.RunJobs();
             var doc = window.Session.Document;
-            T Find<T>(string id) where T : Control => window.GetVisualDescendants().OfType<T>().Single(c => c.Name == id);
+            T Find<T>(string id) where T : Control { Dispatcher.UIThread.RunJobs(); window.UpdateLayout(); return window.GetVisualDescendants().OfType<T>().Single(c => c.Name == id); }
             void Click(string id) { Find<Button>(id).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs(); }
             void Answer(string text) { var button = window.OwnedWindows.Single().GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, text)); button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs(); }
             void Undo() { window.Session.Undo(); window.Refresh(); Dispatcher.UIThread.RunJobs(); }
@@ -30,6 +30,7 @@ internal static class HelperEditorChecks
             void Select(int index) { items.SelectedIndex = doc.GetBoneRows(window.Session.ClothIndex).Select((b, i) => (b, i)).Single(v => v.b.Index == index).i; Dispatcher.UIThread.RunJobs(); }
             var group = doc.GetSidecarDriverGroups().First(g => g.DrivenBoneIndices.Count > 0 && doc.GetHelperCurves(g.Index).Any(c => c.Editable));
             window.Session.ClothIndex = group.Index; window.Refresh(); Select(group.DrivenBoneIndices[0]);
+            Find<Expander>("HelperAdvanced").IsExpanded = true; Dispatcher.UIThread.RunJobs();
             var bone = doc.GetBoneRows(group.Index).Single(b => b.Index == group.DrivenBoneIndices[0]);
             var original = doc.CaptureState();
             string CurveSignature(HkclService d) => string.Join("|", d.GetSidecarDriverGroups().SelectMany(g => d.GetHelperCurves(g.Index)).OrderBy(c => c.Index).Select(c => $"{c.Index}:{c.DriverIndex}:{c.Attribute}:{string.Join(';', c.Keys)}"));

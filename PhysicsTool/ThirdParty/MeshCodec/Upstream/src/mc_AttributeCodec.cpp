@@ -12,6 +12,13 @@ namespace mc {
 
 namespace detail {
 
+// Packed cave attributes can span more than 32 bits. Build masks in the
+// destination type, including the full-width case without an oversized shift.
+template <typename T>
+constexpr T LowMask(u32 bits) {
+    return bits == 0 ? T(0) : bits >= sizeof(T) * 8 ? ~T(0) : T(~T(0)) >> (sizeof(T) * 8 - bits);
+}
+
 template <size_t BitSize, size_t ComponentCount, bool UseTable>
 void DecodeInternalDeltas(VertexStreamContext& ctx, s32 vertexCount [[maybe_unused]], VertexDecodeGroup* groups, u32 numGroups, u8* (&inputStreams)[6], s32 streamsRemaining [[maybe_unused]]) {
     static_assert(BitSize == 8 || (BitSize == 10 && ComponentCount == 3) || BitSize == 16, "Invalid bit size");
@@ -187,7 +194,7 @@ void DecodeRawCustomSize(VertexStreamContext& ctx, s32 vertexCount [[maybe_unuse
     const u32 stride = flags >> 0x18;
     const u32 attrShift = flags >> 0x10 & 0xff; // bit offset of the start of the attribute
     const u32 compShift = flags >> 0x8 & 0xff; // size in bits of each individual component (aka shift amount to get from component to component)
-    const OutputT copyMask = (2 << (compShift * (flags & 7) - 1)) - 1;
+    const OutputT copyMask = LowMask<OutputT>(compShift * (flags & 7));
     const OutputT keepMask = ~(copyMask << attrShift);
     InputT* input = reinterpret_cast<InputT*>(inputStreams[0]);
     OutputT* output = reinterpret_cast<OutputT*>(ctx.outputBuffer + (ctx.attrOffsets[ctx.attrIndex] + ctx.baseVertexIndex * stride));
@@ -763,9 +770,9 @@ void DecodeXORCustomSize(VertexStreamContext& ctx, s32 vertexCount [[maybe_unuse
     const u64 compMask = ~(-1ll << compShift);
     u64 copyMask;
     if constexpr (IsType2) {
-        copyMask = (2 << (compShift * 3 - 1)) - 1;
+        copyMask = LowMask<u64>(compShift * 3);
     } else {
-        copyMask = (2 << (compShift * 2 - 1)) - 1;
+        copyMask = LowMask<u64>(compShift * 2);
     }
     const u64 keepMask = ~(copyMask << attrShift);
     u8* valueStream = inputStreams[0];
@@ -997,7 +1004,7 @@ void DecodeDeltasCustomSize(VertexStreamContext& ctx, s32 vertexCount [[maybe_un
     const u32 stride = flags >> 0x18;
     const u32 attrShift = flags >> 0x10 & 0xff;
     const u32 compShift = flags >> 0x8 & 0xff;
-    const OutputT copyMask = (2 << (compShift * (flags & 7) - 1)) - 1;
+    const OutputT copyMask = LowMask<OutputT>(compShift * (flags & 7));
     const OutputT keepMask = ~(copyMask << attrShift);
     InputT* input = reinterpret_cast<InputT*>(inputStreams[0]);
     OutputT* output = reinterpret_cast<OutputT*>(ctx.outputBuffer + (ctx.attrOffsets[ctx.attrIndex] + ctx.baseVertexIndex * stride));
@@ -1524,7 +1531,7 @@ void DecodeTriangleDeltasCustomSize(VertexStreamContext& ctx, s32 vertexCount [[
                     const u64 value1 = (((((value >> compSize) & compMask) ^ -v1) & compMask) + reinterpret_cast<u16*>(refBaseValueStream)[1]) & compMask;
                     const u64 value2 = (((((value >> (compSize * 2)) & compMask) ^ -v2) & compMask) + reinterpret_cast<u16*>(refBaseValueStream)[2]) & compMask;
                     *reinterpret_cast<u64*>(output) = ((value0 | (value1 << compSize) | (value2 << (compSize * 2))) << attrShift) | (*reinterpret_cast<u64*>(output) & keepMask);
-                    refBaseValueStream += 3 * sizeof(u16);
+                    refBaseValueStream += 3;
                 } else {
                     const u64 value = ctx.indexBufferTable[tableIndex];
                     if (value & 0x3fffff) {
@@ -2402,7 +2409,7 @@ DecodeAttributeFunc sAttributeDecodeFunctions[0x71] = {
 
 // this just copies old data, nothing too fancy
 void DecodeBackrefs(VertexStreamContext& ctx, s32 vertexCount [[maybe_unused]], VertexDecodeGroup* groups, u32 numGroups) {
-    #define MASK(VALUE, SHIFT, MASK) ((((VALUE) << (SHIFT)) & (MASK)) >> (SHIFT))
+    #define MASK(VALUE, SHIFT, MASK) ((((VALUE) >> (SHIFT)) & (MASK)) << (SHIFT))
 
     const u32 flags = ctx.attrFlags[ctx.attrIndex];
     const u32 stride = flags >> 0x18;
@@ -2433,7 +2440,7 @@ void DecodeBackrefs(VertexStreamContext& ctx, s32 vertexCount [[maybe_unused]], 
             const u32 bitSize = compSize * compCount;
             const u32 endOffset = bitSize + attrShift;
             if (endOffset <= 8) {
-                const u8 copyMask = (2 << (bitSize - 1)) - 1;
+                const u8 copyMask = detail::LowMask<u8>(bitSize);
                 const u8 keepMask = ~(copyMask << attrShift);
                 for (; numGroups != 0; --numGroups) {
                     for (u32 i = groups->GetCopyCount(); i != 0; --i) {
@@ -2443,7 +2450,7 @@ void DecodeBackrefs(VertexStreamContext& ctx, s32 vertexCount [[maybe_unused]], 
                     ++groups;
                 }
             } else if (endOffset <= 0x10) {
-                const u16 copyMask = (2 << (bitSize - 1)) - 1;
+                const u16 copyMask = detail::LowMask<u16>(bitSize);
                 const u16 keepMask = ~(copyMask << attrShift);
                 for (; numGroups != 0; --numGroups) {
                     for (u32 i = groups->GetCopyCount(); i != 0; --i) {
@@ -2453,7 +2460,7 @@ void DecodeBackrefs(VertexStreamContext& ctx, s32 vertexCount [[maybe_unused]], 
                     ++groups;
                 }
             } else if (endOffset <= 0x20) {
-                const u32 copyMask = (2 << (bitSize - 1)) - 1;
+                const u32 copyMask = detail::LowMask<u32>(bitSize);
                 const u32 keepMask = ~(copyMask << attrShift);
                 for (; numGroups != 0; --numGroups) {
                     for (u32 i = groups->GetCopyCount(); i != 0; --i) {
@@ -2463,7 +2470,7 @@ void DecodeBackrefs(VertexStreamContext& ctx, s32 vertexCount [[maybe_unused]], 
                     ++groups;
                 }
             } else if (endOffset <= 0x40) {
-                const u64 copyMask = (2 << (bitSize - 1)) - 1;
+                const u64 copyMask = detail::LowMask<u64>(bitSize);
                 const u64 keepMask = ~(copyMask << attrShift);
                 for (; numGroups != 0; --numGroups) {
                     for (u32 i = groups->GetCopyCount(); i != 0; --i) {

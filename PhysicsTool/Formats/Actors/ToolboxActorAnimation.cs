@@ -24,25 +24,29 @@ internal sealed class ToolboxActorAnimation
             return value * Scale + Offset;
         }
     }
-    private sealed record Track(Vector3 Position, Vector4 Rotation, Vector3 Scale, string BaseFlags, Curve[] Curves);
+    private sealed record Track(Vector3 Position, Vector4 Rotation, Vector3 Scale, string BaseFlags, Curve[] Curves, bool Euler, OotAnimationTracks.RotationTrack? QuaternionCurve);
     private readonly Dictionary<string, Track> _tracks;
     private readonly bool _euler;
     public string Name { get; }
     public string ResourceName { get; }
     public int FrameCount { get; }
+    public double FramesPerSecond { get; }
     public IEnumerable<string> BoneNames => _tracks.Keys;
     public ToolboxActorAnimation(object source, string resource)
     {
         dynamic animation = source;
+        FramesPerSecond = OotAnimationTracks.IsOot(source) ? 60 : BaseFramesPerSecond;
         Name = animation.Name; ResourceName = resource; FrameCount = Math.Max(1, (int)animation.FrameCount);
-        _euler = animation.FlagsRotate.ToString().Contains("Euler");
+        // OoT's mixed rotation mode uses Euler except on flagged quaternion bones.
+        _euler = animation.FlagsRotate.ToString().Contains("Euler") || Convert.ToUInt32(animation.FlagsRotate) == 0x2000;
         _tracks = new(StringComparer.OrdinalIgnoreCase);
         foreach (dynamic bone in ToolboxBfresDocument.Items((object)animation.BoneAnims))
         {
-            var curves = ToolboxBfresDocument.Items((object)bone.Curves).Select(c => new Curve((uint)c.AnimDataOffset,
+            bool quaternion = OotAnimationTracks.TryGet((object)bone, out var nativeRotation);
+            var curves = ToolboxBfresDocument.Items((object)bone.Curves).Where(c => !quaternion || (uint)c.AnimDataOffset != 0x20).Select(c => new Curve((uint)c.AnimDataOffset,
                 (float[])c.Frames, (float[,])c.Keys, (float)c.Scale == 0 ? 1 : (float)c.Scale, (float)c.Offset, c.CurveType.ToString())).ToArray();
             _tracks[(string)bone.Name] = new(ToolboxActorModel.V3(bone.BaseData.Translate), ToolboxActorModel.V4(bone.BaseData.Rotate),
-                ToolboxActorModel.V3(bone.BaseData.Scale), bone.FlagsBase.ToString(), curves);
+                ToolboxActorModel.V3(bone.BaseData.Scale), bone.FlagsBase.ToString(), curves, !quaternion && _euler, nativeRotation?.Curve);
         }
     }
     public void Sample(string name, double frame, ref Vector3 position, ref Vector4 rotation, ref Vector3 scale, ref bool euler)
@@ -50,7 +54,11 @@ internal sealed class ToolboxActorAnimation
         if (!_tracks.TryGetValue(name, out var track)) return;
         if (track.BaseFlags.Contains("Translate")) position = track.Position;
         if (track.BaseFlags.Contains("Scale")) scale = track.Scale;
-        if (track.BaseFlags.Contains("Rotate")) { rotation = track.Rotation; euler = _euler; }
+        if (track.BaseFlags.Contains("Rotate")) { rotation = track.Rotation; euler = track.Euler; }
+        if (track.QuaternionCurve is { } quaternionCurve)
+        {
+            var q = quaternionCurve.Sample(frame); rotation = new(q.X, q.Y, q.Z, q.W); euler = false;
+        }
         foreach (var curve in track.Curves)
         {
             var value = curve.Sample(frame);
@@ -62,10 +70,10 @@ internal sealed class ToolboxActorAnimation
                 case 0x10: position.X = value; break;
                 case 0x14: position.Y = value; break;
                 case 0x18: position.Z = value; break;
-                case 0x20: rotation.X = value; euler = _euler; break;
-                case 0x24: rotation.Y = value; euler = _euler; break;
-                case 0x28: rotation.Z = value; euler = _euler; break;
-                case 0x2c: rotation.W = value; euler = _euler; break;
+                case 0x20: rotation.X = value; euler = track.Euler; break;
+                case 0x24: rotation.Y = value; euler = track.Euler; break;
+                case 0x28: rotation.Z = value; euler = track.Euler; break;
+                case 0x2c: rotation.W = value; euler = track.Euler; break;
             }
         }
     }

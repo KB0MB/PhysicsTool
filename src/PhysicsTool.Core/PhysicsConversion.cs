@@ -36,19 +36,19 @@ public sealed class PhysicsConversion
     public string SuggestedFileName => (string.IsNullOrWhiteSpace(_sourcePath) ? "Physics" : Path.GetFileNameWithoutExtension(_sourcePath)) + Extension;
     public IReadOnlyList<BphclConversionScale> Scales { get; }
     public IReadOnlyList<string> FidelityWarnings { get; }
-    public static bool CanConvert(HkclService document) => document.HasDocument && !document.IsHkrg;
+    public static bool CanConvert(HkclService document) => document.HasDocument && !document.IsHkrg && (!document.IsPreviewOnly || document.IsOot);
 
     public PhysicsConversion(HkclService source, string? sourcePath = null, IReadOnlyList<VisualModelBone>? modelBones = null)
     {
         if (!CanConvert(source)) throw new InvalidOperationException("Open an HKCL, BPHCL, BPHYSSB or BPHHB file to convert.");
-        _source = source.CopyForConversion();
+        _source = OotConversionExport.NormalizeForOlderGame(source);
         _sourcePath = sourcePath;
         _modelBones = modelBones?.Select(b => new VisualModelBone { Index = b.Index, ParentIndex = b.ParentIndex,
             Name = b.Name, Sources = b.Sources, Position = b.Position, Rotation = b.Rotation, Scale = b.Scale }).ToArray();
         Target = source.IsBphcl ? PhysicsConversionTarget.Hkcl : source.IsBphyssb ? PhysicsConversionTarget.Bphhb
             : source.IsBphhb ? PhysicsConversionTarget.Bphyssb : PhysicsConversionTarget.Bphcl;
         Scales = Target == PhysicsConversionTarget.Hkcl ? _source.GetBphclConversionScaleSuggestions() : [];
-        FidelityWarnings = Target == PhysicsConversionTarget.Hkcl
+        var warnings = Target == PhysicsConversionTarget.Hkcl
             ? Enumerable.Range(0, _source.GetClothSummaries().Count).SelectMany(i =>
                 _source.GetBendStiffnessConstraintSets(i)
                     .Where(s => s.UseRestPoseConfig && s.ClampBendStiffness && s.Links.Any(l => l.RestCurvature != 0))
@@ -56,6 +56,7 @@ public sealed class PhysicsConversion
                         "Rest curvature and bending weights are preserved, but strongly deformed bends can respond differently in BotW."))
                 .Distinct().ToArray()
             : Target == PhysicsConversionTarget.Bphhb ? _source.GetBphhbConversionWarnings() : [];
+        FidelityWarnings = source.IsOot ? warnings.Prepend(OotConversionExport.OlderGameWarning).ToArray() : warnings;
     }
 
     public PhysicsConversionResult Export(string path, PhysicsConversionOptions options)

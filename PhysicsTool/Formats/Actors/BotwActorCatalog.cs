@@ -5,8 +5,9 @@ namespace HKCLTool;
 internal sealed record BotwActorCatalogEntry(string Name, string Path, string? ArchiveEntry,
     string ResourceRoot, bool IsSwitch, bool HasCloth, bool HasSupport)
 {
-    public string Platform => IsTotk ? "TotK (Switch)" : IsSwitch ? "BotW (Switch)" : "BotW (Wii U)";
-    public bool IsTotk => Path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase);
+    public bool IsOot { get; init; }
+    public string Platform => IsOot ? "OoT" : IsTotk ? "TotK (Switch)" : IsSwitch ? "BotW (Switch)" : "BotW (Wii U)";
+    public bool IsTotk => !IsOot && Path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase);
     public string Source
     {
         get

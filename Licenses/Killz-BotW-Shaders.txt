@@ -1,0 +1,13 @@
+BotW uking_mat shaders
+Author: Killz
+
+The original 20 shader files supplied to the project in BOTW Shader.zip are
+preserved verbatim in src/PhysicsTool.Desktop/Rendering/Shaders/BotwNative.
+PhysicsTool provides the shader adapter, material bindings and preview lighting.
+
+On 2026-11-21 the project maintainer confirmed Killz approved distribution
+of these sources in the public PhysicsTool repository and release ZIPs.
+No separate license text was supplied. This attribution records that permission;
+it does not assign an additional license to Killz's shader files.
+
+Thank you to Killz for reverse-engineering and sharing the BotW shaders.

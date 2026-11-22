@@ -6,7 +6,13 @@ public readonly record struct GridLine(Vector3 Start, Vector3 End, Vector3 Color
 
 public sealed partial class PhysicsViewport
 {
-    public IReadOnlyList<GridLine> GridLines => IsLightViewport ? LightWorldGrid : WorldGrid;
+    private bool _showGrid = true;
+    public bool ShowGrid
+    {
+        get => _showGrid;
+        set { if (_showGrid != value) { _showGrid = value; Changed(); } }
+    }
+    public IReadOnlyList<GridLine> GridLines => !ShowGrid ? Array.Empty<GridLine>() : IsLightViewport ? LightWorldGrid : WorldGrid;
     private static readonly IReadOnlyList<GridLine> WorldGrid = CreateWorldGrid(false);
     private static readonly IReadOnlyList<GridLine> LightWorldGrid = CreateWorldGrid(true);
 

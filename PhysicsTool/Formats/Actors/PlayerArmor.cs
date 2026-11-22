@@ -4,7 +4,7 @@ namespace HKCLTool;
 
 internal enum PlayerArmorSlot { Head, Upper, Lower }
 
-internal sealed record PlayerArmorEntry(PlayerArmorSlot Slot, string Name, string Path)
+internal sealed record PlayerArmorEntry(PlayerArmorSlot Slot, string Name, string Path, string? ArchiveEntry = null)
 {
     public string DisplayName => Name.StartsWith("Armor_", StringComparison.Ordinal) && Name.EndsWith("_" + Slot, StringComparison.Ordinal)
         ? Name[6..^(Slot.ToString().Length + 1)] : Name;
@@ -15,24 +15,23 @@ internal sealed class PlayerArmorCatalog
 {
     public IReadOnlyList<PlayerArmorEntry> Entries { get; }
     public string? RightHandPath { get; }
-    public static bool Supports(BotwActorResources resources) => resources.IsTotk && resources.ActorName == "Player";
+    private readonly bool _totk;
+    internal PlayerEquipmentSources Sources { get; }
+    public static bool Supports(BotwActorResources resources) => resources.IsTotk ? resources.ActorName == "Player" : resources.ActorName == "GameROMPlayer";
 
     public PlayerArmorCatalog(BotwActorResources player)
     {
-        if (!Supports(player)) throw new InvalidOperationException("Armor slots are available only for the TotK Player actor.");
+        if (!Supports(player)) throw new InvalidOperationException("Armor slots are available only for the Player actor.");
+        _totk = player.IsTotk;
+        Sources = new(player);
         var entries = new Dictionary<string, PlayerArmorEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var folder in new[] { System.IO.Path.GetDirectoryName(player.SourcePath)! }
-            .Concat(player.Roots.Select(r => System.IO.Path.Combine(r, "Pack", "Actor"))).Distinct(StringComparer.OrdinalIgnoreCase))
+        RightHandPath = Sources.Find("PlayerRaulHand")?.Path;
+        foreach (var source in Sources.Actors.Values)
         {
-            if (!Directory.Exists(folder)) continue;
-            var hand = System.IO.Path.Combine(folder, "PlayerRaulHand.pack.zs");
-            if (RightHandPath == null && File.Exists(hand)) RightHandPath = hand;
-            foreach (var path in Directory.EnumerateFiles(folder, "Armor_*.pack.zs"))
-            {
-                var name = System.IO.Path.GetFileName(path)[..^8];
-                foreach (var slot in Enum.GetValues<PlayerArmorSlot>())
-                    if (name.EndsWith("_" + slot, StringComparison.Ordinal)) entries.TryAdd(name, new(slot, name, path));
-            }
+            var name = source.Name;
+            if (!name.StartsWith("Armor_", StringComparison.Ordinal)) continue;
+            foreach (var slot in Enum.GetValues<PlayerArmorSlot>())
+                if (name.EndsWith("_" + slot, StringComparison.Ordinal)) entries.TryAdd(name, new(slot, name, source.Path, source.ArchiveEntry));
         }
         Entries = entries.Values.OrderBy(e => SortNumber(e.Name)).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
@@ -40,7 +39,8 @@ internal sealed class PlayerArmorCatalog
     internal static int SortNumber(string name) => name.StartsWith("Armor_", StringComparison.Ordinal) &&
         int.TryParse(name.AsSpan(6, Math.Max(0, name.IndexOf('_', 6) - 6)), out var number) ? number : -1;
 
-    public PlayerArmorEntry? Default(PlayerArmorSlot slot) => Entries.FirstOrDefault(e => e.Name == DefaultName(slot));
+    public string DefaultActorName(PlayerArmorSlot slot) => _totk ? DefaultName(slot) : "Armor_Default_" + slot;
+    public PlayerArmorEntry? Default(PlayerArmorSlot slot) => Entries.FirstOrDefault(e => e.Name == DefaultActorName(slot));
     public static string DefaultName(PlayerArmorSlot slot) => slot == PlayerArmorSlot.Head ? "Armor_999_Head" : "Armor_Default_" + slot;
     public PlayerArmorEntry Find(PlayerArmorSlot slot, string name) => Entries.FirstOrDefault(e => e.Slot == slot && e.Name == name)
         ?? throw new InvalidDataException($"Armor '{name}' is not available in the {slot} slot of this game dump.");
@@ -75,11 +75,40 @@ internal sealed partial class BotwActorResources
 {
     internal ActorEquipmentVisibility ReadEquipmentVisibility()
     {
-        if (!IsTotk) return new();
+        if (!IsTotk)
+        {
+            var result = new ActorEquipmentVisibility();
+            foreach (var group in Models.GroupBy(m => m.Resource))
+            {
+                var bytes = ReadModel(group.Key);
+                if (bytes == null) continue;
+                var document = new ToolboxBfresDocument(bytes);
+                foreach (var modelReference in group)
+                {
+                    dynamic? model = document.Models.FirstOrDefault(m => (string)m.Name == modelReference.Model);
+                    if (model == null) continue;
+                    result.HideGroups.UnionWith(HideGroups((object)model.UserData));
+                    foreach (object material in ToolboxBfresDocument.Items((object)model.Materials))
+                    {
+                        string name;
+                        object data;
+                        if (material is Syroot.NintenTools.NSW.Bfres.Material nx) { name = nx.Name; data = nx.UserDatas; }
+                        else { var wii = (Syroot.NintenTools.Bfres.Material)material; name = wii.Name; data = wii.UserData; }
+                        foreach (var groupName in HideGroups(data))
+                            result.Groups[groupName] = result.Groups.GetValueOrDefault(groupName, []).Append(name).Distinct(StringComparer.Ordinal).ToArray();
+                    }
+                }
+            }
+            return result;
+        }
         var actor = TotkParameters($"Actor/{ActorName}.engine__actor__ActorParam.bgyml");
         var components = actor["Components"].GetMap();
         var key = ActorName == "Player" ? "EquipmentUserRef" : "ArmorRef";
         return components.TryGetValue(key, out var reference)
             ? ActorEquipmentVisibility.Read(TotkParameters(reference.GetString())) : new();
     }
+
+    private static IEnumerable<string> HideGroups(object? collection) => ToolboxBfresDocument.Items(collection)
+        .Where(v => (string)v.Name == "HideMaterialGroup")
+        .SelectMany(v => (string[])v.GetValueStringArray()).Where(s => !string.IsNullOrWhiteSpace(s));
 }

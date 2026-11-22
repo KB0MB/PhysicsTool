@@ -16,13 +16,41 @@ public sealed partial class HkclService
         var blockers = new List<string>();
         var warnings = new List<string>
         {
-            "Experimental TotK cloth preview; game parity is not yet validated.",
+            IsOot ? "Experimental OoT cloth preview; Havok 2025 game parity is not yet validated." : "Experimental TotK cloth preview; game parity is not yet validated.",
             "Animation-to-simulation transitions, world collision, and game wind/actions are not reconstructed."
         };
         var cloth = _bphcl?.NativeDocument?.Cloths.ElementAtOrDefault(clothIndex);
         if (cloth == null) return new(new[] { "Select a native BPHCL cloth." }, warnings);
+        if (IsOot)
+        {
+            try
+            {
+                NativeBphclParticleEditor.ValidateOotGeometry(_bphcl!.NativeDocument!, clothIndex, forSimulation: true);
+                ValidateOotPreviewSkinMapping(clothIndex);
+            }
+            catch (InvalidOperationException ex) { blockers.Add(ex.Message.Replace("rest-shape editing", "simulation").Replace("geometry editing", "simulation")); }
+            catch (InvalidDataException ex) { blockers.Add(ex.Message); }
+        }
         if (cloth.SimCloths.Count != 1) blockers.Add("Multiple simulation meshes in one cloth are not implemented.");
         var simulation = cloth.SimCloths.FirstOrDefault();
+        if (IsOot && simulation != null)
+        {
+            try { _bphcl!.NativeDocument!.ReadVirtualCollisionData(simulation.ItemIndex); }
+            catch (InvalidDataException ex) { blockers.Add(ex.Message); }
+            if (cloth.SimCloths.Count == 1)
+            {
+                try
+                {
+                    BuildOotContactSurface(clothIndex);
+                    BuildOotWindSurface(clothIndex);
+                    _bphcl!.NativeDocument!.ReadOotAerodynamics(simulation.ItemIndex);
+                    if (!float.IsFinite(simulation.Runtime.TotalMass) || simulation.Runtime.TotalMass < 0)
+                        throw new InvalidDataException("Invalid OoT total cloth mass.");
+                }
+                catch (Exception ex) when (ex is InvalidDataException or NotSupportedException)
+                { blockers.Add(ex.Message); }
+            }
+        }
         var operators = cloth.Operators.Where(op => op.ClassName == "hclSimulateOperator").ToArray();
         if (operators.Length != 1 || operators[0].SimulateConfigs.Count != 1)
             blockers.Add("This cloth requires multiple simulation programs/configurations.");
@@ -60,16 +88,24 @@ public sealed partial class HkclService
             {
                 var active = activeIndices.Select(index => cloth.Operators[index]).ToArray();
                 var solveAt = Array.FindIndex(active, op => op.ClassName == "hclSimulateOperator");
-                if (solveAt < 0 || active.Any(op => op.ClassName is "hclCopyVerticesOperator" or "hclGatherAllVerticesOperator") ||
+                if (solveAt < 0 || !IsOot && active.Any(op => op.ClassName is "hclCopyVerticesOperator" or "hclGatherAllVerticesOperator") ||
                     active.Take(Math.Max(0, solveAt)).Any(op => op.ClassName == "hclSimpleMeshBoneDeformOperator") ||
                     active.Skip(solveAt + 1).Any(op => op.ClassName is "hclMoveParticlesOperator" or "hclObjectSpaceSkinPOperator" or "hclBoneSpaceSkinPOperator"))
                     blockers.Add("The default-state operator routing requires stages not yet reconstructed.");
             }
         }
+        if (HasOotReferenceRoutes(clothIndex))
+        {
+            try { ApplyOotReferenceBuffers(clothIndex, GetParticlePreview(clothIndex)); }
+            catch (Exception ex) when (ex is InvalidDataException or NotSupportedException or InvalidOperationException)
+            { blockers.Add(ex.Message); }
+        }
         if (simulation != null)
         {
             foreach (var set in simulation.ConstraintSets)
             {
+                if (IsOot && set.IsAntiPinch && set.ClassName == "hclAntiPinchConstraintSet") continue;
+                if (IsOot && set.ClassName is "hclVolumeConstraint" or "hclBonePlanesConstraintSet") continue;
                 if (set.ClassName is not ("hclStandardLinkConstraintSet" or "hclStretchLinkConstraintSet" or "hclCompressibleLinkConstraintSet" or
                     "hclBendLinkConstraintSet" or "hclBendStiffnessConstraintSet" or "hclLocalRangeConstraintSet" or
                     "hclTransitionConstraintSet"))
@@ -78,6 +114,12 @@ public sealed partial class HkclService
                     blockers.Add("Normal-component local ranges are not implemented.");
             }
             var indices = simulation.ConstraintSets.Select(set => set.Index).ToHashSet();
+            if (IsOot && simulation.ConstraintSets.Any(s => s.ClassName is "hclVolumeConstraint" or "hclBonePlanesConstraintSet"))
+            {
+                try { AddOotShapeConstraints(clothIndex, GetParticlePreview(clothIndex)); }
+                catch (Exception ex) when (ex is InvalidDataException or NotSupportedException or InvalidOperationException)
+                { blockers.Add(ex.Message); }
+            }
             if (config?.ConstraintExecution.Any(index => index != -1 && !indices.Contains(index)) == true)
                 blockers.Add("The constraint schedule contains an invalid set index.");
             if (simulation.Particles.Any(p => !float.IsFinite(p.Mass) || !float.IsFinite(p.InverseMass) || p.Mass < 0 || p.InverseMass < 0))
@@ -98,8 +140,16 @@ public sealed partial class HkclService
                 if (collider == null || collider.Shape.TypeName is not ("hclSphereShape" or "hclCapsuleShape" or "hclTaperedCapsuleShape" or "hclPlaneShape"))
                     blockers.Add("An instance collider is missing or uses an unsupported shape.");
             }
-            if (simulation.Runtime.PinchDetectionEnabled)
-                warnings.Add("Pinch contacts currently use the shared preview recovery, not fully reconstructed TotK recovery.");
+            if (IsOot && simulation.ConstraintSets.Any(s => s.IsAntiPinch))
+            {
+                try { BuildOotPinchRecovery(clothIndex); }
+                catch (Exception ex) when (ex is InvalidDataException or NotSupportedException or InvalidOperationException)
+                { blockers.Add(ex.Message); }
+            }
+            if (simulation.Runtime.PinchDetectionEnabled && (!IsOot || !simulation.ConstraintSets.Any(s => s.IsAntiPinch)))
+                warnings.Add(IsOot
+                    ? "No authored OoT anti-pinch recovery set; overlapping colliders use ordinary contacts."
+                    : "Pinch contacts currently use the shared preview recovery, not fully reconstructed TotK recovery.");
         }
         return new(blockers.Distinct().ToArray(), warnings);
     }
@@ -113,7 +163,17 @@ public sealed partial class HkclService
         var simulation = cloth.SimCloths[0];
         var config = cloth.Operators.Single(op => op.ClassName == "hclSimulateOperator").SimulateConfigs[0];
         var preview = GetParticlePreview(clothIndex);
-        preview.SolverProfile = ClothSolverProfile.TotkExperimental;
+        preview.SolverProfile = IsOot ? ClothSolverProfile.OotExperimental : ClothSolverProfile.TotkExperimental;
+        if (IsOot) preview.VirtualCollisionData = document.ReadVirtualCollisionData(simulation.ItemIndex);
+        if (IsOot) preview.OotContactSurface = BuildOotContactSurface(clothIndex);
+        if (IsOot)
+        {
+            preview.OotAerodynamics = document.ReadOotAerodynamics(simulation.ItemIndex);
+            preview.OotWindSurface = BuildOotWindSurface(clothIndex);
+            preview.TotalMass = simulation.Runtime.TotalMass;
+        }
+        if (IsOot) AddOotShapeConstraints(clothIndex, preview);
+        if (HasOotReferenceRoutes(clothIndex)) ApplyOotReferenceBuffers(clothIndex, preview);
 
         // Do not synthesize fixed/reference inputs from nearby particles. Native
         // MoveParticles and LocalRange must resolve their exact skinned vertices.
@@ -130,6 +190,13 @@ public sealed partial class HkclService
         preview.Colliders.Clear();
         AddNativeBphclPreviewColliders(preview, document, clothIndex, config);
         preview.PinchDetectionEnabled = simulation.Runtime.PinchDetectionEnabled;
+        preview.HasAntiPinchConstraints = simulation.ConstraintSets.Any(s => s.IsAntiPinch);
+        if (IsOot)
+        {
+            preview.AntiPinchRecovery.AddRange(BuildOotPinchRecovery(clothIndex));
+            var recoverySets = simulation.ConstraintSets.Where(s => s.IsAntiPinch).Select(s => s.Index).ToHashSet();
+            preview.ConstraintSets.RemoveAll(s => recoverySets.Contains(s.Index));
+        }
         for (var i = 0; i < simulation.Runtime.PerParticlePinchDetectionEnabledFlags.Count; i++)
             if (simulation.Runtime.PerParticlePinchDetectionEnabledFlags[i]) preview.PinchEnabledParticles.Add(i);
         for (var i = 0; i < simulation.Runtime.CollidablePinchingData.Count; i++)

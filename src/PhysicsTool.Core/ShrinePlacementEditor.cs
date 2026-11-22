@@ -14,9 +14,15 @@ internal sealed partial class ShrinePlacementEditor
     private readonly ShrineSceneAssets _original;
     private readonly string _root;
     private readonly Dictionary<string, byte[]> _sources = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<int> _mergePartsOwners = [];
+    private readonly Dictionary<int, string?> _placementOnlyRestrictions = new();
     private sealed record Copy(int Original, ulong Hash, ulong PlacementId, uint SrtHash);
+    private sealed record Addition(ShrineActor Actor, uint SrtHash, VisualModelData Model);
     private sealed record State(Dictionary<int, ShrineTransform> Transforms, HashSet<int> Deleted, Dictionary<int, Copy> Copies,
-        Dictionary<int, GroundControlEdit> Groups);
+        Dictionary<int, GroundControlEdit> Groups)
+    {
+        internal Dictionary<int, Addition> Additions { get; init; } = new();
+    }
     private State _state = new(new(), new(), new(), new());
     private readonly Stack<State> _undo = new(), _redo = new();
     private int[] _keys;
@@ -27,7 +33,17 @@ internal sealed partial class ShrinePlacementEditor
     internal bool Dirty { get; private set; }
     internal bool CanUndo => _undo.Count != 0;
     internal bool CanRedo => _redo.Count != 0;
+    internal bool PlacementOnly { get; private set; }
+    internal bool CanChangeEditMode => !Dirty && !CanUndo && !CanRedo;
+    internal void SetPlacementOnly(bool value)
+    {
+        if (value == PlacementOnly) return;
+        if (!CanChangeEditMode) throw new InvalidOperationException("Reopen the scene before changing its editing mode. Save your changes first.");
+        PlacementOnly = value;
+        _populationRestrictions.Clear();
+    }
     internal int SourceCount => _sources.Count;
+    internal string ResourceRoot => _root;
     internal VisualModelData PreviewMove(int index, Vector3 worldDelta)
         => PreviewMove([index], worldDelta);
 
@@ -41,8 +57,7 @@ internal sealed partial class ShrinePlacementEditor
         var model = new VisualModelData { SourcePath = Model.SourcePath, BoundsMinimum = Model.BoundsMinimum, BoundsMaximum = Model.BoundsMaximum };
         foreach (var mesh in Model.Meshes)
         {
-            int owner = int.Parse(mesh.Name.AsSpan(0, mesh.Name.IndexOf(':')));
-            if (owners.Contains(owner)) ShrineSceneAssets.AddMesh(model, mesh, worldDelta, mesh.Name);
+            if (ShrineSceneAssets.MeshActorIndex(mesh) is { } owner && owners.Contains(owner)) ShrineSceneAssets.AddMesh(model, mesh, worldDelta, mesh.Name);
             else { model.Meshes.Add(mesh); model.TriangleCount += mesh.Indices.Length / 3; }
         }
         return model;
@@ -52,23 +67,56 @@ internal sealed partial class ShrinePlacementEditor
     {
         _original = assets; _root = Path.GetFullPath(root); Scene = assets.Scene; Model = assets.Model; Compound = assets.Compound;
         _keys = assets.Scene.Actors.Select(a => a.Index).ToArray(); _nextKey = _keys.Length;
+        foreach (var actor in assets.Scene.Actors.Where(a => a.IsMergeParts))
+            for (int owner = actor.Index; owner >= 0 && _mergePartsOwners.Add(owner); owner = assets.Scene.Actors[owner].ParentIndex) { }
         foreach (string path in assets.Scene.Actors.Select(a => a.SourceScene).Distinct(StringComparer.OrdinalIgnoreCase))
             _sources[path] = BphscDocument.ReadResource(path, [root]);
         // Keep empty companion files too: the scene is always exported as a pair.
         string source = Path.GetFullPath(assets.Model.SourcePath);
-        if (ShrineSceneCatalog.Companion(source) is { } other && !_sources.ContainsKey(other)) _sources[other] = BphscDocument.ReadResource(other, [root]);
+        bool HasSource(string path) => _sources.Keys.Any(p => Path.GetFullPath(p).Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase));
+        if (!HasSource(source)) _sources[source] = BphscDocument.ReadResource(source, [root]);
+        if (ShrineSceneCatalog.Companion(source) is { } other && !HasSource(other)) _sources[other] = BphscDocument.ReadResource(other, [root]);
     }
 
     internal string? EditRestriction(int index)
     {
+        if (_state.Additions.ContainsKey(_keys[index])) return null;
         var actor = Scene.Actors[index];
+        if (_mergePartsOwners.Contains(_keys[index]))
+            return "MergeParts are hidden and protected from editing, including changes through their parent scene.";
         if (actor.Name.StartsWith("GroundControlActor", StringComparison.Ordinal))
             return "Use the GroundControl inspector to move this controller and its collision group together.";
         if (_original.Scene.Actors.Count(a => a.SourceScene == actor.SourceScene && a.SourceIndex == actor.SourceIndex) != 1)
             return "This merged BANC is reused by several placements. Move its parent scene instead of changing every copy.";
-        if (_original.Compound == null) return "Placement saving requires the matching BPHSC to be loaded.";
+        if (PlacementOnly)
+        {
+            var branch = new HashSet<int> { index };
+            foreach (var item in Scene.Actors)
+            {
+                if (branch.Contains(item.ParentIndex)) branch.Add(item.Index);
+                if (!branch.Contains(item.Index)) continue;
+                int key = _state.Copies.GetValueOrDefault(_keys[item.Index])?.Original ?? _keys[item.Index];
+                if (_state.Additions.ContainsKey(key)) continue;
+                if (!_placementOnlyRestrictions.TryGetValue(key, out var restriction))
+                {
+                    var original = _original.Scene.Actors[key];
+                    if (original.Name.StartsWith("GroundControlActor", StringComparison.Ordinal) || original.GroupId != 0 || original.GroupGuid != 0)
+                        restriction = "This placement belongs to a moving physics group. Edit it with its matching collision instead.";
+                    else
+                    {
+                        var record = OriginalRecord(original);
+                        if (record.ContainsKey("Rails") || (record.TryGetValue("Phive", out var phive) && phive.GetMap().Any(p => p.Key != "Placement")))
+                            restriction = "This placement has rails or physics constraints that need coordinated editing.";
+                    }
+                    _placementOnlyRestrictions[key] = restriction;
+                }
+                if (restriction != null) return restriction;
+            }
+            return null;
+        }
+        if (_original.Compound == null) return "No matching BPHSC is loaded. Enable Placement only to edit BANC actors without rebuilding collision.";
         if (_original.Compound.Water.Count != 0 || _original.Compound.ExternalMeshCount != 0)
-            return "This shrine contains water or external collision meshes. Coordinated placement editing for that layout is not supported yet.";
+            return "This map has water or external collision meshes. Enable Placement only to edit BANC actors without rebuilding collision.";
         return null;
     }
 
@@ -121,13 +169,14 @@ internal sealed partial class ShrinePlacementEditor
     {
         var actors = new List<ShrineActor>(); var moves = new Dictionary<ulong, Matrix4x4>();
         var deltas = new Dictionary<int, Matrix4x4>();
-        var keys = _original.Scene.Actors.Select(a => a.Index).Where(i => !state.Deleted.Contains(i)).Concat(state.Copies.Keys.Order()).ToArray();
+        var keys = _original.Scene.Actors.Select(a => a.Index).Where(i => !state.Deleted.Contains(i)).Concat(state.Copies.Keys.Order()).Concat(state.Additions.Keys.Order()).ToArray();
         var indices = keys.Select((key, index) => (key, index)).ToDictionary(p => p.key, p => p.index);
         var duplicateIds = _original.Scene.Actors.GroupBy(a => a.PlacementId != 0 ? a.PlacementId : a.Hash).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
         foreach (int key in keys)
         {
             var copy = state.Copies.GetValueOrDefault(key);
-            var original = _original.Scene.Actors[copy?.Original ?? key];
+            var addition = state.Additions.GetValueOrDefault(key);
+            var original = addition?.Actor ?? _original.Scene.Actors[copy?.Original ?? key];
             var local = state.Transforms.GetValueOrDefault(key, ShrineTransform.Local(original));
             int parentIndex = original.ParentIndex < 0 ? -1 : indices[original.ParentIndex];
             var parent = parentIndex < 0 ? Matrix4x4.Identity : actors[parentIndex].WorldTransform;
@@ -145,19 +194,34 @@ internal sealed partial class ShrinePlacementEditor
                 throw new NotSupportedException("Moving a parent containing a GroundControl requires coordinated group edits.");
             deltas.Add(actor.Index, delta);
             ulong id = actor.PlacementId != 0 ? actor.PlacementId : actor.Hash;
-            if (duplicateIds.Contains(id)) throw new NotSupportedException("A moved actor shares its placement ID with another scene instance. Collision ownership is ambiguous.");
-            if (!moves.TryAdd(id, delta)) throw new InvalidDataException("Moved actors share a collision placement identifier.");
+            if (!PlacementOnly && addition == null)
+            {
+                if (duplicateIds.Contains(id)) throw new NotSupportedException("A moved actor shares its placement ID with another scene instance. Collision ownership is ambiguous.");
+                if (!moves.TryAdd(id, delta)) throw new InvalidDataException("Moved actors share a collision placement identifier.");
+            }
         }
         ulong CollisionId(ShrineActor a) => a.PlacementId != 0 ? a.PlacementId : a.Hash;
-        var compound = _original.Compound?.EditActors(state.Deleted.Select(i => CollisionId(_original.Scene.Actors[i])).ToHashSet(),
+        var compound = PlacementOnly ? _original.Compound : _original.Compound?.EditActors(state.Deleted.Select(i => CollisionId(_original.Scene.Actors[i])).ToHashSet(),
             state.Copies.Values.Select(c => new BphscActorCopy(CollisionId(_original.Scene.Actors[c.Original]), c.PlacementId != 0 ? c.PlacementId : c.Hash, c.SrtHash)).ToArray()).TransformActors(moves);
         compound = RebuildGroundControls(compound, actors, indices, state);
         var model = new VisualModelData { SourcePath = _original.Model.SourcePath, BoundsMinimum = _original.Model.BoundsMinimum,
             BoundsMaximum = _original.Model.BoundsMaximum, TriangleCount = 0 };
-        var meshes = _original.Model.Meshes.ToLookup(m => int.Parse(m.Name.AsSpan(0, m.Name.IndexOf(':'))));
+        var meshes = _original.Model.Meshes.ToLookup(ShrineSceneAssets.MeshActorIndex);
+        // Terrain belongs to the scene, not to any placement or collision actor.
+        foreach (var mesh in meshes[null])
+        {
+            model.Meshes.Add(mesh);
+            model.TriangleCount += mesh.Indices.Length / 3;
+        }
         foreach (var actor in actors)
         {
             int key = keys[actor.Index], originalIndex = state.Copies.GetValueOrDefault(key)?.Original ?? key;
+            if (state.Additions.TryGetValue(key, out var addition))
+            {
+                foreach (var mesh in addition.Model.Meshes)
+                    ShrineSceneAssets.AddMesh(model, mesh, actor.WorldTransform, actor.Index + ":" + actor.Name + "/" + mesh.Name);
+                continue;
+            }
             foreach (var mesh in meshes[originalIndex])
             {
                 string name = actor.Index + mesh.Name[mesh.Name.IndexOf(':')..];
@@ -173,12 +237,12 @@ internal sealed partial class ShrinePlacementEditor
     {
         destination = Path.GetFullPath(destination);
         var relative = Path.GetRelativePath(_root, destination);
-        if (!relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) && !Path.IsPathRooted(relative))
+        if (relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) && !Path.IsPathRooted(relative))
             throw new InvalidOperationException("Choose an output folder outside the game dump.");
         var output = new Dictionary<string, byte[]>();
         foreach (var (path, bytes) in _sources)
         {
-            var changed = Scene.Actors.Where(a => a.SourceScene == path && (_state.Copies.ContainsKey(_keys[a.Index]) ||
+            var changed = Scene.Actors.Where(a => a.SourceScene == path && (_state.Additions.ContainsKey(_keys[a.Index]) || _state.Copies.ContainsKey(_keys[a.Index]) ||
                 ShrineTransform.Local(a) != ShrineTransform.Local(_original.Scene.Actors[_keys[a.Index]]) ||
                 a.GroupId != _original.Scene.Actors[_keys[a.Index]].GroupId || a.GroupGuid != _original.Scene.Actors[_keys[a.Index]].GroupGuid ||
                 _state.Groups.ContainsKey(_keys[a.Index]))).ToArray();
@@ -186,9 +250,16 @@ internal sealed partial class ShrinePlacementEditor
             byte[] saved = bytes;
             if (changed.Length > 0 || deleted.Count > 0)
             {
-                var byml = Byml.FromBinary(bytes); var array = byml.GetMap()["Actors"].GetArray();
+                var byml = Byml.FromBinary(bytes);
+                if (!byml.GetMap().ContainsKey("Actors")) byml.GetMap()["Actors"] = new Byml(new List<Byml>());
+                var array = byml.GetMap()["Actors"].GetArray();
                 foreach (var actor in changed)
                 {
+                    if (_state.Additions.TryGetValue(_keys[actor.Index], out var addition))
+                    {
+                        array.Add(AddedRecord(actor, addition.SrtHash));
+                        continue;
+                    }
                     var copy = _state.Copies.GetValueOrDefault(_keys[actor.Index]);
                     var original = _original.Scene.Actors[copy?.Original ?? _keys[actor.Index]];
                     var record = copy == null ? array[actor.SourceIndex] : Byml.FromBinary(array[actor.SourceIndex].ToBinary(Endianness.Little, 7));
@@ -223,7 +294,7 @@ internal sealed partial class ShrinePlacementEditor
             }
             output.Add(Relative(path), Encode(path, saved));
         }
-        if (Compound != null && _original.CompoundPath is { } compoundPath)
+        if (!PlacementOnly && Compound != null && _original.CompoundPath is { } compoundPath)
         {
             var bytes = Compound.Snapshot(); _ = BphscDocument.Parse(bytes);
             output.Add(Relative(compoundPath), Encode(compoundPath, bytes));

@@ -18,6 +18,109 @@ internal static class Program
     {
         try
         {
+            if (args.Length >= 4 && args[0] == "--helper-poses-gpu")
+            {
+                HelperPoseGpuChecks.Physics = args[1]; HelperPoseGpuChecks.Model = args[2]; HelperPoseGpuChecks.Output = args[3];
+                AppBuilder.Configure<HelperPoseGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return HelperPoseGpuChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--helper-poses")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); HelperPoseChecks.Run(args[1]); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--oot-malon") { OotMalonChecks.Run(args[1]); return 0; }
+            if (args.Length >= 1 && args[0] == "--oot-wind") { OotWindChecks.Run(); if (args.Length >= 2) OotWindChecks.Native(args[1]); return 0; }
+            if (args.Length >= 1 && args[0] == "--oot-skin-mapping") { OotSkinMappingChecks.Run(); if (args.Length >= 2) OotSkinMappingChecks.Native(args[1]); return 0; }
+            if (args.Length >= 1 && args[0] == "--oot-shape-constraints")
+            { OotShapeConstraintChecks.Run(); if (args.Length >= 2) OotShapeConstraintChecks.Native(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-actor-catalog") { OotActorCatalogChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 1 && args[0] == "--oot-virtual-equations") { OotVirtualCollisionChecks.Equations(); return 0; }
+            if (args.Length >= 1 && args[0] == "--oot-pinch-reference") { OotPinchRecoveryChecks.Run(); return 0; }
+            if (args.Length >= 2 && args[0] == "--oot-virtual-survey") { OotVirtualCollisionChecks.Survey(args[1]); return 0; }
+            if (args.Length >= 1 && args[0] == "--oot-helper-simulation") { OotHelperSimulationChecks.Run(); return 0; }
+            if (args.Length >= 2 && args[0] == "--oot-aero-survey") { OotCrossGameChecks.SurveyAerodynamics(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--totk-bonespace-schema") { OotCrossGameChecks.Survey(args[1]); return 0; }
+            if (args.Length >= 4 && args[0] == "--oot-cross-game") { OotCrossGameChecks.Run(args[1], args[2], args[3]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-performance") { OotPerformanceChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--oot-playback") { OotPlaybackChecks.Run(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--oot-animation-audit") { OotPlaybackChecks.Audit(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--oot-runtime") { OotRuntimeChecks.Run(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-runtime-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); OotRuntimeChecks.Ui(args[1], args[2], args.ElementAtOrDefault(3) ?? "Player_Adult", args.ElementAtOrDefault(4) ?? "Bottle_Drink"); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--oot-topology") { OotTopologyChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-model") { OotModelChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-shirt")
+            {
+                OotShirtChecks.Root = args[1]; OotShirtChecks.Output = args[2]; Directory.CreateDirectory(args[2]);
+                AppBuilder.Configure<OotShirtChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return OotShirtChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--oot-sit")
+            {
+                OotShirtChecks.Root = args[1]; OotShirtChecks.Output = args[2]; OotShirtChecks.MalonSit = true;
+                Directory.CreateDirectory(args[2]);
+                AppBuilder.Configure<OotShirtChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return OotShirtChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--oot-gpu")
+            {
+                OotGpuChecks.Root = args[1]; OotGpuChecks.Output = args[2]; Directory.CreateDirectory(args[2]);
+                OotGpuChecks.Actor = args.ElementAtOrDefault(3) ?? "Player_Adult";
+                OotGpuChecks.ClipName = args.ElementAtOrDefault(4) ?? "Bottle_Catch";
+                AppBuilder.Configure<OotGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return OotGpuChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--oot-actors") { OotActorChecks.Run(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-support-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); OotSupportUiChecks.Run(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--oot-editing") { OotEditingChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-geometry") { OotGeometryChecks.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); OotClothChecks.Ui(args[1], args[2]); return 0;
+            }
+            if (args.Length >= 4 && args[0] == "--oot-cloth") { OotClothChecks.Run(args[1], args[2], args[3]); return 0; }
+            if (args.Length >= 3 && args[0] == "--oot-havok-survey") { OotHavokSurvey.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--map-placement-only")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                UiLanguage.Initialize("en"); MapPlacementOnlyChecks.Run(args[1], args.ElementAtOrDefault(2)); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--map-catalog") { MapCatalogChecks.Run(args[1], args.ElementAtOrDefault(2)); return 0; }
+            if (args.Length >= 2 && args[0] == "--caves") { TotkCaveChecks.Run(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--cave-geometry") { TotkCaveChecks.Geometry(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--gpu-caves")
+            {
+                CaveGpuChecks.Root = args[1]; CaveGpuChecks.Output = args[2]; Directory.CreateDirectory(args[2]);
+                AppBuilder.Configure<CaveGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return CaveGpuChecks.Result;
+            }
+            if (args.Length >= 4 && args[0] == "--cave-audit") { MapAssetChecks.Cave(args[1], args[2], args[3]); return 0; }
+            if (args.Length >= 2 && args[0] == "--merge-parts") { MergePartsChecks.Run(args[1]); return 0; }
+            if (args.FirstOrDefault() == "--actor-connections") { ShrineActorConnectionChecks.Run(args.ElementAtOrDefault(1)); return 0; }
+            if (args.Length >= 4 && args[0] == "--map-audit") { MapAssetChecks.Inspect(args[1], args[2], args[3]); return 0; }
+            if (args.Length >= 4 && args[0] == "--map-hash") { MapAssetChecks.NearHash(args[1], Convert.ToUInt64(args[2].Replace("0x", ""), 16), args[3]); return 0; }
+            if (args.FirstOrDefault() == "--terrain")
+            {
+                TotkTerrainChecks.Run(args.ElementAtOrDefault(1)); return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--mainfield-scene")
+            {
+                MainFieldSceneChecks.Run(args[1], args.ElementAtOrDefault(2) ?? "B-7"); return 0;
+            }
+            if (args.FirstOrDefault() == "--shrine-shortcuts")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                ShrineSceneChecks.Shortcuts(); return 0;
+            }
             if (args.Length >= 3 && args[0] == "--bphcl-delete-colliders")
             {
                 AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
@@ -118,6 +221,13 @@ internal static class Program
                 AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
                 UiLanguage.Initialize("en"); NativeModelAlignmentChecks.CheckBoneEdits(args[1], args[2]); return 0;
             }
+            if (args.Length >= 2 && args[0] == "--botw-player-inspect") { BotwPlayerChecks.Inspect(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--botw-player-check") { BotwPlayerChecks.Run(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--actor-physics-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                BotwPlayerChecks.PhysicsUi(args[1], args[2]); return 0;
+            }
             if (args.Length >= 2 && args[0] == "--player-inspect") { PlayerArmorChecks.Inspect(args[1]); return 0; }
             if (args.Length >= 2 && args[0] == "--timeline-scrub-check")
             {
@@ -187,6 +297,14 @@ internal static class Program
             if (args.Length >= 2 && args[0] == "--tegra-layout") { TegraLayoutChecks.Native(args[1]); return 0; }
             if (args.Length >= 3 && args[0] == "--dump-actor-textures") { TotkActorChecks.DumpTextures(args[1], args[2]); return 0; }
             if (args.Length >= 2 && args[0] == "--profile-actor") { TotkActorChecks.Profile(args[1]); return 0; }
+            if (args.FirstOrDefault() == "--botw-shader-gpu")
+            {
+                var app = AppBuilder.Configure<BotwShaderGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering();
+                if (OperatingSystem.IsWindows() && args.Contains("--desktop-gl"))
+                    app.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Wgl] });
+                app.StartWithClassicDesktopLifetime([]);
+                return BotwShaderGpuChecks.Result;
+            }
             if (args.Length >= 2 && args[0] == "--totk-shader-gpu")
             {
                 TotkShaderGpuChecks.ToolboxShader = args[1];
@@ -228,6 +346,7 @@ internal static class Program
             if (args.Length >= 3 && args[0] == "--gpu-shrine")
             {
                 ShrineGpuChecks.Output = Path.GetFullPath(args[1]); Directory.CreateDirectory(ShrineGpuChecks.Output); ShrineGpuChecks.Source = args[2];
+                if (args.Length >= 6) ShrineGpuChecks.Focus = new(float.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture), float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture), float.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture));
                 AppBuilder.Configure<ShrineGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]); return ShrineGpuChecks.Result;
             }
             if (args.Length >= 3 && args[0] == "--gpu-collision")
@@ -322,6 +441,13 @@ internal static class Program
             ClothFbxChecks.Run(Path.Combine(output, "cloth-fbx"));
             ClothConversionAudit.Synthetic();
             TotkSimulationChecks.Equations();
+            OotHelperSimulationChecks.Run();
+            OotShirtChecks.CheckOutputPolicy();
+            OotVirtualCollisionChecks.Equations();
+            OotPinchRecoveryChecks.Run();
+            OotShapeConstraintChecks.Run();
+            OotSkinMappingChecks.Run();
+            OotWindChecks.Run();
             BphclColliderDeletionChecks.Synthetic();
             ActorParticleChecks.Synthetic();
             TotkPhysicsReferenceChecks.Synthetic();
@@ -436,6 +562,7 @@ internal static class Program
             window.ShowEditor(); Dispatcher.UIThread.RunJobs();
             Require(!window.GetVisualDescendants().OfType<Button>().Any(b => Equals(b.Content, "Swap files") && b.IsEffectivelyVisible), "Swap available inside editor");
             NavigationChecks.Run(window);
+            ShrineSceneChecks.Shortcuts();
             ColliderChecks.Run(output);
             ModelBindingChecks.RunEditor(output);
             EditorAnimationChecks.Run(output);

@@ -15,10 +15,9 @@ public sealed partial class MainWindow
     private VisualModelData? _savedEditorModel;
     private bool _savedBoneVisibility, _actorPlaying, _actorSimulating, _updatingTimeline;
     private double _actorFrame, _actorLastTick;
-    private int _animationFps = 60;
     private readonly Stopwatch _actorClock = new();
     private readonly PreviewStepClock _actorSteps = new();
-    private readonly DispatcherTimer _actorTimer = new() { Interval = TimeSpan.FromSeconds(1d / 60) };
+    private readonly DispatcherTimer _actorTimer = ViewportFrameRate.CreateTimer();
     private readonly ComboBox _animations = new() { Name = "ActorAnimation", MinWidth = 200, MaxWidth = 420, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly Slider _timeline = new() { Name = "ActorTimeline", Minimum = 0, Maximum = 1, Height = 48, MinWidth = 140 };
     private readonly CheckBox _loop = new() { Content = "Loop", IsChecked = true };
@@ -60,7 +59,7 @@ public sealed partial class MainWindow
             {
                 if (_actorPlaying && ActorAnimation is { } animation)
                 {
-                    _actorFrame += PreviewStepClock.FixedStep * ToolboxActorAnimation.BaseFramesPerSecond * _animationFps / 60d;
+                    _actorFrame += PreviewStepClock.FixedStep * animation.FramesPerSecond;
                     if (_actorFrame >= animation.FrameCount)
                     {
                         if (_loop.IsChecked == true) _actorFrame %= animation.FrameCount;
@@ -82,10 +81,19 @@ public sealed partial class MainWindow
     {
         var browser = new ActorBrowserWindow();
         var entry = await browser.ShowDialog<BotwActorCatalogEntry?>(this);
-        if (entry != null) await LoadActorPathAsync(entry.Path, browser.ResourceRoots.Prepend(entry.ResourceRoot), entry.ArchiveEntry);
+        if (entry?.IsOot == true) { await OpenOotActor(entry); return; }
+        if (entry != null)
+        {
+            var roots = browser.ResourceRoots.Prepend(entry.ResourceRoot).ToArray();
+            var resources = await Task.Run(() => new BotwActorResources(entry.Path, roots, entry.ArchiveEntry));
+            var assets = ActorResourceExport.List([resources]).Where(a => a.Kind != ActorExportKind.Bfres).ToArray();
+            var choice = new ActorPhysicsWindow(entry.Name, assets);
+            if (await choice.ShowDialog<bool>(this)) await LoadActorPathAsync(entry.Path, roots, entry.ArchiveEntry);
+        }
     }
     public async Task LoadActorPathAsync(string path, IEnumerable<string>? roots = null, string? entry = null)
     {
+        ExitOotViewer();
         _actorLoad?.Cancel(); var cancel = _actorLoad = new CancellationTokenSource();
         var request = ++_modelRequest; _modelLoading = true; UpdateModelActions();
         var folders = roots?.ToArray(); PortableModelImporter.ConfigureBfres();
@@ -124,6 +132,7 @@ public sealed partial class MainWindow
     {
         CancelTimelineScrub();
         _actorLoad?.Cancel(); _actorTimer.Stop();
+        ExitOotViewer();
         if (_actorScene == null) return;
         ClearActorAnimations();
         _actorScene.Dispose(); _actorScene = null; _actorPlaying = _actorSimulating = false;

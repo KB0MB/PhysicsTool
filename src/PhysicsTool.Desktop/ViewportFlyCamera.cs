@@ -13,7 +13,7 @@ public sealed partial class PhysicsViewport
     internal Vector3 FlyPosition { get; private set; }
     private bool _looking;
     private readonly HashSet<Key> _flyKeys = new();
-    private readonly DispatcherTimer _flyTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly DispatcherTimer _flyTimer = ViewportFrameRate.CreateTimer();
     private long _flyTime;
     private void ConfigureFlyCamera()
     {

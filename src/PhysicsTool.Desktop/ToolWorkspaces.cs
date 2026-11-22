@@ -35,7 +35,7 @@ public sealed partial class MainWindow
     {
         PauseEditorAnimation(); _actorPlaying = false; StopSimulation();
         _collisionView ??= new CollisionView(graphics, _actorScene?.Resources.SourcePath, _actorScene?.Resources.SourceEntry)
-        { OpenStaticCompound = path => { _compoundBack = null; return ShowStaticCompoundAsync(path); }, OpenShrineScene = ShowShrineScene };
+        { OpenStaticCompound = path => { _compoundBack = null; return ShowStaticCompoundAsync(path); } };
         _collisionView.SetActorSource(_actorScene?.Resources.SourcePath, _actorScene?.Resources.SourceEntry);
         ShowToolWorkspace(_collisionView, "Collision", () => { Content = _mainContent; return Task.CompletedTask; });
     }
@@ -51,12 +51,13 @@ public sealed partial class MainWindow
 
     internal void ShowShrineScene()
     {
+        PauseEditorAnimation(); _actorPlaying = false; StopSimulation();
         _shrineView ??= new ShrineSceneView(this, ModelSurface != null) { OpenCompound = path =>
         {
             _compoundBack = () => { ShowShrineScene(); return Task.CompletedTask; };
             return ShowStaticCompoundAsync(path);
         } };
-        ShowToolWorkspace(_shrineView, "Shrine scene", () => { ShowCollision(ModelSurface != null); return Task.CompletedTask; });
+        ShowToolWorkspace(_shrineView, "Map scene", () => { Content = _mainContent; return Task.CompletedTask; });
     }
 
     private void ShowToolWorkspace(Control view, string title, Func<Task> back)
@@ -67,7 +68,18 @@ public sealed partial class MainWindow
         var footer = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(12, 6) };
         footer.Children.Add(new TextBlock { Text = title, VerticalAlignment = VerticalAlignment.Center });
         var button = new Button { Name = "WorkspaceBack", Content = "Back", MinWidth = 90 };
-        button.Click += async (_, _) => { if (!ToolWorkspaceBusy) await back(); };
+        bool returning = false;
+        button.Click += async (_, _) =>
+        {
+            if (returning) return;
+            // A background task in a retained, hidden workspace must not swallow Back.
+            bool busy = view switch { CollisionView v => v.Busy, BphscView v => v.Busy,
+                ShrineSceneView v => v.Busy, _ => false };
+            if (busy) return;
+            returning = true;
+            try { await back(); }
+            finally { returning = false; }
+        };
         Grid.SetColumn(button, 1); footer.Children.Add(button); DockPanel.SetDock(footer, Dock.Bottom); shell.Children.Add(footer);
         shell.Children.Add(view); Content = shell;
     }

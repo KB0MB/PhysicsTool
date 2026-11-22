@@ -13,9 +13,10 @@ public static class PortableModelImporter
     public static ImportedModelRig LoadRig(string path)
     {
         path = Path.GetFullPath(path);
-        if (!Extensions.Contains(Path.GetExtension(path).ToLowerInvariant()))
+        bool compressedBfres = path.EndsWith(".bfres.zs", StringComparison.OrdinalIgnoreCase);
+        if (!compressedBfres && !Extensions.Contains(Path.GetExtension(path).ToLowerInvariant()))
             throw new NotSupportedException("Select a BFRES, SBFRES, FBX, DAE, OBJ, glTF, or GLB model.");
-        if (Path.GetExtension(path).Equals(".bfres", StringComparison.OrdinalIgnoreCase) ||
+        if (compressedBfres || Path.GetExtension(path).Equals(".bfres", StringComparison.OrdinalIgnoreCase) ||
             Path.GetExtension(path).Equals(".sbfres", StringComparison.OrdinalIgnoreCase))
         { ConfigureBfres(); var rig = new BfresModelPose(path); var rest = rig.Sample(null, null); return new(rest, overrides => rig.Sample(rest, overrides))
             { NativeSkeleton = (clip, frame, suppressed) => rig.Sample(null, null, clip, frame, suppressed, true) }; }

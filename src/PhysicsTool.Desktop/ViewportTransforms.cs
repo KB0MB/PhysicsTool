@@ -29,6 +29,9 @@ public sealed partial class PhysicsViewport
     private HashSet<int> ActiveSelection => SelectionKind switch {
         PhysicsSelectionKind.Bones => SelectedBones, PhysicsSelectionKind.Colliders => SelectedColliders, _ => Selected };
 
+    internal bool IsTransformShortcut(KeyEventArgs e) => e.Key is Key.G or Key.R or Key.S &&
+        e.KeyModifiers == (FlyNavigation && e.Key == Key.S ? KeyModifiers.Shift : KeyModifiers.None);
+
     internal bool TransformKey(KeyEventArgs e)
     {
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta))
@@ -49,7 +52,7 @@ public sealed partial class PhysicsViewport
             }
             return true;
         }
-        if (!CanTransform || !CanSelect || !ShowPhysics || e.KeyModifiers != KeyModifiers.None || e.Key is not (Key.G or Key.R or Key.S)) return false;
+        if (!CanTransform || !CanSelect || !ShowPhysics || !IsTransformShortcut(e)) return false;
         if (TranslationOnly && e.Key != Key.G) return false;
         var points = SelectionPoints().Where(p => ActiveSelection.Contains(p.Index)).Select(p => p.Position).ToArray();
         if (points.Length == 0) return false;

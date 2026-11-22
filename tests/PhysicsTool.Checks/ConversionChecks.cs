@@ -93,9 +93,9 @@ internal static class ConversionChecks
         var button = fileButton.ContextMenu!.Items.OfType<MenuItem>().Single(b => b.Name == "ConvertPhysics");
         Require(!button.IsEnabled, "Empty document conversion enabled");
         window.LoadPath(Path.Combine(output, "manual-2.bphcl")); Dispatcher.UIThread.RunJobs();
-        Require(button.IsEnabled && Equals(button.Header, "Convert to HKCL"), "BPHCL conversion menu missing");
+        Require(button.IsEnabled && Equals(button.Header, "Convert to..."), "BPHCL conversion menu missing");
         var before = window.Session.Document.CaptureState();
-        button.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        button.Items.OfType<MenuItem>().Single(i => Equals(i.Header, "BotW HKCL")).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); Dispatcher.UIThread.RunJobs();
         var dialog = (ConversionWindow)window.OwnedWindows.Single();
         T Find<T>(string name) where T : Control => dialog.GetVisualDescendants().OfType<T>().Single(c => c.Name == name);
         Require(Find<ComboBox>("ConversionPlatform").SelectedIndex == (DesktopPreferences.Load().ConversionPlatform == HkclPlatform.Switch ? 1 : 0),
@@ -116,7 +116,8 @@ internal static class ConversionChecks
         Find<TextBox>("ConversionConstraint0").Text = "0.5"; Find<Button>("ConfirmConversion").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
         Require(task.IsCompletedSuccessfully && task.Result is { Platform: HkclPlatform.Switch } o && o.MassScales![0] == 2 && o.ConstraintScales![0] == .5f, "Scale/platform values not returned");
         window.LoadPath(Path.Combine(output, "manual-0.hkcl")); window.ShowEditor(); Dispatcher.UIThread.RunJobs();
-        Require(button.IsEnabled && Equals(button.Header, "Convert to BPHCL"), "HKCL conversion menu wrong");
+        Require(button.IsEnabled && Equals(button.Header, "Convert to...") &&
+            button.Items.OfType<MenuItem>().Select(i => i.Header).SequenceEqual(new[] { "TotK BPHCL", "OoT BPHCL (experimental)" }), "HKCL conversion menu wrong");
         window.ToggleSimulation(); Require(!button.IsEnabled, "Simulation allows conversion"); window.StopSimulation(); Require(button.IsEnabled, "Stop failed to restore conversion");
         window.Width = 980; window.Height = 640; Dispatcher.UIThread.RunJobs(); using (var image = window.CaptureRenderedFrame()!) image.Save(Path.Combine(output, "conversion-toolbar-980.png"));
         window.Close();

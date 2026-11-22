@@ -19,6 +19,7 @@ public sealed partial class MainWindow
 
     private void UpdateImportedModelPose(bool captureRest = false)
     {
+        if (_ootScene != null) { PoseOotActor(reset: true); return; }
         if (IsActorMode) return;
         if (Session.AllClothsSelected)
         {
@@ -39,8 +40,21 @@ public sealed partial class MainWindow
         if (EditorClip != null && !_viewport.TransformActive) { PoseEditorAnimation(0, true, false); return; }
         if (Session.Document.IsHelperBoneSidecar) { PoseHelperModel(_importedModel.Rest); return; }
         var rig = BoundImportedModel;
-        if (_solver == null && _ragdollSolver == null) { _viewport.SetModelPose(rig.Rest); return; }
+        if (_solver == null && _ragdollSolver == null)
+        {
+            _viewport.SetModelPose(_ootHelpers.Length == 0 ? rig.Rest : rig.Sample(EvaluateOotHelpers(rig.Rest).Bones
+                .Select(b => new VisualBoneOverride(b.Name, b.Position, b.Rotation, b.Scale)).ToArray()));
+            return;
+        }
         var overrides = _modelBinding.Overrides(rig.Rest, _viewport.Data, _viewport.SimulatedBones, MatchedModelReferences);
+        if (_ootHelpers.Length > 0)
+        {
+            var combined = EvaluateOotHelpers(rig.Rest).Bones.ToDictionary(b => b.Name,
+                b => new VisualBoneOverride(b.Name, b.Position, b.Rotation, b.Scale), StringComparer.OrdinalIgnoreCase);
+            foreach (var pose in overrides) combined[pose.Name] = pose;
+            _viewport.SetModelPose(rig.Sample(combined.Values.ToArray()));
+            return;
+        }
         _viewport.SetModelPose(rig.Sample(overrides));
     }
 }

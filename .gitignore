@@ -56,3 +56,11 @@ Thumbs.db
 *.sbactorpack
 *.zs
 *.txtg
+
+# Unreleased appearance-editor work is kept outside the release repository.
+/src/PhysicsTool.Core/Umii/
+/src/PhysicsTool.Desktop/Umii*.cs
+/src/PhysicsTool.Desktop/Assets/UmiiIcons/
+/tests/PhysicsTool.Checks/Umii*.cs
+/docs/UMII.md
+*.bumii

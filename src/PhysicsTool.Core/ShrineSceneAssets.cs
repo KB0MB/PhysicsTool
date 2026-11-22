@@ -6,6 +6,14 @@ namespace PhysicsTool.Core;
 internal sealed record ShrineSceneAssets(ShrineSceneDocument Scene, VisualModelData Model, string? CompoundPath,
     BphscDocument? Compound, IReadOnlyList<string> Warnings, int RenderedActors)
 {
+    internal Vector3? TerrainStartPosition { get; init; }
+
+    internal static int? MeshActorIndex(VisualModelMesh mesh)
+    {
+        int separator = mesh.Name.IndexOf(':');
+        return separator > 0 && int.TryParse(mesh.Name.AsSpan(0, separator), out int actor) && actor >= 0 ? actor : null;
+    }
+
     internal static Matrix4x4 Placement(ShrineActor actor) => Matrix4x4.CreateScale(actor.Scale)
         * Matrix4x4.CreateRotationX(actor.Rotation.X) * Matrix4x4.CreateRotationY(actor.Rotation.Y)
         * Matrix4x4.CreateRotationZ(actor.Rotation.Z) * Matrix4x4.CreateTranslation(actor.Position);
@@ -22,7 +30,7 @@ internal sealed record ShrineSceneAssets(ShrineSceneDocument Scene, VisualModelD
             cancellation.ThrowIfCancellationRequested();
             file = System.IO.Path.GetFullPath(file);
             if (depth > 16 || !active.Add(file)) throw new InvalidDataException("Cyclic or excessively nested merged BANC: " + file);
-            if (!scenes.TryGetValue(file, out var scene)) scenes[file] = scene = ShrineSceneDocument.Load(file, [root]);
+            if (!scenes.TryGetValue(file, out var scene)) scenes[file] = scene = ShrineSceneDocument.Load(file, [root], allowMissingActors: depth == 0);
             foreach (var actor in scene.Actors)
             {
                 if (actors.Count >= 100000) throw new InvalidDataException("Expanded scene exceeds 100,000 actors.");
@@ -56,9 +64,13 @@ internal sealed record ShrineSceneAssets(ShrineSceneDocument Scene, VisualModelD
         var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
         var model = new VisualModelData { SourcePath = path, BoundsMinimum = new(float.MaxValue), BoundsMaximum = new(float.MinValue) };
         int rendered = 0; long vertexCount = 0;
-        foreach (var actor in actors)
+        var renderedIndices = new HashSet<int>();
+        var farOwners = FarModelOwners(new(actors));
+        foreach (var actor in actors.OrderBy(a => farOwners.ContainsKey(a.Index)))
         {
             cancellation.ThrowIfCancellationRequested();
+            if (actor.IsMergeParts) continue;
+            if (farOwners.TryGetValue(actor.Index, out int near) && renderedIndices.Contains(near)) continue;
             if (!models.TryGetValue(actor.Name, out var source))
             {
                 progress?.Report($"Loading models: {actor.Name} ({models.Count + 1})");
@@ -80,12 +92,53 @@ internal sealed record ShrineSceneAssets(ShrineSceneDocument Scene, VisualModelD
                 AddMesh(model, mesh, actor.WorldTransform, actor.Index + ":" + actor.Name + "/" + mesh.Name);
             }
             rendered++;
+            renderedIndices.Add(actor.Index);
+        }
+        Vector3? terrainStart = null;
+        try
+        {
+            var terrain = TotkTerrain.Load(root, path, progress, cancellation);
+            if (terrain != null)
+            {
+                warnings.AddRange(terrain.Warnings);
+                model.Meshes.AddRange(terrain.Model.Meshes);
+                model.TriangleCount += terrain.Model.TriangleCount;
+                if (terrain.Model.Meshes.Count > 0)
+                {
+                    model.BoundsMinimum = Vector3.Min(model.BoundsMinimum, terrain.Model.BoundsMinimum);
+                    model.BoundsMaximum = Vector3.Max(model.BoundsMaximum, terrain.Model.BoundsMaximum);
+                    terrainStart = terrain.StartPosition;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or NotSupportedException)
+        {
+            warnings.Add("Terrain: " + ex.Message);
+        }
+        var caves = TotkCaveScene.Load(root, path, warnings, progress, cancellation);
+        if (caves.Meshes.Count > 0)
+        {
+            model.Meshes.AddRange(caves.Meshes); model.TriangleCount += caves.TriangleCount;
+            model.BoundsMinimum = Vector3.Min(model.BoundsMinimum, caves.BoundsMinimum);
+            model.BoundsMaximum = Vector3.Max(model.BoundsMaximum, caves.BoundsMaximum);
         }
         if (model.Meshes.Count == 0) model.BoundsMinimum = model.BoundsMaximum = Vector3.Zero;
-        return new(new(actors), model, compoundPath, compound, warnings.Distinct().ToArray(), rendered);
+        return new(new(actors), model, compoundPath, compound, warnings.Distinct().ToArray(), rendered) { TerrainStartPosition = terrainStart };
     }
 
-    private static VisualModelData LoadModel(string pack, string root, Dictionary<string, VisualModelTexture> textures, List<string> warnings, CancellationToken cancellation)
+    internal static Dictionary<int, int> FarModelOwners(ShrineSceneDocument scene)
+    {
+        var result = new Dictionary<int, int>();
+        var connections = new ShrineActorConnections(scene);
+        foreach (var actor in scene.Actors)
+            foreach (var link in actor.Links)
+                if (connections.Resolve(actor, link.Destination) is { } far && far.Name == actor.Name + "_Far" &&
+                    far.WorldTransform == actor.WorldTransform)
+                    result.TryAdd(far.Index, actor.Index);
+        return result;
+    }
+
+    internal static VisualModelData LoadModel(string pack, string root, Dictionary<string, VisualModelTexture> textures, List<string> warnings, CancellationToken cancellation)
     {
         var resources = new BotwActorResources(pack, [root]);
         resources.PrepareTotkStrings();

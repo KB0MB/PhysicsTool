@@ -2,8 +2,8 @@ using Silk.NET.OpenGL;
 
 namespace PhysicsTool.Desktop.Rendering;
 
-// Avalonia's control framebuffer can have only 16 depth bits. Large perspective
-// scenes need a separate depth attachment; the compositor still owns its target.
+// Avalonia's framebuffer can have only 16 depth bits. Map scenes and layered
+// character meshes need more precision; the compositor still owns its target.
 internal sealed class SceneRenderTarget(GL gl) : IDisposable
 {
     private uint _framebuffer, _color, _depth;
@@ -31,7 +31,7 @@ internal sealed class SceneRenderTarget(GL gl) : IDisposable
             gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer, InternalFormat.DepthComponent24, (uint)width, (uint)height);
             gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, RenderbufferTarget.Renderbuffer, _depth);
             if (gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer) != GLEnum.FramebufferComplete)
-                throw new InvalidOperationException("The shrine depth framebuffer could not be created.");
+                throw new InvalidOperationException("The viewport depth framebuffer could not be created.");
         }
         catch { Dispose(); throw; }
         finally { gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0); }

@@ -239,7 +239,9 @@ internal sealed partial class NativeBphclParticleEditor
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(count * 12), checked((ushort)indices[0]));
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(count * 12 + 2), checked((ushort)indices[1]));
         BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(count * 12 + 4), length);
-        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(count * 12 + 8), 1.0f);
+        var inverseMass = sim.Particles[indices[0]].InverseMass + sim.Particles[indices[1]].InverseMass;
+        var stiffness = document.IsOot && set.ClassName == "hclStandardLinkConstraintSet" ? inverseMass > 0 ? 1 / inverseMass : 0 : 1.0f;
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(count * 12 + 8), stiffness);
         edit.ReplaceArray(set.DataOffset + 40, bytes, count + 1, type, edit.MemberType(set.ItemIndex, "links"));
         return edit.Finish();
     }
@@ -333,8 +335,8 @@ internal sealed partial class NativeBphclParticleEditor
 
     private void UpdateStatistics(NativeBphclSimCloth sim, HashSet<int> fixedIndices)
     {
-        var particles = Array(sim.DataOffset + 64)!;
-        var masks = Array(sim.DataOffset + 232);
+        var particles = Array(Field(sim.ItemIndex, "particleDatas"))!;
+        var masks = Array(Field(sim.ItemIndex, "staticCollisionMasks"));
         float mass = 0, radius = 0;
         uint landscape = 0;
         for (uint i = 0; i < particles.Count; i++)
@@ -345,9 +347,9 @@ internal sealed partial class NativeBphclParticleEditor
         }
         if (!float.IsFinite(mass))
             throw new ArgumentException("The total particle mass exceeds the supported range.");
-        Float(sim.DataOffset + 264, mass);
-        Float(sim.DataOffset + 224, radius);
-        UInt(sim.DataOffset + 344, landscape);
+        Float(Field(sim.ItemIndex, "totalMass"), mass);
+        Float(Field(sim.ItemIndex, "maxParticleRadius"), radius);
+        UInt(Field(sim.ItemIndex, "numLandscapeCollidableParticles"), landscape);
     }
 
     private NativeBphclItem? Array(uint field)

@@ -123,8 +123,13 @@ internal sealed partial class NativeBphclParticleEditor
                 var block = skin.Blocks[i];
                 if (skin.Packed)
                 {
-                    var exponent = NativeBphclStandaloneGraphWriter.CalculatePackedObjectPositionExponent([block]);
-                    NativeBphclStandaloneGraphWriter.PackObjectPositionBlock(block, exponent).CopyTo(bytes, i * stride);
+                    if (block.NativePackedValues is { Count: 64 } raw)
+                        for (int j = 0; j < raw.Count; j++) System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(bytes.AsSpan(i * stride + j * 2), raw[j]);
+                    else
+                    {
+                        var exponent = NativeBphclStandaloneGraphWriter.CalculatePackedObjectPositionExponent([block]);
+                        NativeBphclStandaloneGraphWriter.PackObjectPositionBlock(block, exponent).CopyTo(bytes, i * stride);
+                    }
                 }
                 else for (var j = 0; j < block.Positions.Count; j++)
                 {

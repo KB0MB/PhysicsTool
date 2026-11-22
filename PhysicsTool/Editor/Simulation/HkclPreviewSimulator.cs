@@ -4,7 +4,7 @@ namespace HKCLTool;
 
 // A lightweight, non-authoritative preview of the HKCL particle solver.
 // It intentionally never writes into the HKCL document or editor rows.
-public sealed class HkclPreviewSimulator
+public sealed partial class HkclPreviewSimulator
 {
     public const float DefaultWindSpeed = 12.0f;
     // The preview is intentionally conservative. Havok's production solver has
@@ -42,6 +42,7 @@ public sealed class HkclPreviewSimulator
     private readonly bool _adaptConstraintStiffness;
     private readonly bool _useNativeHkclInputSampling;
     private readonly ClothSolverProfile _profile;
+    private bool UsesNativeBphcl => _profile is ClothSolverProfile.TotkExperimental or ClothSolverProfile.OotExperimental;
     private readonly Dictionary<int, Vector3> _particleForces = new();
     private readonly bool _transferMotionEnabled;
     private readonly int _transferMotionTransformIndex;
@@ -65,7 +66,7 @@ public sealed class HkclPreviewSimulator
     public void SetWindProfile(BotwClothWindProfile? profile)
     {
         profile?.Validate();
-        WindProfile = _profile == ClothSolverProfile.TotkExperimental ? null : profile;
+        WindProfile = UsesNativeBphcl ? null : profile;
         _botwWind.Reset();
         _botwWindSample = default;
     }
@@ -99,11 +100,15 @@ public sealed class HkclPreviewSimulator
         // an immutable solver-side copy so those display updates cannot become
         // the next frame's collision bind pose.
         _colliders = source.Colliders.Select(CloneCollider).ToArray();
+        _virtualContacts = BuildVirtualContacts(source);
         _pinchParticles = new(source.PinchEnabledParticles);
         _colliderPinching = source.ColliderPinching.ToDictionary(value => value.CollisionBit);
+        InitializeOotPinch(source);
         // Retain ordinary contacts when a native shape/anti-pinch stage is not
         // implemented; do not discard tied contacts without its recovery stage.
-        _usePinchContacts = source.PinchDetectionEnabled && !source.HasAntiPinchConstraints &&
+        // OoT uses its separate, guarded authored recovery path.
+        _usePinchContacts = source.SolverProfile != ClothSolverProfile.OotExperimental &&
+            source.PinchDetectionEnabled && !source.HasAntiPinchConstraints &&
             _colliders.Count(IsPinchCollider) > 1 &&
             _colliders.Where(IsPinchCollider).All(c => c.Kind is ColliderPreviewKind.Sphere or ColliderPreviewKind.Capsule);
         _boneBindings = source.BoneBindings;
@@ -122,7 +127,7 @@ public sealed class HkclPreviewSimulator
             .ToDictionary(
                 group => group.Key,
                 group => (IReadOnlyList<ParticlePreviewBoneWeight>)group.Last().BoneWeights.ToArray());
-        if (_profile == ClothSolverProfile.TotkExperimental)
+        if (UsesNativeBphcl)
         {
             // MoveParticles supplies fixed inputs only. Free particles also need
             // their authored skin weights when resetting/seeking the preview.
@@ -153,7 +158,7 @@ public sealed class HkclPreviewSimulator
         _authoredSubSteps = Math.Clamp(source.SimulationSubSteps, 1, 32);
         _authoredSolveIterations = Math.Clamp(source.SimulationSolveIterations, 1, 32);
         _adaptConstraintStiffness = source.AdaptConstraintStiffness;
-        _useNativeHkclInputSampling = source.UseNativeHkclInputSampling || _profile == ClothSolverProfile.TotkExperimental;
+        _useNativeHkclInputSampling = source.UseNativeHkclInputSampling || UsesNativeBphcl;
         _transferMotionEnabled = source.TransferMotionEnabled;
         _transferMotionTransformIndex = source.TransferMotionTransformIndex;
         _transferTranslationMotion = source.TransferTranslationMotion;
@@ -166,14 +171,21 @@ public sealed class HkclPreviewSimulator
         _maxRotationSpeed = source.MaxRotationSpeed;
         _minRotationBlend = source.MinRotationBlend;
         _maxRotationBlend = source.MaxRotationBlend;
+        InitializeOotSidedness(source);
+        InitializeOotShapeConstraints(source);
+        InitializeOotWind(source);
     }
 
     public void Reset()
     {
+        foreach (var volume in _ootVolumes.Values) volume.Frame.Reset();
+        foreach (var entry in _ootRecovery) entry.Recovery.Reset();
         foreach (var particle in _particles.Values)
             particle.Reset(GetParticleReferencePosition(particle));
+        UpdateOotContactNormals();
         _windTime = 0.0f;
         NumericalResetCount = 0;
+        VirtualCollisionCorrectionCount = 0;
         _particleForces.Clear();
         _previousIntegrationStep = 0.0f;
         RememberInputPose();
@@ -225,8 +237,8 @@ public sealed class HkclPreviewSimulator
     // One-frame force accumulator matching TotK's action buffer, before inverse mass.
     public void SetParticleForces(IReadOnlyDictionary<int, Vector3> forces)
     {
-        if (_profile != ClothSolverProfile.TotkExperimental)
-            throw new NotSupportedException("Native action forces are available in the TotK runtime only.");
+        if (!UsesNativeBphcl)
+            throw new NotSupportedException("Native action forces are available in BPHCL previews only.");
         if (forces.Any(pair => !_particles.ContainsKey(pair.Key) || !IsFinite(pair.Value)))
             throw new ArgumentException("Forces must reference existing particles and be finite.", nameof(forces));
         _particleForces.Clear();
@@ -1146,6 +1158,8 @@ public sealed class HkclPreviewSimulator
         var frameInput = new Dictionary<int, Matrix4x4>(_inputBoneDeltas);
         if (!_hasInputHistory) RememberInputPose();
         var motions = BuildColliderMotions(frameInput, step);
+        SampleOotPinchReferences();
+        SampleOotBonePlanes();
         // BotW 0x7101e10dd0: fixed particles interpolate between evaluated
         // world positions. Reference buffers remain at the frame input pose.
         var fixedInputs = _useNativeHkclInputSampling
@@ -1179,11 +1193,15 @@ public sealed class HkclPreviewSimulator
                 }
             }
 
+            if (_ootRecoveryEnabled)
+                foreach (var entry in _ootRecovery) entry.Recovery.EndSubstep(subStep);
             foreach (var particle in _particles.Values)
                 StabilizeParticle(particle);
         }
         _inputBoneDeltas.Clear();
         foreach (var entry in frameInput) _inputBoneDeltas.Add(entry.Key, entry.Value);
+        // Native normals are refreshed after the frame's final substep.
+        UpdateOotContactNormals();
         RememberInputPose();
         _particleForces.Clear();
     }
@@ -1191,6 +1209,7 @@ public sealed class HkclPreviewSimulator
     private void SolveConstraintSet(int constraintSetIndex,
         IReadOnlyDictionary<ParticlePreviewLocalRange, Vector3>? rangeInputs)
     {
+        if (SolveOotShapeConstraint(constraintSetIndex)) return;
         var kind = _constraintSets.TryGetValue(constraintSetIndex, out var set)
             ? set.Kind
             : string.Empty;
@@ -1213,6 +1232,23 @@ public sealed class HkclPreviewSimulator
 
     private void ResolveAllCollisions(IReadOnlyList<MovingCollider> colliders, float dt)
     {
+        if (_profile == ClothSolverProfile.OotExperimental)
+        {
+            if (_ootRecoveryEnabled && colliders.Count(c => IsPinchCollider(c.Shape)) > 1)
+            {
+                ResolveOotPinchCollisions(colliders, dt);
+                return;
+            }
+            // 0x7101b37a80 dispatches a whole shape kernel at a time. Its real
+            // contacts precede its virtual fans, not the next shape's contacts.
+            foreach (var moving in colliders)
+            {
+                foreach (var particle in _particles.Values)
+                    if (!particle.Fixed) ResolveOrdinaryContact(particle, moving, dt);
+                ResolveVirtualCollisions(moving);
+            }
+            return;
+        }
         foreach (var particle in _particles.Values)
             ResolveCollisions(particle, colliders, dt);
     }
@@ -1277,16 +1313,19 @@ public sealed class HkclPreviewSimulator
             var nativeWind = WindProfile != null ? _botwWindSample.Acceleration(
                 (particle.Position - particle.PreviousPosition) * (timeRatio / deltaSeconds),
                 particle.Mass, particle.EffectiveInverseMass, _totalMass, deltaSeconds) : Vector3.Zero;
+            var previewWind = _ootAerodynamics != null
+                ? OotWindAcceleration(particle, wind, (particle.Position - particle.PreviousPosition) / deltaSeconds, deltaSeconds)
+                : wind;
             var velocity = ClampMagnitude(
                 (particle.Position - particle.PreviousPosition) * (damping * timeRatio),
                 MaximumPreviewSpeed * deltaSeconds);
             particle.PreviousPosition = particle.Position;
             // TotK 710059aee0 integrates (actionForce + gravity * mass) * inverseMass.
             // Unprofiled wind retains the generic preview behavior; BPHYSICS uses the native drag action.
-            var gravityWeight = _profile == ClothSolverProfile.TotkExperimental
+            var gravityWeight = UsesNativeBphcl
                 ? particle.Mass * particle.EffectiveInverseMass : 1f;
             var forceAcceleration = _particleForces.GetValueOrDefault(particle.Index) * particle.EffectiveInverseMass;
-            particle.Position += velocity + (_gravity * (Math.Max(0.0f, GravityScale) * gravityWeight) + forceAcceleration + wind + nativeWind) * (deltaSeconds * deltaSeconds);
+            particle.Position += velocity + (_gravity * (Math.Max(0.0f, GravityScale) * gravityWeight) + forceAcceleration + previewWind + nativeWind) * (deltaSeconds * deltaSeconds);
         }
     }
 
@@ -1630,6 +1669,7 @@ public sealed class HkclPreviewSimulator
             Index = source.Index,
             CollisionBit = source.CollisionBit,
             Name = source.Name,
+            VirtualCollisionEnabled = source.VirtualCollisionEnabled,
             BoneIndex = source.BoneIndex,
             Start = Vector3.Transform(source.Start, delta),
             TransformOrigin = source.TransformOrigin is { } origin ? Vector3.Transform(origin, delta) : null,
@@ -1648,6 +1688,7 @@ public sealed class HkclPreviewSimulator
         Index = source.Index,
         CollisionBit = source.CollisionBit,
         Name = source.Name,
+        VirtualCollisionEnabled = source.VirtualCollisionEnabled,
         BoneIndex = source.BoneIndex,
         Start = source.Start,
         TransformOrigin = source.TransformOrigin,
@@ -1737,7 +1778,7 @@ public sealed class HkclPreviewSimulator
     private bool CanCollide(SimParticle particle, ColliderPreviewShape collider)
     {
         var slot = collider.CollisionBit;
-        if (slot < 0 || (_profile != ClothSolverProfile.TotkExperimental && slot >= 31)) return false;
+        if (slot < 0 || (!UsesNativeBphcl && slot >= 31)) return false;
         // TotK shares bit 30 across the remaining instance slots; bit 31 is not an instance slot.
         var bit = Math.Min(slot, 30);
         return (particle.CollisionMask & (1u << bit)) != 0;
@@ -1745,7 +1786,12 @@ public sealed class HkclPreviewSimulator
 
     private void ResolveOrdinaryContact(SimParticle particle, MovingCollider moving, float dt)
     {
-        if (CanCollide(particle, moving.Shape) && TryGetCollisionContact(particle, moving.Shape, out var contact))
+        if (!CanCollide(particle, moving.Shape)) return;
+        CollisionContact contact;
+        bool found = _ootSidedness != null && moving.Shape.Kind is ColliderPreviewKind.Sphere or ColliderPreviewKind.Capsule
+            ? TryOotPinchContact(particle, moving.Shape, 0, out contact)
+            : TryGetCollisionContact(particle, moving.Shape, out contact);
+        if (found && AcceptOotContact(particle, moving.Shape, contact))
             ApplyContact(particle, moving, contact, dt);
     }
 

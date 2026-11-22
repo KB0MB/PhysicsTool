@@ -1,6 +1,6 @@
 # MeshCodec Source and Local Changes
 
-Updated 2026-10-20.
+Updated 2026-11-04.
 
 The decoder is dt-12345/MeshCodec, licensed under GPL-2.0 as stated in its
 upstream README. Reference revision: b3600954872dbc2893a1bcc9e851c1e364f303ab
@@ -10,15 +10,19 @@ PhysicsTool application's GPL-3.0 license in place of those terms.
 
 Native/main.cpp, CMakeLists.txt, and the PhysicsTool changes described below
 are provided under GPL-2.0-only. Native/main.cpp calls the public DecompressMC
-API, following the usage demonstrated by upstream's tests/src/main.cpp.
+and DecompressChunk APIs, following the usage demonstrated by upstream's tests/src/main.cpp.
 The old SwitchToolbox.MeshCodecNative.cpp wrapper has been removed, not
 renamed or relicensed. PhysicsTool exchanges compressed input and decoded
 output through the helper's standard streams.
 
 Local changes to upstream files:
 
+- mc_AttributeCodec.cpp: corrected the element-count advance for packed triangle
+  deltas with vertex references, 64-bit packed-field masks, and shifted-field
+  backreference copying. Native regression fixtures are in Native/attribute_checks.cpp.
 - mc_MeshCodec.cpp: package length, output-size, FRES/FMSH header, alignment,
-  mesh-output and workspace checks; automatic Zstandard context cleanup.
+  mesh-output and workspace checks; automatic Zstandard context cleanup;
+  cave chunk output-region and compressed-block bounds checks.
 - mc_Codec.cpp: partial lossless blocks use the remaining buffer size;
   compressed-size varints and input cursor advancement are corrected.
 - mc_Float.cpp: compiler/CPU-specific floating-point control handling.

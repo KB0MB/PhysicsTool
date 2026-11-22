@@ -5,7 +5,7 @@ namespace HKCLTool;
 
 internal enum PlayerWeaponKind { Sword, LSword, Spear, Shield, Bow }
 internal sealed record PlayerWeaponSelection(string Name, bool Equipped = false);
-internal sealed record PlayerWeaponEntry(PlayerWeaponKind Kind, string Name, string Path)
+internal sealed record PlayerWeaponEntry(PlayerWeaponKind Kind, string Name, string Path, string? ArchiveEntry = null)
 {
     public string DisplayName => Name[("Weapon_" + Kind + "_").Length..];
     public override string ToString() => DisplayName;
@@ -13,20 +13,16 @@ internal sealed record PlayerWeaponEntry(PlayerWeaponKind Kind, string Name, str
 
 internal sealed class PlayerWeaponCatalog
 {
-    private readonly string[] _folders;
+    private readonly PlayerEquipmentSources _sources;
     public IReadOnlyList<PlayerWeaponEntry> Entries { get; }
-    public PlayerWeaponCatalog(BotwActorResources player)
+    public PlayerWeaponCatalog(BotwActorResources player, PlayerEquipmentSources? sources = null)
     {
-        _folders = new[] { System.IO.Path.GetDirectoryName(player.SourcePath)! }
-            .Concat(player.Roots.Select(r => System.IO.Path.Combine(r, "Pack", "Actor")))
-            .Distinct(StringComparer.OrdinalIgnoreCase).Where(Directory.Exists).ToArray();
+        _sources = sources ?? new(player);
         var entries = new Dictionary<string, PlayerWeaponEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var folder in _folders)
         foreach (var kind in Enum.GetValues<PlayerWeaponKind>())
-        foreach (var path in Directory.EnumerateFiles(folder, $"Weapon_{(kind == PlayerWeaponKind.LSword ? "Lsword" : kind.ToString())}_*.pack.zs"))
+        foreach (var source in _sources.Actors.Values.Where(s => s.Name.StartsWith($"Weapon_{kind}_", StringComparison.OrdinalIgnoreCase)))
         {
-            var name = System.IO.Path.GetFileName(path)[..^8];
-            entries.TryAdd(name, new(kind, name, path));
+            entries.TryAdd(source.Name, new(kind, source.Name, source.Path, source.ArchiveEntry));
         }
         Entries = entries.Values.OrderBy(e => e.Kind).ThenBy(e => Number(e.DisplayName))
             .ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -34,7 +30,8 @@ internal sealed class PlayerWeaponCatalog
     private static int Number(string value) => int.TryParse(value.Split('_')[0], out var n) ? n : int.MaxValue;
     public PlayerWeaponEntry Find(PlayerWeaponKind kind, string name) => Entries.FirstOrDefault(e => e.Kind == kind && e.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
         ?? throw new InvalidDataException($"Weapon '{name}' is not available in the {kind} slot of this game dump.");
-    public string? ActorPath(string name) => _folders.Select(f => System.IO.Path.Combine(f, name + ".pack.zs")).FirstOrDefault(File.Exists);
+    public string? ActorPath(string name) => _sources.Find(name)?.Path;
+    public PlayerEquipmentSource? ActorSource(string name) => _sources.Find(name);
 }
 
 internal sealed record PlayerEquipmentAttachment(string Actor, string Bone, Matrix4x4 Offset);
@@ -85,6 +82,34 @@ internal sealed class PlayerWeaponParameters
 
 internal sealed partial class BotwActorResources
 {
+    internal PlayerWeaponParameters ReadWeaponParameters(PlayerWeaponKind kind)
+    {
+        if (IsTotk) return PlayerWeaponParameters.Read(EquipmentParameters(kind switch
+            { PlayerWeaponKind.Bow => "BowRef", PlayerWeaponKind.Shield => "ShieldRef", _ => "WeaponRef" }));
+        var root = ReadEquipmentGeneralParameters();
+        var common = Objects(root).FirstOrDefault(o => o.Hash == BotwAampWriter.Crc32("WeaponCommon"));
+        var values = Objects(root).FirstOrDefault(o => o.Find("PlayerHoldTransOffset") != null);
+        var bow = Objects(root).FirstOrDefault(o => o.Find("QuiverName") != null);
+        return new()
+        {
+            DrawTranslation = values?.Find("PlayerEquipTransOffset")?.AsVector3() ?? Vector3.Zero,
+            DrawRotation = values?.Find("PlayerEquipRotOffset")?.AsVector3() ?? Vector3.Zero,
+            SheathTranslation = values?.Find("PlayerHoldTransOffset")?.AsVector3() ?? Vector3.Zero,
+            SheathRotation = values?.Find("PlayerHoldRotOffset")?.AsVector3() ?? Vector3.Zero,
+            Scale = common?.Find("PlayerEqScale")?.AsSingle() ?? 1,
+            Sheath = values?.Find("PodName")?.AsString() ?? "",
+            Quiver = bow?.Find("QuiverName")?.AsString() ?? ""
+        };
+    }
+
+    private AampReadList? ReadEquipmentGeneralParameters()
+    {
+        var link = Parameters("ActorLink", ActorName, "bxml");
+        var name = Objects(link).FirstOrDefault(o => o.Find("GParamUser") != null)?.Find("GParamUser")?.AsString()
+            ?? _entries.Keys.Where(k => k.EndsWith(".bgparamlist", StringComparison.OrdinalIgnoreCase)).Select(Path.GetFileNameWithoutExtension).FirstOrDefault();
+        return name == null ? null : Parameters("GeneralParamList", name, "bgparamlist");
+    }
+
     internal Dictionary<string, Byml> EquipmentParameters(string component)
     {
         var actor = TotkParameters($"Actor/{ActorName}.engine__actor__ActorParam.bgyml");

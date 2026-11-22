@@ -121,9 +121,9 @@ public sealed partial class NativeBphclDocument
                 itemIndex,
                 name,
                 ReadUInt32Array(ReadArrayItem(item.DataOffset + 32)).Select(value => checked((int)value)).ToArray(),
-                ReadClothStateBufferAccesses(ReadArrayItem(item.DataOffset + 48)),
-                ReadClothStateTransformSetAccesses(ReadArrayItem(item.DataOffset + 64)),
-                ReadUInt32Array(ReadArrayItem(item.DataOffset + 80)).Select(value => checked((int)value)).ToArray(),
+                ReadClothStateBufferAccesses(ReadMemberArray(item, "usedBuffers")),
+                ReadClothStateTransformSetAccesses(ReadMemberArray(item, "usedTransformSets")),
+                ReadUInt32Array(ReadMemberArray(item, "usedSimCloths")).Select(value => checked((int)value)).ToArray(),
                 ReadStateDependencyGraph(item)));
         }
         return result;
@@ -131,7 +131,7 @@ public sealed partial class NativeBphclDocument
 
     private NativeBphclStateDependencyGraph? ReadStateDependencyGraph(NativeBphclItem state)
     {
-        if (!TryGetReferencedItem(state.DataOffset + 96, out var graphItemIndex))
+        if (!TryGetReferencedItem(MemberAddress(state, "dependencyGraph"), out var graphItemIndex))
             return null;
 
         var graph = GetItem(graphItemIndex);
@@ -292,7 +292,7 @@ public sealed partial class NativeBphclDocument
             .ToArray();
         var simulationOperatorIds = ReadUInt32Array(ReadMemberArray(item, "m_simOpIds"));
         var staticCollisionMasks = ReadUInt32Array(ReadMemberArray(item, "m_staticCollisionMasks"));
-        var pinchingEntries = ReadArrayItem(item.DataOffset + 408);
+        var pinchingEntries = ReadMemberArray(item, "collidablePinchingDatas");
         var collidablePinchingData = pinchingEntries is null
             ? Array.Empty<NativeBphclCollidablePinchingData>()
             : Enumerable.Range(0, checked((int)pinchingEntries.Count))
@@ -309,46 +309,36 @@ public sealed partial class NativeBphclDocument
         // Keep the per-simulation controls separate from SimulationInfo.
         // They are native hclSimClothData fields, rather than fields on the
         // embedded overridable simulation-info record.
+        var transfer = MemberAddress(item, "transferMotionData");
+        var landscape = MemberAddress(item, "landscapeCollisionData");
         var runtime = new NativeBphclSimulationRuntime(
             ReadByte(item.DataOffset + 96) != 0,
             ReadSingle(item.DataOffset + 224),
-            ReadSingle(item.DataOffset + 264),
+            ReadSingle(MemberAddress(item, "totalMass")),
             new NativeBphclTransferMotionData(
-                ReadInt32(item.DataOffset + 268),
-                ReadInt32(item.DataOffset + 272),
-                ReadByte(item.DataOffset + 276) != 0,
-                ReadSingle(item.DataOffset + 280),
-                ReadSingle(item.DataOffset + 284),
-                ReadSingle(item.DataOffset + 288),
-                ReadSingle(item.DataOffset + 292),
-                ReadByte(item.DataOffset + 296) != 0,
-                ReadSingle(item.DataOffset + 300),
-                ReadSingle(item.DataOffset + 304),
-                ReadSingle(item.DataOffset + 308),
-                ReadSingle(item.DataOffset + 312)),
-            ReadByte(item.DataOffset + 316) != 0,
-            ReadByte(item.DataOffset + 317) != 0,
+                ReadInt32(transfer), ReadInt32(transfer + 4), ReadByte(transfer + 8) != 0,
+                ReadSingle(transfer + 12), ReadSingle(transfer + 16), ReadSingle(transfer + 20),
+                ReadSingle(transfer + 24), ReadByte(transfer + 28) != 0,
+                ReadSingle(transfer + 32), ReadSingle(transfer + 36), ReadSingle(transfer + 40), ReadSingle(transfer + 44)),
+            ReadByte(MemberAddress(item, "transferMotionEnabled")) != 0,
+            ReadByte(MemberAddress(item, "landscapeCollisionEnabled")) != 0,
             new NativeBphclLandscapeCollisionData(
-                ReadSingle(item.DataOffset + 320),
-                ReadByte(item.DataOffset + 324) != 0,
-                ReadSingle(item.DataOffset + 328),
-                ReadByte(item.DataOffset + 332) != 0,
-                ReadByte(item.DataOffset + 333),
-                ReadSingle(item.DataOffset + 336),
-                ReadSingle(item.DataOffset + 340)),
-            ReadUInt32(item.DataOffset + 344),
-            ReadByte(item.DataOffset + 384) != 0,
-            ReadByteArray(ReadArrayItem(item.DataOffset + 392)).Select(value => value != 0).ToArray(),
+                ReadSingle(landscape), ReadByte(landscape + 4) != 0, ReadSingle(landscape + 8),
+                ReadByte(landscape + 12) != 0, ReadByte(landscape + 13),
+                ReadSingle(landscape + 16), ReadSingle(landscape + 20)),
+            ReadUInt32(MemberAddress(item, "numLandscapeCollidableParticles")),
+            ReadByte(MemberAddress(item, "pinchDetectionEnabled")) != 0,
+            ReadByteArray(ReadMemberArray(item, "perParticlePinchDetectionEnabledFlags")).Select(value => value != 0).ToArray(),
             collidablePinchingData,
-            ReadUInt16(item.DataOffset + 424),
-            ReadUInt16(item.DataOffset + 426),
-            ReadUInt32(item.DataOffset + 428));
+            ReadUInt16(MemberAddress(item, "minPinchedParticleIndex")),
+            ReadUInt16(MemberAddress(item, "maxPinchedParticleIndex")),
+            ReadUInt32(MemberAddress(item, "maxCollisionPairs")));
 
         // The virtual cloth surface is stored directly on hclSimClothData.
         // These are the source triangles that connect particle indices; they
         // are essential when translating a BPHCL cloth into an HKCL layout.
-        var triangleIndices = ReadUInt16Array(ReadArrayItem(item.DataOffset + 352));
-        var triangleFlips = ReadByteArray(ReadArrayItem(item.DataOffset + 368));
+        var triangleIndices = ReadUInt16Array(ReadMemberArray(item, "triangleIndices"));
+        var triangleFlips = ReadByteArray(ReadMemberArray(item, "triangleFlips"));
         // Native BPHCL commonly disables the optional inline collider transform
         // map with transformSetIndex = -1. Collision selection then comes from
         // the ordered perInstanceCollidables array below.
@@ -665,9 +655,9 @@ public sealed partial class NativeBphclDocument
         return new NativeBphclObjectSpaceDeformer(
             arrays[0], arrays[1], arrays[2], arrays[3], arrays[4], arrays[5], arrays[6], arrays[7],
             controls,
-            ReadUInt16(dataOffset + 144),
-            ReadUInt16(dataOffset + 146),
-            ReadByte(dataOffset + 151) != 0);
+            ReadUInt16(dataOffset + (IsOot ? 148u : 144u)),
+            ReadUInt16(dataOffset + (IsOot ? 150u : 146u)),
+            !IsOot && ReadByte(dataOffset + 151) != 0);
     }
 
     private IReadOnlyList<NativeBphclBoneSpaceSkin> ReadBoneSpaceSkins(
@@ -713,10 +703,10 @@ public sealed partial class NativeBphclDocument
         return new NativeBphclBoneSpaceDeformer(
             arrays[0], arrays[1], arrays[2], arrays[3],
             ReadByteArray(ReadArrayItem(dataOffset + 64)),
-            ReadUInt16(dataOffset + 80),
-            ReadUInt16(dataOffset + 82),
-            ReadUInt16(dataOffset + 84),
-            ReadByte(dataOffset + 86) != 0);
+            ReadUInt16(dataOffset + (IsOot ? 84u : 80u)),
+            ReadUInt16(dataOffset + (IsOot ? 86u : 82u)),
+            IsOot ? checked((ushort)ReadUInt32(dataOffset + 80)) : ReadUInt16(dataOffset + 84),
+            !IsOot && ReadByte(dataOffset + 86) != 0);
     }
 
     private IReadOnlyList<NativeBphclPackedArray> ReadPackedArray(NativeBphclItem? item)
@@ -855,6 +845,9 @@ public sealed partial class NativeBphclDocument
         var offset = GetMemberOffset(item.TypeIndex, memberName);
         return offset is null ? null : ReadArrayItem(checked(item.DataOffset + offset.Value));
     }
+
+    private uint MemberAddress(NativeBphclItem item, string name) => checked(item.DataOffset +
+        (GetMemberOffset(item.TypeIndex, name) ?? throw new InvalidDataException($"Missing reflected member {GetTypeName(item.TypeIndex)}.{name}.")));
 
     private uint? GetMemberOffset(uint typeIndex, string memberName)
     {
@@ -1225,11 +1218,18 @@ public sealed partial class NativeBphclDocument
         var axisY = ReadVector4(item.DataOffset + 48);
         var axisZ = ReadVector4(item.DataOffset + 64);
         var translation = ReadVector4(item.DataOffset + 80);
-        if (!TryReadStringPointer(item.DataOffset + 144, out var name))
+        if (IsOot)
+        {
+            // hkPreciseTransform stores an additional fine translation component.
+            translation.X += ReadSingle(item.DataOffset + 96);
+            translation.Y += ReadSingle(item.DataOffset + 100);
+            translation.Z += ReadSingle(item.DataOffset + 104);
+        }
+        if (!TryReadStringPointer(MemberAddress(item, "name"), out var name))
             name = $"Collidable {index}";
 
         var shape = new NativeBphclColliderShape("<none>", -1, Vector4.Zero, Vector4.Zero, 0.0f, 0.0f, Vector4.Zero, 0);
-        if (TryGetReferencedItem(item.DataOffset + 136, out var shapeItemIndex))
+        if (TryGetReferencedItem(MemberAddress(item, "shape"), out var shapeItemIndex))
         {
             var shapeItem = GetItem(shapeItemIndex);
             var shapeTypeName = GetTypeName(shapeItem.TypeIndex) ?? $"type {shapeItem.TypeIndex}";
@@ -1277,11 +1277,11 @@ public sealed partial class NativeBphclDocument
             axisY,
             axisZ,
             shape,
-            ReadSingle(item.DataOffset + 152),
-            unchecked((sbyte)ReadByte(item.DataOffset + 156)),
-            ReadByte(item.DataOffset + 157) != 0,
-            ReadByte(item.DataOffset + 158) != 0,
-            ReadByte(item.DataOffset + 159) != 0);
+            ReadSingle(MemberAddress(item, "pinchDetectionRadius")),
+            unchecked((sbyte)ReadByte(MemberAddress(item, "pinchDetectionPriority"))),
+            ReadByte(MemberAddress(item, "pinchDetectionEnabled")) != 0,
+            ReadByte(MemberAddress(item, "virtualCollisionPointCollisionEnabled")) != 0,
+            ReadByte(MemberAddress(item, "enabled")) != 0);
     }
 
     private IReadOnlyList<NativeBphclBone> ReadSkeletonBones(uint skeletonOffset)

@@ -7,6 +7,8 @@ namespace HKCLTool;
 
 public sealed class TotkPreviewMaterial
 {
+    public bool IsOot { get; init; }
+    public bool Additive { get; init; }
     public bool IsSeal { get; init; }
     public bool IsTranslucent { get; init; }
     public bool DepthWrite { get; init; } = true;

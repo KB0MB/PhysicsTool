@@ -13,6 +13,8 @@ public sealed class ModelGlControl : OpenGlControlBase
     private ModelGlRenderer? _renderer;
     private SceneRenderTarget? _sceneTarget;
     private bool _failed;
+    private readonly DispatcherTimer _frameTimer = ViewportFrameRate.CreateTimer();
+    private bool _framePending;
     public string? Failure { get; private set; }
     public event Action<string>? RenderFailed;
     public event Action<byte[], int, int>? FrameCaptured;
@@ -20,11 +22,19 @@ public sealed class ModelGlControl : OpenGlControlBase
     internal int LastVisibleMeshes => _renderer?.LastVisibleMeshes ?? 0;
     internal int LastMaterialUpdates => _renderer?.LastMaterialUpdates ?? 0;
     internal double LastRenderMilliseconds { get; private set; }
+    internal long RenderedFrames { get; private set; }
     internal int DepthBits { get; private set; }
     public ModelGlControl(PhysicsViewport view)
     {
         _view = view; IsHitTestVisible = false;
-        view.CameraChanged += RequestNextFrameRendering;
+        view.CameraChanged += () => { _framePending = true; if (!_frameTimer.IsEnabled) _frameTimer.Start(); };
+        _frameTimer.Tick += (_, _) =>
+        {
+            if (!_framePending) { _frameTimer.Stop(); return; }
+            _framePending = false;
+            RequestNextFrameRendering();
+        };
+        DetachedFromVisualTree += (_, _) => { _frameTimer.Stop(); _framePending = false; };
     }
     protected override void OnOpenGlInit(GlInterface gl)
     {
@@ -41,12 +51,14 @@ public sealed class ModelGlControl : OpenGlControlBase
             var scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
             int width = Math.Max(1, (int)Math.Ceiling(Bounds.Width * scaling)), height = Math.Max(1, (int)Math.Ceiling(Bounds.Height * scaling));
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-            if (_view.FlyNavigation) (_sceneTarget ??= new(_gl)).Bind(width, height);
+            bool separateDepth = _view.FlyNavigation || _view.HighPrecisionDepth;
+            if (separateDepth) (_sceneTarget ??= new(_gl)).Bind(width, height);
             var background = _view.ViewportBackground;
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             _renderer.Draw(_view.Model, _view.HiddenMeshes, _view.CameraMatrix, _view.ViewDirection, width, height, _view.FlyNavigation ? null : _view.GridLines,
                 new System.Numerics.Vector3(background.R / 255f, background.G / 255f, background.B / 255f), _view.ShowEmission, _view.DisplayMode, _view.FlyNavigation);
             LastRenderMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            RenderedFrames++;
             if (!_view.GpuReady) Dispatcher.UIThread.Post(() => { _view.GpuReady = true; _view.InvalidateVisual(); });
             if (CaptureNextFrame)
             {
@@ -55,7 +67,7 @@ public sealed class ModelGlControl : OpenGlControlBase
                 fixed (byte* p = pixels) _gl.ReadPixels(0, 0, (uint)width, (uint)height, PixelFormat.Rgba, PixelType.UnsignedByte, p);
                 Dispatcher.UIThread.Post(() => FrameCaptured?.Invoke(pixels, width, height));
             }
-            if (_view.FlyNavigation) _sceneTarget!.Present((uint)fb);
+            if (separateDepth) _sceneTarget!.Present((uint)fb);
         }
         catch (Exception ex) { Fail(ex.Message); }
         finally { _gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb); }

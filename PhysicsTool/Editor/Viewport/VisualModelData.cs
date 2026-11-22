@@ -32,6 +32,8 @@ public sealed class VisualModelBone
     public Quaternion Rotation { get; init; } = Quaternion.Identity;
     public Vector3 Scale { get; init; } = Vector3.One;
     public VisualBoneSource Sources { get; set; } = VisualBoneSource.Model;
+    internal Matrix4x4? AffineTransform { get; init; }
+    internal Matrix4x4 WorldMatrix => AffineTransform ?? VisualBoneTransform.Compose(Position, Rotation, Scale);
 
     public Vector3 AxisX => Vector3.Normalize(Vector3.Transform(Vector3.UnitX, Rotation));
     public Vector3 AxisY => Vector3.Normalize(Vector3.Transform(Vector3.UnitY, Rotation));
@@ -51,7 +53,56 @@ public sealed record VisualBoneOverride(
     string Name,
     Vector3 Position,
     Quaternion Rotation,
-    Vector3 Scale);
+    Vector3 Scale)
+{
+    internal Matrix4x4? AffineTransform { get; init; }
+    internal Matrix4x4 WorldMatrix => AffineTransform ?? VisualBoneTransform.Compose(Position, Rotation, Scale);
+}
+
+internal static class VisualBoneTransform
+{
+    internal static Matrix4x4 Compose(Vector3 position, Quaternion rotation, Vector3 scale) =>
+        Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rotation) * Matrix4x4.CreateTranslation(position);
+
+    internal static VisualBoneOverride Override(string name, Matrix4x4 world)
+    {
+        Decompose(world, out var scale, out var rotation, out var position);
+        return new(name, position, rotation, scale) { AffineTransform = world };
+    }
+
+    internal static VisualModelBone Bone(int index, int parent, string name, Matrix4x4 world)
+    {
+        var value = Override(name, world);
+        return new() { Index = index, ParentIndex = parent, Name = name, Position = value.Position,
+            Rotation = value.Rotation, Scale = value.Scale, AffineTransform = world };
+    }
+
+    internal static void Decompose(Matrix4x4 world, out Vector3 scale, out Quaternion rotation, out Vector3 position)
+    {
+        var x = new Vector3(world.M11, world.M12, world.M13);
+        var y = new Vector3(world.M21, world.M22, world.M23);
+        var z = new Vector3(world.M31, world.M32, world.M33);
+        position = world.Translation;
+        if (!float.IsFinite(x.LengthSquared()) || !float.IsFinite(y.LengthSquared()) || !float.IsFinite(z.LengthSquared()) ||
+            !float.IsFinite(position.LengthSquared()) || world.M14 != 0 || world.M24 != 0 || world.M34 != 0 ||
+            !float.IsFinite(world.M44) || Math.Abs(world.M44 - 1) > .001f)
+            throw new InvalidDataException("Invalid visual bone matrix.");
+        if (Matrix4x4.Decompose(world, out scale, out rotation, out position)) return;
+
+        // Rotated children of nonuniformly scaled parents legitimately contain shear.
+        // SRT fields are only a frame approximation; skinning keeps the exact matrix.
+        scale = new(x.Length(), y.Length(), z.Length());
+        if (scale.X < 1e-8f) throw new InvalidDataException("Degenerate visual bone frame.");
+        x /= scale.X;
+        y -= x * Vector3.Dot(x, y);
+        if (y.LengthSquared() < 1e-16f) throw new InvalidDataException("Degenerate visual bone frame.");
+        y = Vector3.Normalize(y);
+        var orthogonalZ = Vector3.Cross(x, y);
+        if (Vector3.Dot(orthogonalZ, z) < 0) scale.Z = -scale.Z;
+        rotation = Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(new(
+            x.X, x.Y, x.Z, 0, y.X, y.Y, y.Z, 0, orthogonalZ.X, orthogonalZ.Y, orthogonalZ.Z, 0, 0, 0, 0, 1)));
+    }
+}
 public enum VisualModelCullingMode
 {
     Off = 0,
@@ -94,6 +145,7 @@ public sealed class VisualModelUvSet
 public sealed class VisualModelMaterialSettings
 {
     public TotkPreviewMaterial? Totk { get; set; }
+    public BotwPreviewMaterial? Botw { get; set; }
     public bool UseBotwPreviewShader { get; set; }
     public VisualModelShaderModel ShaderModel { get; set; }
     public bool UseAlbedo { get; set; } = true;
@@ -122,6 +174,7 @@ public sealed class VisualModelMaterialSettings
     public VisualModelMaterialSettings Clone() => new()
     {
         Totk = Totk,
+        Botw = Botw,
         UseBotwPreviewShader = UseBotwPreviewShader,
         ShaderModel = ShaderModel,
         UseAlbedo = UseAlbedo,

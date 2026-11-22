@@ -16,17 +16,17 @@ namespace PhysicsTool.Desktop;
 internal sealed partial class ShrineSceneView : UserControl
 {
     private readonly Window _owner;
-    private readonly PhysicsViewport _view = new() { ShowBones = false, ShowColliders = false, ShowParticles = false, CanTransform = false, FlyNavigation = true, ContextMenu = null };
+    private readonly PhysicsViewport _view = new() { ShowGrid = false, ShowBones = false, ShowColliders = false, ShowParticles = false, CanTransform = false, FlyNavigation = true, ContextMenu = null };
     private readonly TextBox _search = new() { Name = "ShrineActorSearch", PlaceholderText = "Search actor, name, hash or group" };
     private readonly CheckBox _groundOnly = new() { Content = "GroundControl only" };
     private readonly ListBox _actors = new() { Name = "ShrineActors", SelectionMode = SelectionMode.Multiple };
     private readonly StackPanel _details = new() { Spacing = 10, Margin = new Thickness(12) };
-    private readonly TextBlock _status = new() { Text = "No BANC scene loaded", TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _status = new() { Text = "No map scene loaded", TextWrapping = TextWrapping.Wrap };
     private readonly Button _open, _compound;
     private readonly Grid _pages = new();
     private readonly Control _browser, _editor;
     private readonly TextBox _root = new() { Name = "ShrineRoot", PlaceholderText = "TOTK romfs folder" };
-    private readonly TextBox _sceneSearch = new() { Name = "ShrineSceneSearch", PlaceholderText = "Search BANC scenes" };
+    private readonly TextBox _sceneSearch = new() { Name = "ShrineSceneSearch", PlaceholderText = "Search map scenes" };
     private readonly ListBox _scenes = new() { Name = "ShrineScenes" };
     private readonly TextBlock _catalogStatus = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Button _scan, _browse, _load, _return;
@@ -41,7 +41,10 @@ internal sealed partial class ShrineSceneView : UserControl
     private ShrinePlacementEditor? _editing;
     internal ShrinePlacementEditor? Editing => _editing;
     private int[] _moving = [];
-    private readonly Button _save, _undo, _redo, _duplicate, _delete;
+    private readonly Button _save, _undo, _redo, _duplicate, _delete, _addActor;
+    private readonly CheckBox _placementOnly = new() { Name = "PlacementOnly", Content = "Placement only", Margin = new Thickness(8, 0), IsEnabled = false };
+    private readonly TextBlock _collisionNotice = new() { Text = "Collision unchanged", IsVisible = false, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 12, 0) };
+    private bool _changingEditMode;
     private bool _selecting;
     internal bool Busy { get; private set; }
     internal PhysicsViewport Viewport => _view;
@@ -54,14 +57,18 @@ internal sealed partial class ShrineSceneView : UserControl
         var bar = new WrapPanel();
         _open = Command("Scenes", Open); bar.Children.Add(_open);
         _compound = Command("Open source BPHSC", async () => { if (FindCompound() is { } path && OpenCompound != null) await OpenCompound(path); }); bar.Children.Add(_compound);
-        ToolTip.SetTip(_compound, "Inspect the original compound. Save shrine exports your placement edits with their rebuilt collision.");
-        _save = Command("Save shrine", Save); bar.Children.Add(_save);
+        ToolTip.SetTip(_compound, "Inspect the original compound. Save scene exports your placement edits with their rebuilt collision.");
+        _save = Command("Save scene", Save); bar.Children.Add(_save);
+        ToolTip.SetTip(_placementOnly, "Edit and export BANC placements without changing baked collision, terrain or navigation data. Reopen the scene to change mode after editing.");
+        _placementOnly.IsCheckedChanged += async (_, _) => await ChangeEditMode();
+        bar.Children.Add(_placementOnly); bar.Children.Add(_collisionNotice);
         _undo = Command("Undo", () => { _view.FinishTransform(false); _editing?.Undo(); RefreshEdit(); return Task.CompletedTask; }); bar.Children.Add(_undo);
         _redo = Command("Redo", () => { _view.FinishTransform(false); _editing?.Redo(); RefreshEdit(); return Task.CompletedTask; }); bar.Children.Add(_redo);
+        _addActor = Command("Add Actor", AddActorAsync); bar.Children.Add(_addActor);
         _duplicate = Command("Duplicate", DuplicateActors); bar.Children.Add(_duplicate);
         _delete = Command("Delete", DeleteActors); bar.Children.Add(_delete);
         var origins = new CheckBox { Name = "SceneOrigins", Content = "Actor origins", Margin = new Thickness(8, 0) };
-        origins.IsCheckedChanged += (_, _) => { _view.ShowParticles = origins.IsChecked == true; _view.InvalidateVisual(); }; bar.Children.Add(origins);
+        origins.IsCheckedChanged += (_, _) => { _view.ShowParticles = origins.IsChecked == true; RefreshActorLinks(); _view.InvalidateVisual(); }; bar.Children.Add(origins);
         bar.Children.Add(Command("Hide selected", () => { if (_picking != null) foreach (var actor in SelectedActors()) foreach (int mesh in _picking.Meshes(actor.Index)) _view.SetMeshVisible(mesh, false); return Task.CompletedTask; }));
         bar.Children.Add(Command("Hide filtered", () =>
         {
@@ -93,7 +100,7 @@ internal sealed partial class ShrineSceneView : UserControl
         _editor = shell; _editor.IsVisible = false;
         var browser = new DockPanel { Margin = new Thickness(20), MaxWidth = 1100, HorizontalAlignment = HorizontalAlignment.Stretch };
         var heading = new StackPanel { Spacing = 12, Margin = new Thickness(0, 0, 0, 12) };
-        heading.Children.Add(new TextBlock { Text = "BANC scenes", FontSize = 24 });
+        heading.Children.Add(new TextBlock { Text = "Map scene", FontSize = 24 });
         var rootRow = new Grid { ColumnDefinitions = new("*,Auto,Auto") }; rootRow.Children.Add(_root);
         _browse = Command("Browse", BrowseRoot); Grid.SetColumn(_browse, 1); rootRow.Children.Add(_browse);
         _scan = Command("Scan", Scan); Grid.SetColumn(_scan, 2); rootRow.Children.Add(_scan);
@@ -153,7 +160,7 @@ internal sealed partial class ShrineSceneView : UserControl
                 if (e.Key == Key.Delete && e.KeyModifiers == KeyModifiers.None && _delete.IsEnabled)
                 { e.Handled = true; try { await DeleteActors(); } catch (Exception ex) { _status.Text = ex.Message; } return; }
             }
-            if (!Busy && e.Key is Key.G or Key.R or Key.S && !e.Handled && e.KeyModifiers == KeyModifiers.None &&
+            if (!Busy && _view.IsTransformShortcut(e) && !e.Handled &&
                 e.Source is Control control && (control == _actors || control.GetVisualAncestors().Contains(_actors)))
             { _view.Focus(); e.Handled = _view.TransformKey(e); return; }
             if (Busy || _editing == null || !e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
@@ -171,6 +178,27 @@ internal sealed partial class ShrineSceneView : UserControl
     {
         _view.FinishTransform(false); ShowBrowser(true); return Task.CompletedTask;
     }
+    private async Task ChangeEditMode()
+    {
+        if (_changingEditMode || _editing == null || Busy) return;
+        _changingEditMode = true;
+        try
+        {
+            bool enabled = _placementOnly.IsChecked == true;
+            if (enabled && !await Dialogs.Confirm(_owner, "Placement-only editing",
+                "Only BANC actor placements will be changed. Baked collision, terrain, water and navigation data will stay where they are. Moving or deleting a baked object can leave invisible collision behind. Continue?")) return;
+            _view.FinishTransform(false);
+            _editing.SetPlacementOnly(enabled);
+            Selected();
+        }
+        catch (Exception ex) { _status.Text = ex.Message; }
+        finally
+        {
+            _placementOnly.IsChecked = _editing.PlacementOnly;
+            _collisionNotice.IsVisible = _editing.PlacementOnly;
+            _changingEditMode = false;
+        }
+    }
     private Task DuplicateActors()
     {
         if (Busy || _editing == null) return Task.CompletedTask;
@@ -178,7 +206,7 @@ internal sealed partial class ShrineSceneView : UserControl
         var added = _editing.Duplicate(SelectedActors().Select(a => a.Index));
         RefreshEdit(); SetSelection(added);
         if (_actors.SelectedItem != null) _actors.ScrollIntoView(_actors.SelectedItem);
-        _status.Text = $"Duplicated {added.Count} actor(s), including their supported collision. The copies are selected.";
+        _status.Text = _editing.PlacementOnly ? $"Duplicated {added.Count} actor placement(s). Collision unchanged." : $"Duplicated {added.Count} actor(s), including their supported collision. The copies are selected.";
         _view.Focus(); return Task.CompletedTask;
     }
     private async Task DeleteActors()
@@ -186,10 +214,12 @@ internal sealed partial class ShrineSceneView : UserControl
         if (Busy || _editing == null) return;
         _view.FinishTransform(false);
         var selected = SelectedActors(); if (selected.Length == 0) return;
-        if (!await Dialogs.Confirm(_owner, "Delete actors", $"Delete {selected.Length} selected actor(s) and their collision? You can undo this change.")) return;
+        string message = _editing.PlacementOnly ? $"Delete {selected.Length} selected actor placement(s)? Baked collision will not be removed. You can undo this change."
+            : $"Delete {selected.Length} selected actor(s) and their collision? You can undo this change.";
+        if (!await Dialogs.Confirm(_owner, "Delete actors", message)) return;
         _editing.Delete(selected.Select(a => a.Index)); RefreshEdit();
         SetSelection(_editing.Scene.Actors.Skip(Math.Min(selected.Min(a => a.Index), Math.Max(0, _editing.Scene.Actors.Count - 1))).Take(1).Select(a => a.Index));
-        _status.Text = $"Deleted {selected.Length} actor(s) and their supported collision."; _view.Focus();
+        _status.Text = _editing.PlacementOnly ? $"Deleted {selected.Length} actor placement(s). Collision unchanged." : $"Deleted {selected.Length} actor(s) and their supported collision."; _view.Focus();
     }
     private void ShowBrowser(bool browser) { _browser.IsVisible = browser; _editor.IsVisible = !browser; }
     private async Task BrowseRoot()
@@ -200,11 +230,13 @@ internal sealed partial class ShrineSceneView : UserControl
     internal async Task Scan()
     {
         if (Busy) return;
-        SetBusy(true); _catalogStatus.Text = "Finding BANC scenes...";
+        SetBusy(true); _catalogStatus.Text = "Finding map scenes...";
         try
         {
             var root = ShrineSceneCatalog.Root(_root.Text?.Trim() ?? "");
-            _entries = await Task.Run(() => ShrineSceneCatalog.Scan(root, _cancellation!.Token));
+            var progress = new Progress<string>(message => _catalogStatus.Text = message);
+            var cache = AppDataPaths.SettingsFile("map-scene-catalog.json");
+            _entries = await Task.Run(() => ShrineSceneCatalog.Scan(root, _cancellation!.Token, progress, cache));
             var settings = AppDataPaths.SettingsFile("actor-folders.json"); var paths = ActorBrowserPaths.Read(settings); paths.Totk = root;
             HKCLTool.AtomicFile.WriteAllBytes(settings, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(paths));
             FilterScenes();
@@ -216,7 +248,7 @@ internal sealed partial class ShrineSceneView : UserControl
     {
         string query = _sceneSearch.Text?.Trim() ?? "";
         var entries = _entries.Where(e => e.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
-        _scenes.ItemsSource = entries; _catalogStatus.Text = $"{entries.Length:N0} of {_entries.Count:N0} BANC scenes";
+        _scenes.ItemsSource = entries; _catalogStatus.Text = $"{entries.Length:N0} of {_entries.Count:N0} map scenes";
     }
     private async Task LoadSelected() { if (!Busy && _scenes.SelectedItem is ShrineSceneEntry entry) await LoadPathAsync(entry.Path); }
     private void SetBusy(bool busy)
@@ -225,7 +257,9 @@ internal sealed partial class ShrineSceneView : UserControl
         _load.IsEnabled = !busy && _scenes.SelectedItem != null; _cancel.IsVisible = busy;
         _return.IsEnabled = !busy && _document != null;
         _view.IsEnabled = _actors.IsEnabled = _details.IsEnabled = !busy;
+        _placementOnly.IsEnabled = !busy && !_changingEditMode && _editing?.CanChangeEditMode == true;
         _save.IsEnabled = !busy && _editing != null; _undo.IsEnabled = !busy && _editing?.CanUndo == true; _redo.IsEnabled = !busy && _editing?.CanRedo == true;
+        _addActor.IsEnabled = !busy && _editing != null;
         if (busy) _duplicate.IsEnabled = _delete.IsEnabled = false;
         else UpdatePopulationActions();
         if (busy) _cancellation = new(); else { _cancellation?.Dispose(); _cancellation = null; }
@@ -243,12 +277,13 @@ internal sealed partial class ShrineSceneView : UserControl
             var assets = await Task.Run(() => ShrineSceneAssets.Load(path, root, progress, _cancellation!.Token));
             var editing = await Task.Run(() => new ShrinePlacementEditor(assets, root));
             _editing = editing;
+            _changingEditMode = true; _placementOnly.IsChecked = false; _collisionNotice.IsVisible = false; _changingEditMode = false;
             _assets = assets; _document = assets.Scene;
             _picking = new(assets.Model);
             _view.ModelItemPicker = (origin, direction) => _picking.Pick(origin, direction, _view.HiddenMeshes);
             _view.SetModel(assets.Model); Filter(); ShowBrowser(false);
             var center = (assets.Model.BoundsMinimum + assets.Model.BoundsMaximum) * .5f;
-            Avalonia.Threading.Dispatcher.UIThread.Post(() => _view.StartFlyAt(center + Vector3.UnitY * 1.7f), Avalonia.Threading.DispatcherPriority.Loaded);
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => _view.StartFlyAt(assets.TerrainStartPosition ?? center + Vector3.UnitY * 1.7f), Avalonia.Threading.DispatcherPriority.Loaded);
             bool paired = _document.Actors.Any(a => a.SourceScene.Contains("_Static.bcett.")) && _document.Actors.Any(a => a.SourceScene.Contains("_Dynamic.bcett."));
             _status.Text = $"{Path.GetFileName(path)} ({(paired ? "static + dynamic, " : "")}{editing.SourceCount} source files) / {assets.RenderedActors:N0} modeled actors / {_document.Actors.Count:N0} placements / {assets.Model.TriangleCount:N0} triangles / " +
                 (assets.Compound == null ? "No matching BPHSC loaded" : $"BPHSC loaded: {assets.Compound.Bodies.Count} bodies") +
@@ -266,7 +301,7 @@ internal sealed partial class ShrineSceneView : UserControl
     {
         if (_document == null) return;
         var selected = SelectedActors().Select(a => a.Index).ToHashSet(); string query = _search.Text ?? "";
-        var actors = _document.Actors.Where(a => (_groundOnly.IsChecked != true || a.Name.StartsWith("GroundControlActor", StringComparison.Ordinal)) &&
+        var actors = _document.Actors.Where(a => !a.IsMergeParts && (_groundOnly.IsChecked != true || a.Name.StartsWith("GroundControlActor", StringComparison.Ordinal)) &&
             $"{a} {a.Hash:x16} {a.Hash} {a.GroupId} {a.GroupGuid:x16}".Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
         _selecting = true; _actors.ItemsSource = actors; _selecting = false;
         var data = new ParticlePreviewData();
@@ -289,6 +324,7 @@ internal sealed partial class ShrineSceneView : UserControl
         if (_selecting) return;
         UpdatePopulationActions();
         _details.Children.Clear(); _view.Selected.Clear(); _view.Data.Links.Clear();
+        RefreshActorLinks();
         _view.ModelSelectionBounds = null;
         _view.CanTransform = false;
         if (_actors.SelectedItem is ShrineActor actor)
@@ -365,12 +401,22 @@ internal sealed partial class ShrineSceneView : UserControl
             foreach (string parameter in actor.Parameters) Label(parameter);
             foreach (var link in actor.Links)
             {
-                var target = _document?.Actors.FirstOrDefault(a => a.Hash == link.Destination);
+                var target = _document == null ? null : new ShrineActorConnections(_document).Resolve(actor, link.Destination);
                 Label($"{link.Name}: {target?.Name ?? "External actor"} / 0x{link.Destination:x16}");
-                if (target != null && _view.Data.Particles.Any(p => p.Index == target.Index)) _view.Data.Links.Add(new() { ParticleA = actor.Index, ParticleB = target.Index });
             }
+            foreach (var aiGroup in actor.Groups.Where(g => g.Members.Contains(actor.Hash)))
+                Label("AI group: " + Path.GetFileName(aiGroup.Logic) + $" ({aiGroup.Members.Count} actor references)");
         }
         _view.InvalidateVisual();
+    }
+    private void RefreshActorLinks()
+    {
+        _view.Data.Links.Clear();
+        if (!_view.ShowParticles || _document == null) return;
+        var visible = _view.Data.Particles.Select(p => p.Index).ToHashSet();
+        var selected = SelectedActors().Select(a => a.Index).ToHashSet();
+        foreach (var (a, b) in new ShrineActorConnections(_document).Lines(_document.Actors, visible, selected))
+            _view.Data.Links.Add(new() { ParticleA = a, ParticleB = b });
     }
     private void Label(string text, double size = 14) => _details.Children.Add(new SelectableTextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap });
     private void RefreshEdit()
@@ -380,6 +426,7 @@ internal sealed partial class ShrineSceneView : UserControl
         _document = _editing.Scene; _picking = new(_editing.Model); _view.SetModelPose(_editing.Model);
         Filter();
         _undo.IsEnabled = _editing.CanUndo; _redo.IsEnabled = _editing.CanRedo;
+        _placementOnly.IsEnabled = !Busy && _editing.CanChangeEditMode;
     }
     private void UpdatePopulationActions()
     {
@@ -390,22 +437,24 @@ internal sealed partial class ShrineSceneView : UserControl
                 selected.Select(a => _editing.PopulationRestriction(a.Index, delete)).FirstOrDefault(r => r != null);
             button.IsEnabled = !Busy && reason == null;
             ToolTip.SetShowOnDisabled(button, true);
-            ToolTip.SetTip(button, reason ?? (delete ? "Delete selected actors and their collision. Delete" : "Duplicate selected actors and their collision. Ctrl+D"));
+            ToolTip.SetTip(button, reason ?? (_editing?.PlacementOnly == true
+                ? (delete ? "Delete selected placements. Collision unchanged. Delete" : "Duplicate selected placements. Collision unchanged. Ctrl+D")
+                : (delete ? "Delete selected actors and their collision. Delete" : "Duplicate selected actors and their collision. Ctrl+D")));
         }
     }
     internal Task<bool> CanCloseAsync() => Busy ? Task.FromResult(false) : _editing?.Dirty == true
-        ? Dialogs.Confirm(_owner, "Unsaved shrine", "Discard unsaved shrine placement changes?") : Task.FromResult(true);
+        ? Dialogs.Confirm(_owner, "Unsaved map scene", "Discard unsaved map placement changes?") : Task.FromResult(true);
     private async Task Save()
     {
         if (Busy || _editing == null) return;
         _view.FinishTransform(false);
         try
         {
-            var folders = await _owner.StorageProvider.OpenFolderPickerAsync(new() { Title = "Save shrine mod folder" });
+            var folders = await _owner.StorageProvider.OpenFolderPickerAsync(new() { Title = "Save map scene mod folder" });
             if (folders.FirstOrDefault()?.TryGetLocalPath() is not { } path) return;
             SetBusy(true);
             string output = await Task.Run(() => _editing.Save(path));
-            _status.Text = "Saved placements and rebuilt collision: " + output;
+            _status.Text = (_editing.PlacementOnly ? "Saved BANC placements only; collision unchanged: " : "Saved placements and rebuilt collision: ") + output;
         }
         catch (Exception ex) { _status.Text = ex.Message; }
         finally { SetBusy(false); }

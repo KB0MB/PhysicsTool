@@ -9,20 +9,54 @@ namespace HKCLTool;
 // the format boundary; the viewer and animation runtime use our own data types.
 internal sealed class ToolboxBfresDocument
 {
+    private static readonly object StringTableGate = new();
     public object Resource { get; }
     public bool IsSwitch { get; }
-    public ToolboxBfresDocument(byte[] source)
+    public ToolboxBfresDocument(byte[] source, string? sourcePath = null) : this(source, sourcePath, null) { }
+    public ToolboxBfresDocument(byte[] source, string? sourcePath, byte[]? externalStrings)
     {
         var bytes = source.AsSpan().StartsWith("Yaz0"u8) ? BotwYaz0.Decode(source) : source;
         if (bytes.Length < 32 || !bytes.AsSpan().StartsWith("FRES"u8)) throw new InvalidDataException("The referenced model resource is not BFRES.");
         IsSwitch = bytes[0xc] == 0xff && bytes[0xd] == 0xfe;
         using var stream = new MemoryStream(bytes, false);
-        Resource = IsSwitch ? new ResS.ResFile(stream) : new ResU.ResFile(stream);
+        lock (StringTableGate)
+        {
+            if (IsSwitch && externalStrings != null)
+            {
+                var previous = ResS.StringCache.Strings;
+                try
+                {
+                    ResS.StringCache.Strings = new();
+                    using var names = new MemoryStream(externalStrings, false);
+                    _ = new ResS.ResFile(names);
+                    Resource = new ResS.ResFile(stream);
+                }
+                finally { ResS.StringCache.Strings = previous; }
+            }
+            else if (IsSwitch && sourcePath != null && bytes.Length > 0xee && bytes[10] >= 10 && (bytes[0xee] & 2) != 0)
+            {
+                var table = TotkResourceCompression.Roots(sourcePath).Select(r => Path.Combine(r, "Shader", "ExternalBinaryString.bfres.zs")).FirstOrDefault(File.Exists)
+                    ?? throw new FileNotFoundException("This model needs its matching Shader/ExternalBinaryString.bfres.zs. Open it from the extracted romfs.");
+                var previous = ResS.StringCache.Strings;
+                try
+                {
+                    ResS.StringCache.Strings = new();
+                    using var names = new MemoryStream(new TotkResourceCompression().Decode(File.ReadAllBytes(table), TotkResourceCompression.Roots(table)));
+                    _ = new ResS.ResFile(names);
+                    Resource = new ResS.ResFile(stream);
+                }
+                finally { ResS.StringCache.Strings = previous; }
+            }
+            else Resource = IsSwitch ? new ResS.ResFile(stream) : new ResU.ResFile(stream);
+        }
+        if (IsSwitch) OotAnimationTracks.Read(bytes, SkeletalAnimations);
     }
     public dynamic[] Models => Items(((dynamic)Resource).Models);
     public dynamic[] SkeletalAnimations => Items(((dynamic)Resource).SkeletalAnims);
-    public static dynamic[] Items(object collection)
+    public static dynamic[] Items(object? collection)
     {
+        // String tables and texture-only BFRES resources legitimately omit these sections.
+        if (collection == null) return [];
         var values = collection.GetType().GetProperties().FirstOrDefault(p => p.Name == "Values")?.GetValue(collection) ?? collection;
         return ((IEnumerable)values).Cast<object>().Select(value => value.GetType().IsGenericType && value.GetType().GetGenericTypeDefinition() == typeof(KeyValuePair<,>)
             ? value.GetType().GetProperty("Value")!.GetValue(value)! : value).ToArray();
@@ -67,7 +101,7 @@ internal sealed class ToolboxActorModel
 
     public ToolboxActorModel(ToolboxBfresDocument document, string name, Dictionary<string, VisualModelTexture> textures,
         IReadOnlyDictionary<(string Material, string Sampler), string>? textureOverrides = null, List<string>? warnings = null,
-        IReadOnlySet<string>? hiddenMaterials = null)
+        IReadOnlySet<string>? hiddenMaterials = null, bool compactOotVertices = true)
     {
         dynamic model = document.Models.FirstOrDefault(m => (string)m.Name == name)
             ?? throw new InvalidDataException($"BFRES does not contain the referenced model '{name}'. Available: {string.Join(", ", document.Models.Select(m => (string)m.Name))}");
@@ -89,17 +123,35 @@ internal sealed class ToolboxActorModel
                 : (object)new ResU.Helpers.VertexBufferHelper((ResU.VertexBuffer)buffer, Syroot.BinaryData.ByteOrder.BigEndian);
             var attributes = ToolboxBfresDocument.Items((object)helper.Attributes).ToDictionary(a => (string)a.Name, a => (Syroot.Maths.Vector4F[])a.Data);
             if (!attributes.TryGetValue("_p0", out var positions)) continue;
-            var count = positions.Length;
+            var lods = ToolboxBfresDocument.Items((object)shape.Meshes);
+            if (lods.Length == 0) continue;
+            dynamic lod = lods[0];
+            var faces = ((IEnumerable)lod.GetIndices()).Cast<object>().Select(i => checked(Convert.ToUInt32(i) + (uint)lod.FirstVertex)).ToArray();
+            if (!lod.PrimitiveType.ToString().Contains("Triangles")) throw new InvalidDataException($"Mesh {shape.Name} uses unsupported primitive type {lod.PrimitiveType}.");
+            if (faces.Any(i => i >= positions.Length)) throw new InvalidDataException($"Mesh {shape.Name} has an invalid vertex index.");
+            dynamic material = materials[(int)shape.MaterialIndex];
+            // OoT buffers also contain vertices for other LODs. Skin only the
+            // vertices actually referenced by the displayed shape, without welding seams.
+            int[] sourceVertices = compactOotVertices && (object)material is ResS.Material oot && ToolboxOotMaterial.IsOot(oot)
+                ? faces.Select(i => (int)i).Distinct().Order().ToArray()
+                : Enumerable.Range(0, positions.Length).ToArray();
+            if (sourceVertices.Length != positions.Length)
+            {
+                var remap = new int[positions.Length];
+                for (int i = 0; i < sourceVertices.Length; i++) remap[sourceVertices[i]] = i;
+                for (int i = 0; i < faces.Length; i++) faces[i] = (uint)remap[faces[i]];
+            }
+            var count = sourceVertices.Length;
             var verts = new float[count * 8];
             var sourcePositions = new Vector3[count];
             var normals = new Vector3[count];
             var indices = new int[count][];
             var weights = new float[count][];
             var skinCount = (int)shape.VertexSkinCount;
-            Vector4 Attribute(string attr, int vertex, Vector4 fallback) => attributes.TryGetValue(attr, out var values) && vertex < values.Length ? V4(values[vertex]) : fallback;
+            Vector4 Attribute(string attr, int vertex, Vector4 fallback) => attributes.TryGetValue(attr, out var values) && sourceVertices[vertex] < values.Length ? V4(values[sourceVertices[vertex]]) : fallback;
             for (var v = 0; v < count; v++)
             {
-                var p = V3(positions[v]);
+                var p = V3(positions[sourceVertices[v]]);
                 var n = new Vector3(Attribute("_n0", v, new Vector4(0, 1, 0, 0)).X, Attribute("_n0", v, Vector4.UnitY).Y, Attribute("_n0", v, Vector4.UnitY).Z);
                 indices[v] = new int[Math.Max(1, skinCount)]; weights[v] = new float[indices[v].Length];
                 for (var j = 0; j < indices[v].Length; j++)
@@ -118,18 +170,15 @@ internal sealed class ToolboxActorModel
                 var uv = Attribute("_u0", v, Vector4.Zero);
                 verts[v * 8 + 6] = uv.X; verts[v * 8 + 7] = uv.Y;
             }
-            var lods = ToolboxBfresDocument.Items((object)shape.Meshes);
-            if (lods.Length == 0) continue;
-            dynamic lod = lods[0];
-            var faces = ((IEnumerable)lod.GetIndices()).Cast<object>().Select(i => checked(Convert.ToUInt32(i) + (uint)lod.FirstVertex)).ToArray();
-            if (!lod.PrimitiveType.ToString().Contains("Triangles")) throw new InvalidDataException($"Mesh {shape.Name} uses unsupported primitive type {lod.PrimitiveType}.");
-            if (faces.Any(i => i >= count)) throw new InvalidDataException($"Mesh {shape.Name} has an invalid vertex index.");
-            dynamic material = materials[(int)shape.MaterialIndex];
             VisualModelMesh visual = MakeMaterial((string)shape.Name, material, textures, verts, faces, textureOverrides, warnings);
             foreach (var attr in attributes.Where(a => a.Key.StartsWith("_u", StringComparison.Ordinal)).OrderBy(a => a.Key))
-                visual.UvSets.Add(new VisualModelUvSet { Name = attr.Key, Coordinates = attr.Value.SelectMany(uv => new[] { uv.X, uv.Y }).ToArray() });
-            ToolboxBotwMaterial.Apply((object)material, visual, warnings);
+                visual.UvSets.Add(new VisualModelUvSet { Name = attr.Key, Coordinates = sourceVertices.SelectMany(v => new[] { attr.Value[v].X, attr.Value[v].Y }).ToArray() });
+            BotwPreviewMaterial.Apply((object)material, visual, textures, textureOverrides, warnings);
+            ToolboxBotwMaterial.Apply((object)material, visual, visual.Material.Botw == null ? warnings : null);
+            if (visual.Material.Botw is { } botw)
+                botw.VertexColors = Enumerable.Range(0, count).Select(v => Attribute("_c0", v, Vector4.One)).ToArray();
             ToolboxTotkMaterial.Apply((object)material, visual, textures);
+            ToolboxOotMaterial.Apply((object)material, visual, textures);
             if (visual.Material.Totk is { } totk)
                 totk.VertexColors = Enumerable.Range(0, count).Select(v => Attribute("_c0", v, Vector4.One)).ToArray();
             if (attributes.ContainsKey("_t0"))
@@ -203,8 +252,7 @@ internal sealed class ToolboxActorModel
             BoundsMinimum = new Vector3(float.MaxValue), BoundsMaximum = new Vector3(float.MinValue) };
         for (var i = 0; i < world.Length; i++)
         {
-            Matrix4x4.Decompose(world[i], out var scale, out var rotation, out var position);
-            pose.Bones.Add(new() { Index = i, ParentIndex = _bones[i].Parent, Name = _bones[i].Name, Position = position, Rotation = rotation, Scale = scale });
+            pose.Bones.Add(VisualBoneTransform.Bone(i, _bones[i].Parent, _bones[i].Name, world[i]));
         }
         foreach (var mesh in _meshes)
         {
@@ -215,11 +263,14 @@ internal sealed class ToolboxActorModel
                 var p = Vector3.Zero; var n = Vector3.Zero; var t = Vector3.Zero; var b = Vector3.Zero;
                 var restT = tangents.Length > v ? new Vector3(mesh.Visual.Tangents[v].X, mesh.Visual.Tangents[v].Y, mesh.Visual.Tangents[v].Z) : Vector3.Zero;
                 var restB = tangents.Length > v ? Vector3.Cross(mesh.Normals[v], restT) * mesh.Visual.Tangents[v].W : Vector3.Zero;
+                var blended = new Matrix4x4();
                 for (var j = 0; j < mesh.Bones[v].Length; j++)
                 {
-                    var matrix = delta[mesh.Bones[v][j]]; var weight = mesh.Weights[v][j]; p += Vector3.Transform(mesh.Positions[v], matrix) * weight; n += Vector3.TransformNormal(mesh.Normals[v], matrix) * weight;
-                    if (tangents.Length > v) { t += Vector3.TransformNormal(restT, matrix) * weight; b += Vector3.TransformNormal(restB, matrix) * weight; }
+                    var weight = mesh.Weights[v][j];
+                    if (weight != 0) blended += delta[mesh.Bones[v][j]] * weight;
                 }
+                p = Vector3.Transform(mesh.Positions[v], blended); n = Vector3.TransformNormal(mesh.Normals[v], blended);
+                if (tangents.Length > v) { t = Vector3.TransformNormal(restT, blended); b = Vector3.TransformNormal(restB, blended); }
                 n = SafeNormal(n);
                 if (tangents.Length > v) { t = SafeNormal(t - n * Vector3.Dot(n, t)); tangents[v] = new(t, Vector3.Dot(Vector3.Cross(n, t), b) < 0 ? -1 : 1); }
                 vertices[v * 8] = p.X; vertices[v * 8 + 1] = p.Y; vertices[v * 8 + 2] = p.Z;
@@ -244,8 +295,7 @@ internal sealed class ToolboxActorModel
         var pose = new VisualModelData();
         for (var i = 0; i < world.Length; i++)
         {
-            Matrix4x4.Decompose(world[i], out var scale, out var rotation, out var position);
-            pose.Bones.Add(new() { Index = i, ParentIndex = _bones[i].Parent, Name = _bones[i].Name, Position = position, Rotation = rotation, Scale = scale });
+            pose.Bones.Add(VisualBoneTransform.Bone(i, _bones[i].Parent, _bones[i].Name, world[i]));
         }
         return pose;
     }
@@ -262,7 +312,7 @@ internal sealed class ToolboxActorModel
             var bone = _bones[i];
             var parent = bone.Parent >= 0 && bone.Parent < _bones.Length ? Visit(bone.Parent) : attachment ?? Matrix4x4.Identity;
             if (overrides != null && overrides.TryGetValue(bone.Name, out var pose))
-                matrices[i] = Matrix4x4.CreateScale(pose.Scale) * Matrix4x4.CreateFromQuaternion(pose.Rotation) * Matrix4x4.CreateTranslation(pose.Position);
+                matrices[i] = pose.WorldMatrix;
             else if (restDeltas != null && restDeltas.TryGetValue(bone.Name, out var delta))
                 matrices[i] = _restWorld[i] * delta;
             else

@@ -171,9 +171,8 @@ public sealed partial class PhysicsViewport
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e) { if (!TransformActive) ZoomAt(e.Delta.Y, e.GetPosition(this)); e.Handled = true; }
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        // With an idle selected scene actor, S starts scale. During mouse-look
-        // or an active walking chord it remains the backwards movement key.
-        if (FlyNavigation && e.Key == Key.S && !_looking && _flyKeys.Count == 0 && TransformKey(e)) { e.Handled = true; return; }
+        // Reserve plain S for backwards movement, even with a selected scene actor.
+        if (FlyNavigation && e.Key == Key.S && e.KeyModifiers == KeyModifiers.Shift && TransformKey(e)) { e.Handled = true; return; }
         if (FlyKey(e)) { e.Handled = true; return; }
         if (TransformKey(e)) { e.Handled = true; return; }
         if (e.Key == Key.A && CanSelect && e.KeyModifiers is KeyModifiers.None or KeyModifiers.Alt)

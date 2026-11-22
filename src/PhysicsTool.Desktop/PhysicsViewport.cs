@@ -14,6 +14,7 @@ public sealed partial class PhysicsViewport : Control
     public VisualModelData? Model { get; private set; }
     public HashSet<int> HiddenMeshes { get; } = new();
     public bool GpuReady { get; set; }
+    internal bool HighPrecisionDepth { get; set; }
     private ModelDisplayMode _displayMode;
     public ModelDisplayMode DisplayMode
     {
@@ -146,7 +147,12 @@ public sealed partial class PhysicsViewport : Control
         _projectedParticles.Clear();
         if (ShowParticles)
         {
-            foreach (var p in Data.Particles) _projectedParticles[p.Index] = Project(Position(p));
+            foreach (var p in Data.Particles)
+            {
+                var position = Position(p);
+                if (!FlyNavigation || Vector3.Dot(FlyPosition - position, ViewDirection) > .25f)
+                    _projectedParticles[p.Index] = Project(position);
+            }
             var face = new Pen(new SolidColorBrush(ViewportColor("#59656A", "#87959C")), 1);
             DrawParticleEdges(context, face, true);
             var link = new Pen(new SolidColorBrush(ViewportColor("#92AAB6", "#506E7E")), 1.3);
@@ -183,9 +189,10 @@ public sealed partial class PhysicsViewport : Control
             var dynamicBrush = new SolidColorBrush(ViewportColor("#70B6EC", "#226EAC"));
             foreach (var p in Data.Particles)
             {
+                if (!_projectedParticles.TryGetValue(p.Index, out var projected)) continue;
                 var selected = Selected.Contains(p.Index);
                 context.DrawEllipse(selected ? SelectionBrush : p.Fixed ? fixedBrush : dynamicBrush, null,
-                    _projectedParticles[p.Index], selected ? 5 : 3.5, selected ? 5 : 3.5);
+                    projected, selected ? 5 : 3.5, selected ? 5 : 3.5);
             }
         }
         DrawTransformGuides(context);

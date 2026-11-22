@@ -22,6 +22,33 @@ internal sealed class NativeBphclTypeTable
     public IReadOnlyDictionary<uint, uint> SourceToMerged { get; }
     public byte[]? ReplacementSection { get; }
 
+    // Identity only, deliberately excluding layout/version. Cross-SDK conversion
+    // must separately rebuild members; this must never be used for native merge.
+    internal static IReadOnlyDictionary<uint, string> ConversionIdentities(NativeBphclDocument document)
+    {
+        var table = Parse(document);
+        var result = new Dictionary<uint, string> { [0] = "void" };
+        string Identity(uint index)
+        {
+            if (result.TryGetValue(index, out var existing)) return existing;
+            var named = table.NamedTypes[checked((int)index - 1)];
+            var name = table.GetTypeName(index) switch {
+                "hkaSkeleton" => "hkSkeleton", "hkaBone" => "hkBone", "hkTransform" => "hkPreciseTransform",
+                "bool" => "hkBool",
+                var nested when nested.StartsWith("hkaSkeleton::", StringComparison.Ordinal) => "hkSkeleton::" + nested[13..],
+                var other => other };
+            result[index] = name;
+            if (named.Templates.Count > 0)
+                name += "<" + string.Join(",", named.Templates.Select(t => {
+                    var parameter = table.TypeStrings[(int)t.StringIndex];
+                    return parameter + "=" + (parameter.StartsWith("t", StringComparison.Ordinal) ? Identity(t.TypeIndex) : t.TypeIndex.ToString());
+                })) + ">";
+            return result[index] = name;
+        }
+        for (uint i = 1; i <= table.NamedTypes.Count; i++) Identity(i);
+        return result;
+    }
+
     internal static uint GetArrayElementType(NativeBphclDocument document, uint arrayType)
     {
         var table = Parse(document);
@@ -29,6 +56,84 @@ internal sealed class NativeBphclTypeTable
         return named.Templates.FirstOrDefault(t => t.StringIndex < table.TypeStrings.Count &&
             table.TypeStrings[(int)t.StringIndex] == "tT")?.TypeIndex
             ?? throw new InvalidDataException("The native array has no element type metadata.");
+    }
+
+    internal static NativeBphclDocument CompleteTotkConversionLayouts(NativeBphclDocument document)
+    {
+        var table = Parse(document);
+        var arrayTypes = new Dictionary<string, uint>();
+        uint Type(string name) => arrayTypes.TryGetValue(name, out var arrayType) ? arrayType : Enumerable.Range(1, table.NamedTypes.Count).Select(i => (uint)i).First(i =>
+            name == "hkUint16[16]" ? table.GetTypeName(i) == "T[N]" &&
+                table.NamedTypes[(int)i - 1].Templates.Any(t => table.TypeStrings[(int)t.StringIndex] == "tT" && table.GetTypeName(t.TypeIndex) == "hkUint16") &&
+                table.NamedTypes[(int)i - 1].Templates.Any(t => table.TypeStrings[(int)t.StringIndex] == "vN" && t.TypeIndex == 16)
+                : table.GetTypeName(i) == name);
+        // Verified against TotK Enemy_Ganondorf: the ordinary 16-byte local
+        // range record plus a float stiffness at +0x10, hash F1EFB531.
+        var local = table.Bodies.Single(b => b.TypeIndex == Type("hclLocalRangeConstraintSet::LocalConstraint"));
+        if (local.Size != 16 || local.Members.Count != 5) throw new InvalidDataException("Unexpected local-range schema.");
+        var fields = table.FieldStrings.ToList();
+        uint Field(string name) { int at = fields.IndexOf(name); if (at < 0) { at = fields.Count; fields.Add(name); } return (uint)at; }
+        var bodies = table.Bodies.ToList(); var hashes = table.Hashes.ToList();
+        var names = table.NamedTypes.ToList();
+        uint array16 = Type("hkUint16[16]");
+        var arrayName = names[(int)array16 - 1];
+        void ArrayType(string element, uint count, uint elementSize)
+        {
+            uint elementType = Type(element);
+            var existing = names.FindIndex(n => n.StringIndex == arrayName.StringIndex &&
+                n.Templates.Any(t => table.TypeStrings[(int)t.StringIndex] == "tT" && t.TypeIndex == elementType) &&
+                n.Templates.Any(t => table.TypeStrings[(int)t.StringIndex] == "vN" && t.TypeIndex == count));
+            uint id = existing >= 0 ? (uint)existing + 1 : (uint)names.Count + 1;
+            if (existing < 0)
+                names.Add(arrayName with { Templates = arrayName.Templates.Select(t => t with {
+                    TypeIndex = table.TypeStrings[(int)t.StringIndex] == "vN" ? count : elementType }).ToArray() });
+            if (!bodies.Any(b => b.TypeIndex == id))
+                bodies.Add(bodies.Single(b => b.TypeIndex == array16) with {
+                    TypeIndex = id, Format = (count << 8) | 0x28, SubtypeIndex = elementType,
+                    Size = count * elementSize, Alignment = elementSize });
+            arrayTypes[$"{element}[{count}]"] = id;
+        }
+        ArrayType("hkUint16", 2, 2);
+        ArrayType("hkUint16", 5, 2);
+        ArrayType("hkUint16", 15, 2);
+        ArrayType("hkUint8", 8, 1);
+        void Add(string name, uint size, uint alignment, uint flags, uint hash, params (string Name, uint Offset, string Type)[] members)
+        {
+            uint id = Type(name);
+            if (bodies.Any(b => b.TypeIndex == id)) return;
+            bodies.Add(local with { TypeIndex = id, Size = size, Alignment = alignment, Flags = flags,
+                Version = (flags & 4) != 0 ? local.Version : null, EncodedMemberCount = (uint)members.Length,
+                Members = members.Select(m => new TypeMember(Field(m.Name), 0x20, null, m.Offset, Type(m.Type))).ToArray() });
+            hashes.RemoveAll(h => h.TypeIndex == id); hashes.Add(new(id, hash));
+        }
+        Add("hclLocalRangeConstraintSet::LocalStiffnessConstraint", 20, 4, 0x2d, 0xf1efb531,
+            ("particleIndex", 0, "hkUint16"), ("referenceVertex", 2, "hkUint16"), ("shapeRadius", 4, "hkReal"),
+            ("maxNormalDistance", 8, "hkReal"), ("minNormalDistance", 12, "hkReal"), ("stiffness", 16, "hkReal"));
+        Add("hclVirtualCollisionPointsData::BarycentricDictionaryEntry", 4, 2, 0x29, 0xa99fa314,
+            ("startingBarycentricIndex", 0, "hkUint16"), ("numBarycentrics", 2, "hkUint8"));
+        Add("hclVirtualCollisionPointsData::EdgeFanSection", 4, 2, 0x29, 0xbbff4577,
+            ("oppositeRealParticleIndex", 0, "hkUint16"), ("barycentricDictionaryIndex", 2, "hkUint16"));
+        Add("hclVirtualCollisionPointsData::EdgeFan", 6, 2, 0x29, 0x7060edd3,
+            ("realParticleIndex", 0, "hkUint16"), ("edgeStartIndex", 2, "hkUint16"), ("numEdges", 4, "hkUint8"));
+        // TotK Animal_SunazarashiSP_A supplies the same 16-vertex bone-space block.
+        Add("hclBoneSpaceDeformer::OneBlendEntryBlock", 64, 2, 0x29, 0x86098f81,
+            ("vertexIndices", 0, "hkUint16[16]"), ("boneIndices", 32, "hkUint16[16]"));
+        // Verified against TotK Armor_1051_Upper, including the serialized padding.
+        Add("hclBoneSpaceDeformer::ThreeBlendEntryBlock", 48, 2, 0x2d, 0xfa0d2635,
+            ("vertexIndices", 0, "hkUint16[5]"), ("boneIndices", 10, "hkUint16[15]"), ("padding", 40, "hkUint8[8]"));
+        int threeBlend = bodies.FindIndex(b => b.TypeIndex == Type("hclBoneSpaceDeformer::ThreeBlendEntryBlock"));
+        bodies[threeBlend] = bodies[threeBlend] with { Members = bodies[threeBlend].Members.Select(m =>
+            m.NameIndex == Field("padding") ? m with { Flags = 0x21 } : m).ToArray() };
+        // Triangle sample layouts and hashes verified against TotK Armor_1036_Head.
+        Add("hclVirtualCollisionPointsData::BarycentricPair", 8, 4, 0x29, 0x3f26f70a,
+            ("u", 0, "hkReal"), ("v", 4, "hkReal"));
+        Add("hclVirtualCollisionPointsData::TriangleFanSection", 6, 2, 0x29, 0x58ea07be,
+            ("oppositeRealParticleIndices", 0, "hkUint16[2]"), ("barycentricDictionaryIndex", 4, "hkUint16"));
+        Add("hclVirtualCollisionPointsData::TriangleFan", 6, 2, 0x29, 0x00211df6,
+            ("realParticleIndex", 0, "hkUint16"), ("vcpStartIndex", 2, "hkUint16"), ("numTriangles", 4, "hkUint8"));
+        var section = BuildSection(table.Section, table.BuildChildren(table.TypeStrings, fields, names, bodies, hashes));
+        return NativeBphclDocument.Parse(NativeBphclTagFileBuilder.Rebuild(document,
+            document.Bytes.AsSpan(document.DataSection!.PayloadOffset, document.DataSection.PayloadSize), document.Items, document.InternalPatches, section));
     }
 
     // Native cross-file merging must keep the target's original TYPE table.
@@ -120,7 +225,7 @@ internal sealed class NativeBphclTypeTable
         };
         if (body is not null)
         {
-            lines.Add($"body|flags=0x{body.Flags:X}|size=0x{body.Size:X}|align={body.Alignment}|parent={body.ParentTypeIndex}:{table.GetTypeName(body.ParentTypeIndex)}");
+            lines.Add($"body|flags=0x{body.Flags:X}|format=0x{body.Format:X}|size=0x{body.Size:X}|align={body.Alignment}|parent={body.ParentTypeIndex}:{table.GetTypeName(body.ParentTypeIndex)}");
             lines.AddRange(body.Members.OrderBy(member => member.Offset).Select(member =>
                 $"member|0x{member.Offset:X2}|{table.FieldStrings[checked((int)member.NameIndex)]}|flags=0x{member.Flags:X}|{member.TypeIndex}:{table.GetTypeName(member.TypeIndex)}"));
         }

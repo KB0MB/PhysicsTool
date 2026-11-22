@@ -11,8 +11,10 @@
 #include <io.h>
 #endif
 
-int main()
+int main(int argc, char** argv)
 {
+    const bool cavePage = argc == 2 && std::strcmp(argv[1], "--chunk") == 0;
+    if (argc != 1 && !cavePage) return 2;
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
@@ -27,16 +29,32 @@ int main()
             input.insert(input.end(), chunk, chunk + size);
         }
         if (std::ferror(stdin) || input.size() < sizeof(mc::ResMeshCodecPackageHeader)) return 2;
-        mc::ResMeshCodecPackageHeader header{};
-        std::memcpy(&header, input.data(), sizeof(header));
-        if (header.magic != mc::ResMeshCodecPackageHeader::cMagic || header.versionMajor != 0 || header.versionMinor > 1) return 2;
-        const std::uint64_t size = std::uint64_t(header.flags >> 5) << (header.flags & 15);
+        std::uint64_t size;
+        std::size_t workspaceSize = 0x10000000;
+        if (cavePage)
+        {
+            if (input.size() < sizeof(mc::ResChunkHeader)) return 2;
+            mc::ResChunkHeader header{};
+            std::memcpy(&header, input.data(), sizeof(header));
+            size = header.decompressedSize;
+            if (size > 64 * 1024 * 1024 || std::uint64_t(header.vertexOutputSize) + header.indexOutputSize > size ||
+                header.workMemSize > workspaceSize) return 2;
+        }
+        else
+        {
+            mc::ResMeshCodecPackageHeader header{};
+            std::memcpy(&header, input.data(), sizeof(header));
+            if (header.magic != mc::ResMeshCodecPackageHeader::cMagic || header.versionMajor != 0 || header.versionMinor > 1) return 2;
+            size = std::uint64_t(header.flags >> 5) << (header.flags & 15);
+        }
         if (size < 32 || size > 512 * 1024 * 1024) return 2;
         std::vector<std::uint8_t> output(size);
         // Upstream's CLI reserves this workspace; leave it uninitialized like malloc.
-        constexpr std::size_t workspaceSize = 0x10000000;
         auto workspace = std::unique_ptr<std::uint8_t[]>(new std::uint8_t[workspaceSize]);
-        if (!mc::DecompressMC(output.data(), output.size(), input.data(), input.size(), workspace.get(), workspaceSize)) return 3;
+        const bool decoded = cavePage
+            ? mc::DecompressChunk(output.data(), output.size(), input.data(), input.size(), workspace.get(), workspaceSize)
+            : mc::DecompressMC(output.data(), output.size(), input.data(), input.size(), workspace.get(), workspaceSize);
+        if (!decoded) return 3;
         return std::fwrite(output.data(), 1, output.size(), stdout) == output.size() ? 0 : 4;
     }
     catch (...) { return 5; }

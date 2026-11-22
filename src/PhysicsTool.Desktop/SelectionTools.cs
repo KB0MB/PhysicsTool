@@ -13,7 +13,7 @@ public sealed partial class MainWindow
     private Button _copySelection = null!, _pasteSelection = null!, _mirrorSelection = null!;
     private Button _mirrorCloth = null!, _fitCloth = null!, _resizeBranch = null!, _matchModelBones = null!, _resizeAllCloths = null!;
     private PhysicsSelectionKind SelectionKind => (PhysicsSelectionKind)_mode.SelectedIndex;
-    private bool SelectionEditable => IsEditorVisible && !IsActorMode && !_timer.IsEnabled && !_viewport.TransformActive && Session.HasSelectedEntry && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
+    private bool SelectionEditable => IsEditorVisible && !IsActorMode && !_timer.IsEnabled && !_viewport.TransformActive && Session.HasSelectedEntry && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg && !Session.Document.IsPreviewOnly;
     private HashSet<int> SelectionIndices => _items.SelectedItems?.Cast<Item>().Select(i => i.Index).ToHashSet() ?? [];
     private void ConfigureSelectionTools(WrapPanel footer)
     {
@@ -66,7 +66,7 @@ public sealed partial class MainWindow
     }).ToArray();
     private void UpdateSelectionTools()
     {
-        var supported = Session.Document.HasDocument && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg;
+        var supported = Session.Document.HasDocument && !Session.Document.IsHelperBoneSidecar && !Session.Document.IsHkrg && !Session.Document.IsPreviewOnly;
         _selectionTools.IsVisible = supported && !IsActorMode;
         _mirrorCloth.IsVisible = supported && !IsActorMode;
         _mirrorCloth.IsEnabled = SelectionEditable;
@@ -77,7 +77,7 @@ public sealed partial class MainWindow
         _resizeBranch.IsVisible = supported && !IsActorMode && SelectionKind == PhysicsSelectionKind.Bones;
         _resizeBranch.IsEnabled = SelectionEditable && SelectionIndices.Count > 0;
         _resizeAllCloths.IsVisible = supported && !IsActorMode && Session.AllClothsSelected;
-        _resizeAllCloths.IsEnabled = IsEditorVisible && !IsActorMode && Session.AllClothsSelected && !_timer.IsEnabled && !_viewport.TransformActive;
+        _resizeAllCloths.IsEnabled = supported && IsEditorVisible && !IsActorMode && Session.AllClothsSelected && !_timer.IsEnabled && !_viewport.TransformActive;
         var copy = SelectionEditable && SelectionIndices.Count > 0 && SelectionClipboard.Supports(Session.Document, SelectionKind);
         var paste = SelectionEditable && _selectionClipboard.CanPaste(Session.Document, Session.ClothIndex, SelectionKind);
         var mirror = SelectionEditable && SelectionIndices.Count > 0;

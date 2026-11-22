@@ -12,6 +12,39 @@ using PhysicsTool.Desktop;
 
 internal static class ShrineSceneChecks
 {
+    internal static void Shortcuts()
+    {
+        var view = new PhysicsViewport { FlyNavigation = true };
+        view.Data.Particles.Add(new() { Index = 0, Position = Vector3.Zero });
+        view.Selected.Add(0);
+        var owner = new Window { Content = view, Width = 800, Height = 600 }; owner.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs(); view.Focus();
+            void Press(Key key, RawInputModifiers modifiers = RawInputModifiers.None) => owner.KeyPress(key, modifiers, PhysicalKey.None, null);
+            void Release(Key key) => owner.KeyRelease(key, RawInputModifiers.None, PhysicalKey.None, null);
+            var position = view.FlyPosition;
+            Press(Key.S); view.StepFly(.1f); Release(Key.S);
+            Require(!view.TransformActive && view.FlyPosition != position, "Plain S must walk backwards even with an actor selected");
+            Press(Key.LeftShift, RawInputModifiers.Shift); Press(Key.S, RawInputModifiers.Shift);
+            Require(view.IsScaleTransform, "Shift+S must scale a shrine actor");
+            position = view.FlyPosition; view.StepFly(.1f);
+            Require(view.FlyPosition == position, "Scale shortcut also moved the camera");
+            Release(Key.S); Release(Key.LeftShift); Press(Key.Escape);
+            foreach (var key in new[] { Key.G, Key.R })
+            {
+                Press(key); Require(view.TransformActive, $"Shrine {key} shortcut changed"); Press(Key.Escape);
+            }
+            Require(view.IsTransformShortcut(new KeyEventArgs { Key = Key.S, KeyModifiers = KeyModifiers.Shift }) &&
+                !view.IsTransformShortcut(new KeyEventArgs { Key = Key.S }), "Actor-list shortcut routing disagrees with viewport");
+            view.FlyNavigation = false;
+            Press(Key.S); Require(view.IsScaleTransform, "Cloth editor S scaling changed"); Press(Key.Escape);
+            Press(Key.S, RawInputModifiers.Shift); Require(!view.TransformActive, "Shrine shortcut leaked into cloth editor");
+            Console.WriteLine("PASS shrine Shift+S scaling, plain S backwards movement, G/R and unchanged cloth-editor shortcuts");
+        }
+        finally { view.FinishTransform(false); owner.Close(); }
+    }
+
     internal static void Run(string output, string folder)
     {
         Directory.CreateDirectory(output);
@@ -37,6 +70,8 @@ internal static class ShrineSceneChecks
         Require(count > 0, "No scenes found");
         var main = new MainWindow(graphics: false); main.Show(); main.ShowShrineScene(); Dispatcher.UIThread.RunJobs();
         var view = main.GetVisualDescendants().OfType<ShrineSceneView>().Single();
+        Require(!view.Viewport.ShowGrid && view.Viewport.GridLines.Count == 0, "Map editor grid must stay hidden, including the software fallback");
+        Require(new PhysicsViewport().GridLines.Count > 0, "Map grid setting leaked into the other editors");
         while (view.Busy) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(10); }
         view.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == "ShrineRoot").Text = ShrineSceneCatalog.Root(folder);
         Await(view.Scan());
@@ -58,6 +93,12 @@ internal static class ShrineSceneChecks
         ShrinePlacementChecks.Editing(view.Assets, ShrineSceneCatalog.Root(folder), output);
         ShrinePopulationChecks.Editing(view.Assets, ShrineSceneCatalog.Root(folder), output);
         Require(view.Viewport.Data.Particles.Count > 0 && view.Viewport.FlyNavigation, "Scene origins or fly camera missing");
+        var origins = view.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "SceneOrigins");
+        Require(!view.Viewport.ShowParticles && view.Viewport.Data.Links.Count == 0, "Actor connections should start hidden");
+        origins.IsChecked = true;
+        Require(view.Viewport.ShowParticles && view.Viewport.Data.Links.Count > 0, "Actor origins did not expose scene connections");
+        origins.IsChecked = false;
+        Require(!view.Viewport.ShowParticles && view.Viewport.Data.Links.Count == 0, "Disabling actor origins left connection lines visible");
         var list = view.GetVisualDescendants().OfType<ListBox>().Single(b => b.Name == "ShrineActors");
         var before = view.Viewport.CameraState; list.SelectedIndex = 3;
         Require(view.Viewport.Selected.Count == 1 && before == view.Viewport.CameraState, "List selection reset camera");
@@ -100,7 +141,7 @@ internal static class ShrineSceneChecks
         Require(ReferenceEquals(view.Viewport.Model, modelBefore) && !view.Editing.Dirty, "Cancelled G move changed the scene");
         foreach (var key in new[] { Key.R, Key.S })
         {
-            main.MouseMove(pointer); main.KeyPress(key, RawInputModifiers.None, PhysicalKey.None, null);
+            main.MouseMove(pointer); main.KeyPress(key, key == Key.S ? RawInputModifiers.Shift : RawInputModifiers.None, PhysicalKey.None, null);
             Require(view.Viewport.TransformActive, $"Scene {key} transform did not start");
             main.MouseMove(pointer + new Point(30, 10));
             Require(!ReferenceEquals(view.Viewport.Model, modelBefore), $"{key} has no model preview");
@@ -218,6 +259,10 @@ internal static class ShrineSceneChecks
         Require(picker.Pick(new(10,10,10), -Vector3.UnitZ, new HashSet<int>()) == null, "Picking selected empty space");
         ShrineSceneAssets.AddMesh(scene, source, Matrix4x4.CreateScale(-1,1,1), "9:mirrored/mesh");
         Require(scene.Meshes[2].Indices.SequenceEqual(new uint[] { 0,2,1 }), "Mirrored placement did not preserve face orientation");
+        ShrineSceneAssets.AddMesh(scene, source, Matrix4x4.CreateTranslation(0, 0, 6), "terrain:test");
+        picker = new ShrineModelPicking(scene);
+        Require(picker.Pick(new(0, 0, 10), -Vector3.UnitZ, new HashSet<int>()) == null, "Terrain must occlude actors without becoming selectable");
+        Require(picker.Pick(new(0, 0, 10), -Vector3.UnitZ, new HashSet<int> { 3 }) == 7, "Hidden terrain must not block actor picking");
         var actor = new ShrineActor(0,"test","",1,new(1,2,3),new(0,0,MathF.PI / 2),new(2,2,2),0,0,0,"",[],[]);
         Require(Vector3.Distance(Vector3.Transform(Vector3.UnitX, ShrineSceneAssets.Placement(actor)),new(1,4,3)) < .0001f, "BANC radians/order incorrect");
     }

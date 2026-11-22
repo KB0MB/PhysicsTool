@@ -29,7 +29,7 @@ internal static class ActorBrowserChecks
         var window = new ActorBrowserWindow(settings, Scan); window.Show(); Dispatcher.UIThread.RunJobs();
         var tabs = (TabControl)window.Content!;
         T Find<T>(int tab, string name) where T : Control => ((Control)((TabItem)tabs.Items[tab]!).Content!).GetLogicalDescendants().OfType<T>().Single(c => c.Name == name);
-        Require(tabs.Items.Cast<TabItem>().Select(t => t.Header).SequenceEqual(new[] { "BOTW", "TOTK" }), "Game tabs missing");
+        Require(tabs.Items.Cast<TabItem>().Select(t => t.Header).SequenceEqual(new[] { "BOTW", "TOTK", "OOT" }), "Game tabs missing");
         Require(requests.Count == 1 && requests[0].Roots.SequenceEqual(new[] { botw }) && !requests[0].Totk, "BOTW scanned another game's folders");
         tabs.SelectedIndex = 1; Dispatcher.UIThread.RunJobs();
         Require(requests.Count == 2 && requests[1].Roots.SequenceEqual(new[] { totk }) && requests[1].Totk, "TOTK scanned model/BOTW folders");

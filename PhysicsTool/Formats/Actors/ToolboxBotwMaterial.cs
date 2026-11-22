@@ -25,9 +25,14 @@ internal static class ToolboxBotwMaterial
         if (!IsBotw(archive)) return;
         var settings = mesh.Material;
         settings.UseBotwPreviewShader = true;
+        // Link's Mt_Head shares skin behavior with Mt_Face and the body;
+        // its name alone otherwise routes the ears through cloth shading.
+        if (options.GetValueOrDefault("uking_material_behave") == "101")
+            settings.ShaderModel = VisualModelShaderModel.Skin;
         settings.AlbedoUvSet = Resolve(0, settings.AlbedoUvSet);
         settings.SpmUvSet = Resolve(1, settings.SpmUvSet);
         settings.NormalUvSet = Resolve(2, settings.NormalUvSet);
+        settings.AmbientOcclusionUvSet = Resolve(3, settings.AmbientOcclusionUvSet);
 
         string Resolve(int slot, string fallback)
         {
@@ -36,7 +41,14 @@ internal static class ToolboxBotwMaterial
             if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var channel)
                 && float.IsFinite(channel) && channel == MathF.Truncate(channel) && channel is >= 0 and <= 5)
             {
-                var attribute = $"_u{(int)channel}";
+                // Texture selectors name generated outputs, not vertex attributes.
+                var mapping = options.GetValueOrDefault($"uking_texcoord{(int)channel}_mapping", value);
+                if (!int.TryParse(mapping, NumberStyles.Integer, CultureInfo.InvariantCulture, out var input) || input is < 0 or > 3)
+                {
+                    warnings?.Add($"Material {mesh.Name}: unsupported UV mapping {mapping}; keeping the preview fallback.");
+                    return fallback;
+                }
+                var attribute = $"_u{input}";
                 var source = attributes.GetValueOrDefault(attribute, attribute);
                 if (mesh.UvSets.Any(uv => uv.Name == source)) return source;
             }

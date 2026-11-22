@@ -15,6 +15,7 @@ internal sealed class BotwActorScene : IDisposable
 {
     private sealed record Layer(ParticlePreviewData Source, HkclPreviewSimulator Solver, int ParticleOffset, int BoneOffset, int ColliderOffset);
     private readonly List<ToolboxActorModel> _models = new();
+    private readonly Dictionary<string, VisualModelTexture> _botwEquipmentTextures = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<(int Model, string Bone)> _attachments = new();
     private readonly List<HkclService> _supports = new();
     // Actor resources are read-only; editor evaluations still rebuild after edits.
@@ -112,7 +113,7 @@ internal sealed class BotwActorScene : IDisposable
         _outfitResources.Add(Resources);
         if (!PlayerArmorCatalog.Supports(Resources)) return;
         ArmorCatalog = new(Resources);
-        WeaponCatalog = new(Resources);
+        WeaponCatalog = new(Resources, ArmorCatalog.Sources);
         if (Resources.Models.Any(m => m.Model == "Link_RaulSkin"))
         {
             if (ArmorCatalog.RightHandPath is { } hand) _outfitResources.Add(new BotwActorResources(hand, Resources.Roots));
@@ -122,8 +123,10 @@ internal sealed class BotwActorScene : IDisposable
         {
             cancellation.ThrowIfCancellationRequested();
             var entry = armor != null && armor.TryGetValue(slot, out var name) ? ArmorCatalog.Find(slot, name) : ArmorCatalog.Default(slot);
-            if (entry == null) { Resources.Warnings.Add($"Missing default armor actor {PlayerArmorCatalog.DefaultName(slot)}."); continue; }
-            _outfitResources.Add(new BotwActorResources(entry.Path, Resources.Roots));
+            if (entry == null) { Resources.Warnings.Add($"Missing default armor actor {ArmorCatalog.DefaultActorName(slot)}."); continue; }
+            if (!Resources.IsTotk && slot != PlayerArmorSlot.Lower && ArmorCatalog.Default(slot) is { } baseline && baseline.Name != entry.Name)
+                _outfitResources.Add(new BotwActorResources(baseline.Path, Resources.Roots, baseline.ArchiveEntry));
+            _outfitResources.Add(new BotwActorResources(entry.Path, Resources.Roots, entry.ArchiveEntry));
             EquippedArmor.Add(slot, entry.Name);
         }
     }
@@ -133,9 +136,9 @@ internal sealed class BotwActorScene : IDisposable
         void Add(string actor, string bone, Matrix4x4 offset, BotwActorResources? resources = null)
         {
             cancellation.ThrowIfCancellationRequested();
-            var path = WeaponCatalog.ActorPath(actor);
-            if (path == null) { Resources.Warnings.Add($"Missing equipment actor {actor}."); return; }
-            resources ??= new BotwActorResources(path, Resources.Roots);
+            var source = WeaponCatalog.ActorSource(actor);
+            if (source == null) { Resources.Warnings.Add($"Missing equipment actor {actor}."); return; }
+            resources ??= source.Open(Resources.Roots);
             var first = _models.Count;
             LoadModels(resources, new HashSet<string>(), progress, cancellation);
             for (int i = first; i < _models.Count; i++)
@@ -149,23 +152,26 @@ internal sealed class BotwActorScene : IDisposable
         foreach (var (kind, choice) in Weapons.OrderBy(p => p.Key))
         {
             var entry = WeaponCatalog.Find(kind, choice.Name);
-            var resources = new BotwActorResources(entry.Path, Resources.Roots);
-            var parameters = PlayerWeaponParameters.Read(resources.EquipmentParameters(kind switch
-                { PlayerWeaponKind.Bow => "BowRef", PlayerWeaponKind.Shield => "ShieldRef", _ => "WeaponRef" }));
+            var resources = new BotwActorResources(entry.Path, Resources.Roots, entry.ArchiveEntry);
+            var parameters = resources.ReadWeaponParameters(kind);
             Add(entry.Name, PlayerWeaponParameters.Bone(kind, choice.Equipped), parameters.Offset(choice.Equipped), resources);
             if (!string.IsNullOrEmpty(parameters.Sheath))
                 Add(parameters.Sheath, "Pod_A", parameters.Offset(false));
             if (kind != PlayerWeaponKind.Bow) continue;
             if (!string.IsNullOrEmpty(parameters.Quiver))
             {
-                var path = WeaponCatalog.ActorPath(parameters.Quiver);
-                if (path == null) Resources.Warnings.Add($"Missing equipment actor {parameters.Quiver}.");
+                var source = WeaponCatalog.ActorSource(parameters.Quiver);
+                if (source == null) Resources.Warnings.Add($"Missing equipment actor {parameters.Quiver}.");
                 else
                 {
-                    var quiver = new BotwActorResources(path, Resources.Roots);
-                    var p = quiver.EquipmentParameters("SheathRef");
-                    Add(parameters.Quiver, p.TryGetValue("BindBoneName", out var bone) ? bone.GetString() : "Pod_B",
-                        PlayerWeaponParameters.Read(p).Offset(false), quiver);
+                    var quiver = source.Open(Resources.Roots);
+                    if (Resources.IsTotk)
+                    {
+                        var p = quiver.EquipmentParameters("SheathRef");
+                        Add(parameters.Quiver, p.TryGetValue("BindBoneName", out var bone) ? bone.GetString() : "Pod_B",
+                            PlayerWeaponParameters.Read(p).Offset(false), quiver);
+                    }
+                    else Add(parameters.Quiver, "Pod_B", quiver.ReadWeaponParameters(kind).Offset(false), quiver);
                 }
             }
             if (choice.Equipped) Add("NormalArrow", "Weapon_R", Matrix4x4.Identity);
@@ -176,7 +182,9 @@ internal sealed class BotwActorScene : IDisposable
         _exportResources.Add(resources);
         var documents = new Dictionary<string, ToolboxBfresDocument>();
         resources.PrepareTotkStrings();
-        var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
+        var textures = ArmorCatalog != null && !Resources.IsTotk ? _botwEquipmentTextures
+            : new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);
+        int previousTextureCount = textures.Count;
         foreach (var name in resources.Models.Select(m => m.Resource).Distinct())
         {
             cancellation.ThrowIfCancellationRequested();
@@ -191,7 +199,7 @@ internal sealed class BotwActorScene : IDisposable
                 if (resources.ReadModel(name, suffix) is { } textureData) new ToolboxBfresDocument(textureData).ReadTextures(textures, resources.Warnings);
             if (ReferenceEquals(resources, Resources)) AddAnimations(document, name);
         }
-        TextureCount += textures.Count;
+        TextureCount += textures.Count - previousTextureCount;
         var hasAppearance = false;
         foreach (var reference in resources.Models)
         {

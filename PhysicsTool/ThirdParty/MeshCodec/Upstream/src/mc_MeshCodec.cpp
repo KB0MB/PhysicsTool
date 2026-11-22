@@ -176,7 +176,7 @@ bool DecompressChunk(void* dst, size_t dstSize, const void* src, size_t srcSize,
 
     const size_t decompressedSize = header->decompressedSize;
 
-    if (dstSize < decompressedSize)
+    if (dstSize < decompressedSize || static_cast<u64>(header->vertexOutputSize) + header->indexOutputSize > decompressedSize)
         return false;
     
     if (workBufferSize < header->workMemSize)
@@ -214,6 +214,8 @@ bool DecompressChunk(void* dst, size_t dstSize, const void* src, size_t srcSize,
                 return offset == srcSize;
             }
             
+            if (offset > srcSize || static_cast<size_t>(blockSize) > srcSize - offset)
+                return false;
             offset += blockSize;
             result = allocator->DecompressFrame(pos, blockSize);
             pos += blockSize;

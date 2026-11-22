@@ -32,6 +32,10 @@ internal static class ShrinePlacementChecks
 
     internal static void Editing(ShrineSceneAssets assets, string root, string output)
     {
+        var terrain = new HKCLTool.VisualModelMesh { Name = "terrain:test", Vertices = [-1, 0, -1, 0, 1, 0, 0, 0, 1, 0, -1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, .5f, 1], Indices = [0, 2, 1] };
+        assets.Model.Meshes.Add(terrain); assets.Model.TriangleCount++;
+        var cave = new HKCLTool.VisualModelMesh { Name = "cave:test/0", Vertices = (float[])terrain.Vertices.Clone(), Indices = (uint[])terrain.Indices.Clone() };
+        assets.Model.Meshes.Add(cave); assets.Model.TriangleCount++;
         GroupHierarchy(assets, root);
         var editor = new ShrinePlacementEditor(assets, root);
         var picker = new ShrineModelPicking(assets.Model);
@@ -39,6 +43,8 @@ internal static class ShrinePlacementChecks
             picker.Meshes(a.Index).Any() && assets.Compound!.ActorLinks.Any(l => l.Hash == (a.PlacementId != 0 ? a.PlacementId : a.Hash) && l.FirstInstance != uint.MaxValue));
         var oldCollision = assets.Compound!.Snapshot(); var offset = new Vector3(2, 3, -4);
         var oldBounds = picker.Bounds(actor.Index)!.Value;
+        Require(editor.PreviewMove([actor.Index], offset).Meshes.Contains(terrain), "Actor transform preview lost or transformed terrain");
+        Require(editor.PreviewMove([actor.Index], offset).Meshes.Contains(cave), "Actor transform preview lost or transformed cave");
         editor.Move(actor.Index, actor.LocalPosition + offset);
         Require(Vector3.Distance(editor.Scene.Actors[actor.Index].Position, actor.Position + offset) < 1e-4f, "Actor world position wrong");
         var bounds = new ShrineModelPicking(editor.Model).Bounds(actor.Index)!.Value;
@@ -65,7 +71,10 @@ internal static class ShrinePlacementChecks
         Require(!transformedCollision.SequenceEqual(movedCollision), "Rotation/scale left collision unchanged");
         editor.Undo(); Require(editor.Compound!.Snapshot().SequenceEqual(movedCollision), "Transform undo lost previous collision");
         editor.Redo(); Require(editor.Compound!.Snapshot().SequenceEqual(transformedCollision), "Transform redo drifted");
+        Require(editor.Model.Meshes.Contains(terrain), "Actor editing/undo/redo lost or transformed terrain");
+        Require(editor.Model.Meshes.Contains(cave), "Actor editing/undo/redo lost or transformed cave");
         string saved = editor.Save(output);
+        Require(!Directory.Exists(Path.Combine(saved, "romfs", "Cave")), "Actor save wrote read-only cave resources");
         var savedPath = Path.Combine(saved, "romfs", Path.GetRelativePath(root, actor.SourceScene));
         var reopened = ShrineSceneDocument.Load(savedPath);
         Require(reopened.Actors[actor.SourceIndex].Position == actor.LocalPosition + offset, "Saved BANC did not retain move");

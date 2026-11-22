@@ -7,7 +7,7 @@ namespace PhysicsTool.Desktop;
 
 public sealed partial class PhysicsViewport
 {
-    private readonly DispatcherTimer _cameraTimer = new() { Interval = TimeSpan.FromSeconds(1d / 60) };
+    private readonly DispatcherTimer _cameraTimer = ViewportFrameRate.CreateTimer();
     private readonly Stopwatch _cameraClock = new();
     private (Vector3 Center, float Yaw, float Pitch, double Zoom) _cameraFrom, _cameraTo;
     internal bool CameraTransitionActive => _cameraTimer.IsEnabled;

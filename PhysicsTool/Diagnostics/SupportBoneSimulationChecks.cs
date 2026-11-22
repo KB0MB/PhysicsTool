@@ -33,6 +33,7 @@ internal static class SupportBoneSimulationChecks
         CheckPose(roundTrip, "Source", 1);
         CheckPose(Fixture("LinearOnly", true), "LinearOnly", linearOnly: true);
         CheckPose(BphyssbBridge.MergeDriverGroup(Fixture("Target"), Fixture("LinearOnly", true), 0), "LinearOnly", 1, true);
+        CheckUnconnectedChannels();
 
         var curve = source.Archive!.Root.Children[0].FindChild("connection_curve_list")!.Objects[0];
         Set(curve, "constant_in", 0, BitConverter.GetBytes(0));
@@ -78,6 +79,34 @@ internal static class SupportBoneSimulationChecks
         Near(driven.Position, linearOnly ? new(4, 5, 6) : new(4.25f, 5.95f, 6), "Helper channels or model-space sentinel");
         var expected = reference * SidecarPreviewEvaluator.BuildBotwRotation(0.9f, 0, 0, Vector3.UnitZ, Vector3.UnitY);
         Require(MathF.Abs(Quaternion.Dot(driven.Rotation, expected)) > 0.99999f, "Authored base rotation order or driver reference is wrong.");
+    }
+
+    private static void CheckUnconnectedChannels()
+    {
+        foreach (var space in new[] { -2, -1, 0 })
+        {
+            var document = Fixture("Masked");
+            var output = document.Archive!.Root.Children[0].FindChild("support_bone_list")!.Objects[0];
+            Set(output, "space", 2, BitConverter.GetBytes(space));
+            Set(output, "bendH", 2, BitConverter.GetBytes(-1));
+            Set(output, "translateY", 2, BitConverter.GetBytes(-1));
+            var reference = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.35f);
+            var driver = new VisualModelBone { Index = 0, Name = "MaskedDriver", Position = new(1.25f, 2, 3), Rotation = reference };
+            var parent = new VisualModelBone { Index = 2, Name = "Parent", Position = new(30, 40, 50), Rotation = reference };
+            var basis = space == -2 ? Matrix4x4.Identity : BotwActorScene.Matrix(space == -1 ? parent : driver);
+            var incomingRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.7f);
+            var local = Matrix4x4.CreateScale(1.5f) * Matrix4x4.CreateFromQuaternion(incomingRotation) * Matrix4x4.CreateTranslation(8, 9, 10);
+            Matrix4x4.Decompose(local * basis, out var scale, out var rotation, out var position);
+            var helper = new VisualModelBone { Index = 1, ParentIndex = 2, Name = "MaskedHelper", Position = position, Rotation = rotation, Scale = scale };
+            var rest = new[] { driver, new VisualModelBone { Index = 1, ParentIndex = 2, Name = "MaskedHelper", Position = new(4, 5, 6) }, parent };
+            var result = SidecarPreviewEvaluator.Evaluate(document, -1, new[] { driver, helper, parent }, rest).Poses.Single(p => p.IsDriven);
+            Matrix4x4.Invert(basis, out var inverse);
+            var world = Matrix4x4.CreateScale(result.Scale) * Matrix4x4.CreateFromQuaternion(result.Rotation) * Matrix4x4.CreateTranslation(result.Position);
+            Matrix4x4.Decompose(world * inverse, out var actualScale, out var actualRotation, out var actualPosition);
+            Near(actualPosition, new(4.25f, 9, 10), "Unconnected support translation must retain the current pose in its declared space");
+            Near(actualScale, new(1.5f), "Support must preserve incoming scale");
+            Require(MathF.Abs(Quaternion.Dot(actualRotation, incomingRotation)) > .99999f, "Unconnected support rotation must retain the current pose");
+        }
     }
 
     private static BphyssbDocumentSummary Fixture(string prefix, bool linearOnly = false)

@@ -31,6 +31,7 @@ public sealed class EditorSession
     private Stack<Snapshot> _undo = new(), _redo = new();
     private string? _savedState;
     public HkclService Document { get; private set; } = new();
+    public bool IsReadOnly { get; internal set; }
     public HkclPlatform Platform { get; set; } = HkclPlatform.WiiU;
     public string? Path { get; private set; }
     private BphysicsDocument? _windParameters;
@@ -54,12 +55,12 @@ public sealed class EditorSession
         && Document.GetClothSummaries().Count > 0;
     public bool AllClothsSelected => ClothIndex == AllClothsIndex && CanSelectAllCloths;
     public bool IsDirty => Document.HasDocument && Document.CaptureState() != _savedState;
-    public bool CanUndo => _undo.Count > 0;
-    public bool CanRedo => _redo.Count > 0;
+    public bool CanUndo => !IsReadOnly && _undo.Count > 0;
+    public bool CanRedo => !IsReadOnly && _redo.Count > 0;
     public bool HasSelectedEntry => Document.HasDocument && ClothIndex >= 0 && ClothIndex < Document.GetClothSummaries().Count;
-    public bool CanManageCloth => HasSelectedEntry && !Document.IsHelperBoneSidecar && !Document.IsHkrg;
-    public bool CanRemoveEntry => HasSelectedEntry && !Document.IsHkrg;
-    public bool CanEditClothSettings => HasSelectedEntry && !Document.IsReadOnlyExternal;
+    public bool CanManageCloth => !IsReadOnly && HasSelectedEntry && !Document.IsHelperBoneSidecar && !Document.IsHkrg && !Document.IsPreviewOnly;
+    public bool CanRemoveEntry => !IsReadOnly && HasSelectedEntry && !Document.IsHkrg && !Document.IsPreviewOnly;
+    public bool CanEditClothSettings => !IsReadOnly && HasSelectedEntry && !Document.IsReadOnlyExternal;
     public bool CanScaleMass => CanManageCloth && Document.CanEditParticleValues;
     public bool CanSimulate => HasSelectedEntry &&
         (!Document.IsReadOnlyExternal || Document.IsBphcl && Document.GetTotkSimulationSupport(ClothIndex).Supported) &&
@@ -107,8 +108,19 @@ public sealed class EditorSession
         ResetHistory(document.CaptureState());
     }
 
+    internal void ImportOotCloth(byte[] bytes)
+    {
+        var document = new HkclService();
+        document.RestoreState("BPHCL:" + Convert.ToBase64String(bytes));
+        if (!document.IsOot) throw new InvalidDataException("Actor cloth is not an OoT BPHCL.");
+        Document = document; Platform = HkclPlatform.Switch; Path = null; ClothIndex = 0;
+        LoadWindParameters(null); ModelBoneReferences = new Dictionary<Guid, ModelBoneReference>();
+        _entryIds = new(); SynchronizeEntryIds(); ResetHistory(document.CaptureState());
+    }
+
     public void Save(string path)
     {
+        if (IsReadOnly) throw new InvalidOperationException("Actor view is read-only. Open Physics to edit an extracted file.");
         Document.SaveHkcl(path, Platform);
         Path = path;
         _savedState = Document.CaptureState();
@@ -175,6 +187,7 @@ public sealed class EditorSession
     public (bool Allowed, string Description) PreviewMerge(EditorSession donor)
     {
         var source = donor.Document;
+        if (Document.IsPreviewOnly || source.IsPreviewOnly) return (false, "OoT physics is preview-only and cannot be merged.");
         if (!Document.HasDocument || !donor.HasSelectedEntry) return (false, "Load a current file and select a donor entry.");
         if (Document.IsHkrg || source.IsHkrg) return (false, "Ragdoll merging is not supported.");
         if (Document.IsHelperBoneSidecar || source.IsHelperBoneSidecar)
@@ -252,6 +265,37 @@ public sealed class EditorSession
     }
     public void Edit(Action<HkclService, int> action)
     {
+        if (Document.IsPreviewOnly) throw new InvalidOperationException("OoT physics is preview-only.");
+        EditCore(action);
+    }
+
+    public void EditOotProperties(int item, bool collider, IReadOnlyDictionary<uint, float> values)
+    {
+        if (!HasSelectedEntry || !Document.IsOot) throw new InvalidOperationException("Select an OoT cloth first.");
+        EditCore((doc, cloth) => doc.UpdateOotProperties(cloth, item, collider, values));
+    }
+
+    public void EditOotGeometry(IReadOnlyDictionary<int, System.Numerics.Vector3> positions)
+    {
+        if (!HasSelectedEntry || !Document.IsOot) throw new InvalidOperationException("Select an OoT cloth first.");
+        EditCore((doc, cloth) => doc.UpdateOotGeometry(cloth, positions));
+    }
+
+    public int AddOotParticle(int source)
+    {
+        int added = -1;
+        EditCore((doc, cloth) => added = doc.AddOotParticle(cloth, source));
+        return added;
+    }
+
+    public void AddOotTriangle(IReadOnlyList<int> particles) => EditCore((doc, cloth) => doc.AddOotTriangle(cloth, particles));
+
+    public void EditOotBonePositions(IReadOnlyDictionary<int, System.Numerics.Vector3> positions, bool followParticles) =>
+        EditCore((doc, cloth) => doc.UpdateOotBonePositions(cloth, positions, followParticles));
+
+    private void EditCore(Action<HkclService, int> action)
+    {
+        if (IsReadOnly) throw new InvalidOperationException("Actor view is read-only.");
         SynchronizeEntryIds();
         var before = CaptureSnapshot();
         try

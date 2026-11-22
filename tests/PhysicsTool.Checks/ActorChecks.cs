@@ -38,7 +38,8 @@ internal static class ActorChecks
             Require(window.IsActorMode && window.IsEditorVisible && !window.Viewport.CanSelect, "Actor did not enter read-only main viewport");
             Require(window.Session.Document.CaptureState() == state, "Actor replaced editor document");
             Require(!window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Add Particle")).IsVisible, "Actor exposes editor commands");
-            Require(!window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Save")).IsEnabled, "Actor allows saving editor state");
+            var save = (Control)typeof(MainWindow).GetField("_save", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+            Require(!save.IsEnabled, "Actor allows saving editor state");
             if (scene.Animations.Count > 0)
             {
                 window.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Name == "ActorAnimation").SelectedIndex = 1;

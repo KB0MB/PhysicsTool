@@ -11,6 +11,7 @@ using System.Security.Cryptography;
 internal sealed class ShrineGpuChecks : Application
 {
     internal static string Source = "", Output = "";
+    internal static System.Numerics.Vector3? Focus;
     internal static int Result = 1;
     public override void Initialize() { Styles.Add(new FluentTheme()); RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark; }
     public override void OnFrameworkInitializationCompleted()
@@ -40,7 +41,7 @@ internal sealed class ShrineGpuChecks : Application
                 if (stage < 0)
                 {
                     stage = 0;
-                    view.Viewport.StartFlyAt(view.Assets!.Scene.Actors[0].Position + new System.Numerics.Vector3(0, 2, 12));
+                    view.Viewport.StartFlyAt(Focus ?? view.Assets!.TerrainStartPosition ?? view.Assets!.Scene.Actors[0].Position + new System.Numerics.Vector3(0, 2, 12));
                     Dispatcher.UIThread.Post(Request, DispatcherPriority.Background);
                     return;
                 }

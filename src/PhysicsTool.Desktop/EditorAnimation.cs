@@ -18,18 +18,18 @@ public sealed partial class MainWindow
     private ModelAnimationClip? EditorClip => _editorClips.ElementAtOrDefault(_editorClipIndex);
     internal double EditorAnimationFrame => _editorFrame;
     internal bool EditorAnimationPlaying => _editorPlaying;
-    internal bool EditorSimulating => _solver != null;
-    internal int AnimationPlaybackFps
+    internal bool EditorSimulating => _solver != null || _ootSimulating;
+    internal int ViewportFps
     {
-        get => _animationFps;
-        set { if (value is not 30 and not 60) throw new ArgumentOutOfRangeException(nameof(value)); _animationFps = value; }
+        get => ViewportFrameRate.FramesPerSecond;
+        set => ViewportFrameRate.FramesPerSecond = value;
     }
 
     private async Task OpenEditorAnimation()
     {
         if (!IsActorMode && Session.AllClothsSelected) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Import animation",
-            FileTypeFilter = [new("BFRES skeletal animations") { Patterns = ["*.bfres", "*.sbfres"] }] });
+            FileTypeFilter = [new("BFRES skeletal animations") { Patterns = ["*.bfres", "*.sbfres", "*.bfres.zs"] }] });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) await LoadAnimationPathAsync(path);
     }
     public async Task LoadAnimationPathAsync(string path)
@@ -80,11 +80,16 @@ public sealed partial class MainWindow
         PauseEditorAnimation(); _editorClipIndex = Math.Clamp(index, -1, _editorClips.Count - 1); _editorFrame = 0;
         _updatingTimeline = true; _animations.SelectedIndex = _editorClipIndex + 1; _updatingTimeline = false;
         _animationPoseSolver = null; _animationSource = null;
-        if (EditorClip != null) PoseEditorAnimation(0, true, false);
+        if (_ootScene != null) PoseOotActor(reset: true);
+        else if (EditorClip != null) PoseEditorAnimation(0, true, false);
         else
         {
-            if (_solver != null) { _solver.SetInputBoneDeltas(new Dictionary<int, Matrix4x4>()); _solver.Reset(); }
+            ResetEditorSolverRestPose();
             _viewport.Simulated = null; _viewport.SimulatedBones = null; _viewport.SimulatedColliders = null;
+            if (_solver != null)
+            {
+                _viewport.Simulated = _solver.GetPositions(); _viewport.SimulatedBones = _solver.GetBonePoses(); _viewport.SimulatedColliders = _solver.GetColliderPoses();
+            }
             UpdateImportedModelPose();
         }
         UpdateEditorPlayback(); UpdateActions();
@@ -121,39 +126,43 @@ public sealed partial class MainWindow
         _frameLabel.Text = $"{_editorFrame:0.0} / {EditorClip?.EndFrame ?? 0:0.0}";
         _updatingTimeline = false;
         if (_timelineScrubbing) { _timer.Stop(); return; }
-        if ((_editorPlaying || _solver != null || _ragdollSolver != null) && !_timer.IsEnabled)
+        if ((_editorPlaying || _solver != null || _ragdollSolver != null || _ootSimulating) && !_timer.IsEnabled)
         { _clock.Restart(); _lastTick = 0; _previewStepClock.Reset(); _timer.Start(); }
-        else if (!_editorPlaying && _solver == null && _ragdollSolver == null) _timer.Stop();
+        else if (!_editorPlaying && _solver == null && _ragdollSolver == null && !_ootSimulating) _timer.Stop();
     }
-    internal void AdvanceEditorPreview(float seconds)
+    internal void AdvanceEditorPreview(float seconds, bool present = true)
     {
         if (_timelineScrubbing || Session.AllClothsSelected) return;
         if (_ragdollSolver != null)
         {
             _ragdollSolver.WindEnabled = _wind.IsChecked == true; _ragdollSolver.Step(seconds);
+            if (!present) return;
             _viewport.SimulatedBones = _ragdollSolver.GetBonePoses(); _viewport.SimulatedColliders = _ragdollSolver.GetColliderPoses();
             UpdateImportedModelPose(); _viewport.InvalidateVisual(); return;
         }
         var looped = false;
         if (_editorPlaying && EditorClip is { } clip)
         {
-            _editorFrame += seconds * clip.FramesPerSecond * _animationFps / 60d;
+            _editorFrame += seconds * clip.FramesPerSecond;
             if (_editorFrame >= clip.EndFrame)
             {
                 if (_loop.IsChecked == true) { _editorFrame %= clip.EndFrame; looped = true; }
                 else { _editorFrame = clip.EndFrame; _editorPlaying = false; }
             }
         }
-        if (EditorClip != null && _importedModel != null) PoseEditorAnimation(seconds, false, looped);
+        if (_ootScene != null) PoseOotActor(seconds, false, looped, present);
+        else if (EditorClip != null && _importedModel != null) PoseEditorAnimation(seconds, false, looped, present);
         else if (_solver != null)
         {
             _solver.WindEnabled = _wind.IsChecked == true; _solver.Step(seconds);
+            if (!present) return;
             _viewport.Simulated = _solver.GetPositions(); _viewport.SimulatedBones = _solver.GetBonePoses(); _viewport.SimulatedColliders = _solver.GetColliderPoses();
             UpdateImportedModelPose(); _viewport.InvalidateVisual();
         }
     }
-    private void PoseEditorAnimation(float seconds, bool reset, bool looped)
+    private void PoseEditorAnimation(float seconds, bool reset, bool looped, bool present = true)
     {
+        if (_ootScene != null) { PoseOotActor(seconds, reset, looped, present); return; }
         if (_posingAnimation || IsActorMode || Session.AllClothsSelected || _importedModel == null || EditorClip == null) return;
         _posingAnimation = true;
         try
@@ -168,38 +177,26 @@ public sealed partial class MainWindow
             if (!ReferenceEquals(source, _animationSource))
             {
                 _animationSource = source;
-                _animationPoseSolver = !Session.Document.IsReadOnlyExternal && source.Bones.Count > 0 ? new HkclPreviewSimulator(source) : null;
+                _animationPoseSolver = (!Session.Document.IsReadOnlyExternal || Session.Document.IsBphcl) && source.Bones.Count > 0
+                    ? new HkclPreviewSimulator(source) : null;
             }
             var solver = _solver ?? _animationPoseSolver;
             var suppressed = source.Bones.Where(b => solver?.DrivenBoneIndices.Contains(b.Index) == true)
                 .Select(b => ModelAnimationClip.Normalize(b.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var clean = rig.AnimationSkeleton(EditorClip, _editorFrame, suppressed);
-            var rest = rig.Rest.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-            var animated = clean.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-            Matrix4x4 Matrix(VisualModelBone b) => Matrix4x4.CreateScale(b.Scale) * Matrix4x4.CreateFromQuaternion(b.Rotation) * Matrix4x4.CreateTranslation(b.Position);
+            var clean = EvaluateOotHelpers(rig.AnimationSkeleton(EditorClip, _editorFrame, suppressed));
             if (solver != null)
             {
-                var deltas = new Dictionary<int, Matrix4x4>();
-                var bones = source.Bones.ToDictionary(b => b.Index);
-                Matrix4x4 Delta(int index, HashSet<int> visited)
-                {
-                    if (deltas.TryGetValue(index, out var value)) return value;
-                    if (!bones.TryGetValue(index, out var bone) || !visited.Add(index)) return Matrix4x4.Identity;
-                    var name = ModelAnimationClip.Normalize(bone.Name);
-                    return deltas[index] = rest.TryGetValue(name, out var r) && animated.TryGetValue(name, out var a) && Matrix4x4.Invert(Matrix(r), out var inverse)
-                        ? inverse * Matrix(a) : Delta(bone.ParentIndex, visited);
-                }
-                foreach (var bone in source.Bones) Delta(bone.Index, new());
-                solver.SetInputBoneDeltas(deltas);
+                solver.SetInputBoneDeltas(EditorBoneDeltas(source, rig.Rest, clean));
                 if (_solver == null || reset) solver.Reset();
                 else if (looped) solver.RebaseInputPose();
                 if (_solver != null && seconds > 0)
                 {
                     solver.WindEnabled = _wind.IsChecked == true; solver.Step(seconds);
                 }
+                if (!present) return;
                 _viewport.Simulated = solver.GetPositions(); _viewport.SimulatedBones = solver.GetBonePoses(); _viewport.SimulatedColliders = solver.GetColliderPoses();
             }
-            var visual = _solver != null ? clean : rig.AnimationSkeleton(EditorClip, _editorFrame);
+            var visual = _solver != null ? clean : EvaluateOotHelpers(rig.AnimationSkeleton(EditorClip, _editorFrame));
             var overrides = visual.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key,
                 g => new VisualBoneOverride(g.Key, g.First().Position, g.First().Rotation, g.First().Scale), StringComparer.OrdinalIgnoreCase);
             if (_solver != null)
@@ -214,5 +211,35 @@ public sealed partial class MainWindow
             }
         }
         finally { _posingAnimation = false; }
+    }
+    private static Dictionary<int, Matrix4x4> EditorBoneDeltas(ParticlePreviewData source, VisualModelData restPose, VisualModelData pose)
+    {
+        var rest = restPose.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var animated = pose.Bones.GroupBy(b => ModelAnimationClip.Normalize(b.Name), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var bones = source.Bones.ToDictionary(b => b.Index);
+        var deltas = new Dictionary<int, Matrix4x4>();
+        Matrix4x4 Matrix(VisualModelBone b) => Matrix4x4.CreateScale(b.Scale) * Matrix4x4.CreateFromQuaternion(b.Rotation) * Matrix4x4.CreateTranslation(b.Position);
+        Matrix4x4 Delta(int index, HashSet<int> visited)
+        {
+            if (deltas.TryGetValue(index, out var value)) return value;
+            if (!bones.TryGetValue(index, out var bone) || !visited.Add(index)) return Matrix4x4.Identity;
+            var name = ModelAnimationClip.Normalize(bone.Name);
+            return deltas[index] = rest.TryGetValue(name, out var r) && animated.TryGetValue(name, out var a) && Matrix4x4.Invert(Matrix(r), out var inverse)
+                ? inverse * Matrix(a) : Delta(bone.ParentIndex, visited);
+        }
+        foreach (var bone in source.Bones) Delta(bone.Index, new());
+        return deltas;
+    }
+    private void ResetEditorSolverRestPose()
+    {
+        if (_solver == null) return;
+        var deltas = new Dictionary<int, Matrix4x4>();
+        if (_ootHelpers.Length > 0 && _importedModel != null)
+        {
+            var rig = BoundImportedModel;
+            deltas = EditorBoneDeltas(_viewport.Data, rig.Rest, EvaluateOotHelpers(rig.Rest));
+        }
+        _solver.SetInputBoneDeltas(deltas);
+        _solver.Reset();
     }
 }

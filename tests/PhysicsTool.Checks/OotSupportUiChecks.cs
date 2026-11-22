@@ -1,0 +1,106 @@
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Headless;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using PhysicsTool.Core;
+using PhysicsTool.Desktop;
+using HKCLTool;
+using System.Reflection;
+using System.Text.Json;
+
+internal static class OotSupportUiChecks
+{
+    internal static void Run(string root, string output)
+    {
+        Directory.CreateDirectory(output);
+        var settings = Path.Combine(output, "oot-browser-settings.json");
+        File.WriteAllText(settings, JsonSerializer.Serialize(new ActorBrowserPaths { Oot = root, OotSelected = true }));
+        var browser = new ActorBrowserWindow(settings); browser.Show();
+        var tabs = (TabControl)browser.Content!;
+        if (tabs.SelectedIndex != 2) throw new Exception("OoT tab not restored");
+        var timeout = DateTime.UtcNow.AddSeconds(60);
+        ListBox? actors = null;
+        do
+        {
+            Dispatcher.UIThread.RunJobs(); Thread.Sleep(10);
+            actors = browser.GetVisualDescendants().OfType<ListBox>().FirstOrDefault(l => l.Name == "OotActors");
+        } while (actors?.ItemCount is not > 0 && DateTime.UtcNow < timeout);
+        if (actors?.ItemCount is not > 0) throw new Exception("OoT actor list empty");
+        actors.SelectedItem = actors.Items.Cast<BotwActorCatalogEntry>().Single(a => a.Name == "Player_Adult");
+        using (var shot = browser.CaptureRenderedFrame()!) shot.Save(Path.Combine(output, "oot-actors.png"));
+        browser.Close();
+        if (!ActorBrowserPaths.Read(settings).OotSelected) throw new Exception("OoT selection not persisted");
+        var entry = new BotwActorCatalogEntry("Player_Adult", Path.Combine(root, "Pack/Actor/Player_Adult.pack.zs"), null, root, true, true, true) { IsOot = true };
+        var resource = OotActorResources.Load(entry).Assets.Single(a => !a.IsCloth);
+        var helper = new OotHelperWindow(resource.Bytes, Path.GetFileName(resource.Path)); helper.Show(); Dispatcher.UIThread.RunJobs();
+        using (var shot = helper.CaptureRenderedFrame()!) shot.Save(Path.Combine(output, "oot-helper.png"));
+        helper.Close();
+        var helperData = new OotHelperDocument(resource.Bytes);
+        var connection = helperData.Connections().First();
+        var curves = new OotHelperConnectionsWindow(resource.Bytes, connection.Bone); curves.Show(); Dispatcher.UIThread.RunJobs();
+        var draft = (OotHelperDocument)typeof(OotHelperConnectionsWindow).GetField("_document", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(curves)!;
+        var curveInputs = curves.GetVisualDescendants().OfType<NumericUpDown>().ToArray();
+        if (curveInputs.Length < 9) throw new Exception("Curve key controls not shown");
+        var keyX = curveInputs.Single(n => n.Name == "OotCurveInsertX"); keyX.Value = -.5m;
+        curves.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "OotCurveInsert").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        if (draft.CurveKeys(connection).Count != helperData.CurveKeys(connection).Count + 1) throw new Exception("Curve insertion UI failed");
+        using (var shot = curves.CaptureRenderedFrame()!) shot.Save(Path.Combine(output, "oot-connections.png"));
+        curves.Close();
+        var main = new MainWindow(graphics: false) { Width = 1280, Height = 850 };
+        main.Show(); main.LoadPath(Path.Combine(root, "Phive/Cloth/Player_Adult.Nin_Ounce_NVN2.bphcl")); main.ShowEditor();
+        var list = (ListBox)typeof(MainWindow).GetField("_items", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+        var particle = main.Session.Document.GetParticleRows(0).First(p => !p.Fixed);
+        list.SelectedIndex = particle.Index; Dispatcher.UIThread.RunJobs();
+        var apply = main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "ApplyOotProperties");
+        if (!apply.IsEffectivelyEnabled) throw new Exception("OoT property controls disabled");
+        var original = main.Session.Document.CaptureState();
+        var number = main.GetVisualDescendants().OfType<NumericUpDown>().First(n => n.Name?.StartsWith("OotProperty") == true);
+        number.Value = number.Value * 1.1m;
+        apply.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        if (main.Session.Document.CaptureState() == original || !main.Session.CanUndo) throw new Exception("OoT UI apply did not edit");
+        using (var shot = main.CaptureRenderedFrame()!) shot.Save(Path.Combine(output, "oot-properties.png"));
+        main.Session.Undo();
+        list.SelectedIndex = particle.Index; Dispatcher.UIThread.RunJobs();
+        var px = main.GetVisualDescendants().OfType<NumericUpDown>().Single(n => n.Name == "OotParticleX");
+        var geometryBefore = main.Session.Document.CaptureState(); px.Value += .0001m;
+        main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "ApplyOotGeometry").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        if (main.Session.Document.CaptureState() == geometryBefore) throw new Exception("OoT position UI did not edit");
+        main.Session.Undo();
+        var viewport = (PhysicsViewport)typeof(MainWindow).GetField("_viewport", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+        viewport.Selected.Clear(); viewport.Selected.Add(particle.Index);
+        var baseline = main.Session.Document.CaptureState();
+        if (!viewport.TransformKey(new() { Key = Avalonia.Input.Key.G }) || !viewport.TransformActive) throw new Exception("OoT particle transform not enabled");
+        typeof(PhysicsViewport).GetMethod("MoveTransform", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(viewport, [new Avalonia.Point(3, 2)]);
+        if (main.Session.Document.CaptureState() != baseline) throw new Exception("Transform preview changed native document");
+        viewport.FinishTransform(false);
+        if (main.Session.Document.CaptureState() != baseline) throw new Exception("Transform cancel changed native document");
+        viewport.TransformKey(new() { Key = Avalonia.Input.Key.G });
+        typeof(PhysicsViewport).GetMethod("MoveTransform", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(viewport, [new Avalonia.Point(1, 1)]);
+        viewport.FinishTransform(true); Dispatcher.UIThread.RunJobs();
+        if (main.Session.Document.CaptureState() == baseline) throw new Exception("Transform commit did not edit native document");
+        main.Session.Undo();
+        if (main.Session.Document.CaptureState() != baseline) throw new Exception("Transform undo did not restore native document");
+        var add = (Button)typeof(MainWindow).GetField("_add", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+        if (!add.IsEffectivelyEnabled) throw new Exception("Add particle disabled for OoT");
+        int count = main.Session.Document.GetParticleRows(0).Count;
+        add.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        if (main.Session.Document.GetParticleRows(0).Count != count + 1 || list.SelectedIndex != count) throw new Exception("Add particle UI failed");
+        var newX = main.GetVisualDescendants().OfType<NumericUpDown>().Single(n => n.Name == "OotParticleX"); newX.Value += .02m;
+        main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "ApplyOotGeometry").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        var mode = (TabStrip)typeof(MainWindow).GetField("_mode", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+        mode.SelectedIndex = 1; list.SelectedIndex = main.Session.Document.GetBoneRows(0).Count - 1; Dispatcher.UIThread.RunJobs();
+        var bx = main.GetVisualDescendants().OfType<NumericUpDown>().Single(n => n.Name == "OotBoneX"); bx.Value += .001m;
+        var boneBefore = main.Session.Document.CaptureState();
+        main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "ApplyOotBonePosition").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        if (main.Session.Document.CaptureState() == boneBefore) throw new Exception("Bone position UI did not edit");
+        using (var shot = main.CaptureRenderedFrame()!) shot.Save(Path.Combine(output, "oot-bone-position.png"));
+        if (!viewport.TranslationOnly || !viewport.CanTransform) throw new Exception("OoT bone movement not enabled");
+        main.Close();
+        Console.WriteLine("PASS OoT actor tab, persisted path, helper curves, cloth properties, geometry inspector, transform preview/cancel/commit/undo.");
+    }
+}

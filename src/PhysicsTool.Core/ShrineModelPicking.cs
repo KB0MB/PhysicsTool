@@ -11,7 +11,8 @@ internal sealed class ShrineModelPicking
     {
         foreach (var (mesh, index) in model.Meshes.Select((m, i) => (m, i)))
         {
-            if (!int.TryParse(mesh.Name.Split(':')[0], out var actor)) continue;
+            if (mesh.Name.StartsWith("water:", StringComparison.Ordinal)) continue;
+            int actor = ShrineSceneAssets.MeshActorIndex(mesh) ?? -1;
             var min = new Vector3(float.MaxValue); var max = new Vector3(float.MinValue);
             for (int i = 0; i < mesh.Vertices.Length; i += 8) { var p = Vertex(mesh, i / 8); min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
             _meshes.Add(new(index, actor, mesh, min, max));
@@ -38,7 +39,7 @@ internal sealed class ShrineModelPicking
                 var s = origin - a; float u = Vector3.Dot(s, h) / determinant; if (u < 0 || u > 1) continue;
                 var q = Vector3.Cross(s, ab); float v = Vector3.Dot(direction, q) / determinant; if (v < 0 || u + v > 1) continue;
                 float distance = Vector3.Dot(ac, q) / determinant;
-                if (distance >= 0 && distance < closest) { closest = distance; actor = mesh.Actor; }
+                if (distance >= 0 && distance < closest) { closest = distance; actor = mesh.Actor >= 0 ? mesh.Actor : null; }
             }
         }
         return actor;
