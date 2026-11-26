@@ -10,6 +10,30 @@ namespace HKCLTool;
 internal static class ToolboxActorTexture
 {
     private static readonly object Gx2Gate = new();
+    internal static VisualModelTexture DecodeEffectSurface(string name, int width, int height, uint format, uint tileMode, byte[] data)
+    {
+        Validate(width, height);
+        var surface = new GX2.GX2Surface { width = (uint)width, height = (uint)height, depth = 1, dim = 1,
+            format = format, tileMode = tileMode, data = data, numMips = 1, numArray = 1 };
+        byte[] raw;
+        lock (Gx2Gate) raw = GX2.Decode(surface, 0, 0);
+        var compression = format switch { 0x34 => CompressionFormat.Bc4, 0x35 => CompressionFormat.Bc5,
+            _ => throw new NotSupportedException("Unsupported native arrow effect texture format.") };
+        var pixels = DecodeSurface(raw, width, height, new(compression, format == 0x34 ? 8 : 16, 4));
+        // Native effect channel selectors: BC5 is luminance/alpha, BC4 is alpha.
+        for (int i = 0; i < pixels.Length; i += 4)
+        {
+            pixels[i + 3] = pixels[i + (format == 0x35 ? 1 : 0)];
+            pixels[i + 1] = pixels[i + 2] = pixels[i];
+        }
+        return Texture(name, width, height, pixels, "UNORM");
+    }
+    internal static GX2.GX2Surface EncodeIconSurface(byte[] rgba, WiiTexture template, int width, int height)
+    {
+        lock (Gx2Gate)
+            return GX2.CreateGx2Texture(rgba, template.Name, (uint)template.TileMode, 0,
+                (uint)width, (uint)height, 1, (uint)template.Format, template.Swizzle, (uint)template.Dim, 1, true);
+    }
     private sealed record SurfaceFormat(CompressionFormat? Compression, int Bytes, int Block);
     private static SurfaceFormat Format(string name)
     {

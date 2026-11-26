@@ -31,7 +31,7 @@ internal sealed class PlayerArmorWindow : Window
             var choices = catalog.Entries.Where(e => e.Slot == slot).ToArray();
             var selector = new ComboBox { Name = "PlayerArmor" + slot, ItemsSource = choices, MinWidth = 280,
                 HorizontalAlignment = HorizontalAlignment.Stretch, MaxDropDownHeight = 360, IsTextSearchEnabled = true,
-                SelectedItem = choices.FirstOrDefault(e => e.Name == equipped.GetValueOrDefault(slot)) };
+                SelectedItem = catalog.VisibleEntry(slot, equipped.GetValueOrDefault(slot)) };
             _slots.Add(slot, selector);
             Grid.SetRow(label, (int)slot); grid.Children.Add(label);
             Grid.SetRow(selector, (int)slot); Grid.SetColumn(selector, 1); grid.Children.Add(selector);
@@ -45,7 +45,7 @@ internal sealed class PlayerArmorWindow : Window
         buttons.Children.Add(defaults); Grid.SetColumn(accept, 2); buttons.Children.Add(accept);
         Grid.SetColumn(close, 3); buttons.Children.Add(close); panel.Children.Add(buttons);
         Content = panel;
-        var current = new Dictionary<PlayerArmorSlot, string>(equipped);
+        var current = equipped.ToDictionary(p => p.Key, p => catalog.VisibleEntry(p.Key, p.Value)?.Name ?? p.Value);
         var currentWeapons = new Dictionary<PlayerWeaponKind, PlayerWeaponSelection>(selectedWeapons ?? new Dictionary<PlayerWeaponKind, PlayerWeaponSelection>());
         bool busy = false, closed = false;
         void UpdateApply() => accept.IsEnabled = !busy && _slots.All(p => p.Value.SelectedItem is PlayerArmorEntry) &&

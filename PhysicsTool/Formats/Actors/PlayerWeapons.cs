@@ -4,10 +4,14 @@ using System.Numerics;
 namespace HKCLTool;
 
 internal enum PlayerWeaponKind { Sword, LSword, Spear, Shield, Bow }
-internal sealed record PlayerWeaponSelection(string Name, bool Equipped = false);
+internal sealed record PlayerWeaponSelection(string Name, bool Equipped = false, string Arrow = "NormalArrow");
+internal sealed record PlayerArrowEntry(string Name, string DisplayName)
+{
+    public override string ToString() => DisplayName;
+}
 internal sealed record PlayerWeaponEntry(PlayerWeaponKind Kind, string Name, string Path, string? ArchiveEntry = null)
 {
-    public string DisplayName => Name[("Weapon_" + Kind + "_").Length..];
+    public string DisplayName { get; init; } = Name;
     public override string ToString() => DisplayName;
 }
 
@@ -15,23 +19,32 @@ internal sealed class PlayerWeaponCatalog
 {
     private readonly PlayerEquipmentSources _sources;
     public IReadOnlyList<PlayerWeaponEntry> Entries { get; }
+    public bool SupportsArrowTypes { get; }
+    public IReadOnlyList<PlayerArrowEntry> Arrows { get; }
     public PlayerWeaponCatalog(BotwActorResources player, PlayerEquipmentSources? sources = null)
     {
         _sources = sources ?? new(player);
+        SupportsArrowTypes = !player.IsTotk;
+        Arrows = new PlayerArrowEntry[] { new("NormalArrow", "Arrow"), new("FireArrow", "Fire Arrow"),
+            new("IceArrow", "Ice Arrow"), new("ElectricArrow", "Shock Arrow"), new("BombArrow_A", "Bomb Arrow"), new("AncientArrow", "Ancient Arrow") }
+            .Where(a => (SupportsArrowTypes || a.Name == "NormalArrow") && _sources.Find(a.Name) != null)
+            .OrderBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
         var entries = new Dictionary<string, PlayerWeaponEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var kind in Enum.GetValues<PlayerWeaponKind>())
         foreach (var source in _sources.Actors.Values.Where(s => s.Name.StartsWith($"Weapon_{kind}_", StringComparison.OrdinalIgnoreCase)))
         {
             entries.TryAdd(source.Name, new(kind, source.Name, source.Path, source.ArchiveEntry));
         }
-        Entries = entries.Values.OrderBy(e => e.Kind).ThenBy(e => Number(e.DisplayName))
-            .ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
+        var labels = PlayerEquipmentNames.Labels(entries.Keys, player.IsTotk);
+        Entries = entries.Values.Select(e => e with { DisplayName = labels[e.Name] }).OrderBy(e => e.Kind)
+            .ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
-    private static int Number(string value) => int.TryParse(value.Split('_')[0], out var n) ? n : int.MaxValue;
     public PlayerWeaponEntry Find(PlayerWeaponKind kind, string name) => Entries.FirstOrDefault(e => e.Kind == kind && e.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
         ?? throw new InvalidDataException($"Weapon '{name}' is not available in the {kind} slot of this game dump.");
     public string? ActorPath(string name) => _sources.Find(name)?.Path;
     public PlayerEquipmentSource? ActorSource(string name) => _sources.Find(name);
+    public string ArrowActor(string name) => Arrows.FirstOrDefault(a => a.Name == name)?.Name
+        ?? throw new InvalidDataException($"Arrow '{name}' is not available in this game dump.");
 }
 
 internal sealed record PlayerEquipmentAttachment(string Actor, string Bone, Matrix4x4 Offset);

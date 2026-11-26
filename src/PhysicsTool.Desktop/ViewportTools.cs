@@ -36,11 +36,13 @@ public static class ViewportTools
 public sealed class ViewportAxes : Control
 {
     private readonly PhysicsViewport _view;
+    private Axis? _hovered;
+    private Point? _pointer;
     private record Axis(Vector3 Direction, CameraView View, string Label, Color Color);
     private static readonly Axis[] Axes = [new(Vector3.UnitX, CameraView.Right, "X", Color.Parse("#ED7676")), new(-Vector3.UnitX, CameraView.Left, "-X", Color.Parse("#984B4B")),
         new(Vector3.UnitY, CameraView.Top, "Y", Color.Parse("#7CC889")), new(-Vector3.UnitY, CameraView.Bottom, "-Y", Color.Parse("#4D8057")),
         new(Vector3.UnitZ, CameraView.Front, "Z", Color.Parse("#7AAFE8")), new(-Vector3.UnitZ, CameraView.Back, "-Z", Color.Parse("#4E729B"))];
-    public ViewportAxes(PhysicsViewport view) { _view = view; Width = Height = 108; Margin = new Thickness(8); HorizontalAlignment = HorizontalAlignment.Right; VerticalAlignment = VerticalAlignment.Top; view.CameraChanged += InvalidateVisual; }
+    public ViewportAxes(PhysicsViewport view) { _view = view; Width = Height = 108; Margin = new Thickness(8); HorizontalAlignment = HorizontalAlignment.Right; VerticalAlignment = VerticalAlignment.Top; view.CameraChanged += () => { UpdateHover(); InvalidateVisual(); }; }
     private (Axis Axis, Point Point, float Depth)[] Points() => Axes.Select(axis => { var p = Vector3.TransformNormal(axis.Direction, _view.Rotation); return (axis, new Point(54 + p.X * 34, 54 - p.Y * 34), p.Z); }).OrderBy(a => a.Z).ToArray();
     public override void Render(DrawingContext context)
     {
@@ -48,20 +50,31 @@ public sealed class ViewportAxes : Control
         foreach (var (axis, point, _) in Points())
         {
             var brush = new SolidColorBrush(axis.Color); context.DrawLine(new Pen(brush, 2), new Point(54, 54), point);
-            context.DrawEllipse(brush, null, point, 10, 10);
+            var hovered = axis == _hovered;
+            var fill = hovered ? new SolidColorBrush(Color.FromRgb((byte)((axis.Color.R + 255) / 2), (byte)((axis.Color.G + 255) / 2), (byte)((axis.Color.B + 255) / 2))) : brush;
+            context.DrawEllipse(fill, hovered ? new Pen(Brushes.White, 1.5) : null, point, 10, 10);
             var text = new FormattedText(axis.Label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface(FontFamily.Default), 10, Brushes.Black);
             context.DrawText(text, new Point(point.X - text.Width / 2, point.Y - text.Height / 2));
         }
     }
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
-        var point = e.GetPosition(this); var hit = Points().Reverse().FirstOrDefault(a => Distance(a.Point, point) <= 13);
-        if (hit.Axis != null) { _view.SetView(hit.Axis.View); e.Handled = true; }
+        var hit = Hit(e.GetPosition(this));
+        if (hit != null) { _view.SetView(hit.View); e.Handled = true; }
     }
     protected override void OnPointerMoved(PointerEventArgs e)
     {
-        var point = e.GetPosition(this); var hit = Points().Reverse().FirstOrDefault(a => Distance(a.Point, point) <= 13);
-        ToolTip.SetTip(this, hit.Axis == null ? "Axis views" : hit.Axis.View + " view");
+        _pointer = e.GetPosition(this); UpdateHover();
+    }
+    protected override void OnPointerExited(PointerEventArgs e) { base.OnPointerExited(e); _pointer = null; UpdateHover(); }
+    private Axis? Hit(Point point) => Points().Reverse().FirstOrDefault(a => Distance(a.Point, point) <= 13).Axis;
+    private void UpdateHover()
+    {
+        var hit = _pointer is { } point ? Hit(point) : null;
+        if (hit == _hovered) return;
+        _hovered = hit;
+        ToolTip.SetTip(this, hit == null ? "Axis views" : hit.View + " view");
+        InvalidateVisual();
     }
     private static double Distance(Point a, Point b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
 }

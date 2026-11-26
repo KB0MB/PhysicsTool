@@ -8,6 +8,9 @@
     <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Presets/EquipmentNames.en.json" LogicalName="PhysicsTool.EquipmentNames.en.json" WithCulture="false" />
+    <EmbeddedResource Include="Presets/HylianMannequinPose.json" LogicalName="PhysicsTool.HylianMannequinPose.json" />
+    <None Include="Presets/TotkIconCapture.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="Umii/**/*.cs" />
     <Compile Include="../../PhysicsTool/Formats/**/*.cs" Exclude="../../PhysicsTool/Formats/Actors/ToolboxActorTexture.cs" LinkBase="Formats" />
     <Compile Include="../../PhysicsTool/Editor/Viewport/BfresModelPose.cs" Link="Models/BfresModelPose.cs" />

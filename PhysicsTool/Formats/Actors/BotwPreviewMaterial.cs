@@ -20,6 +20,26 @@ public sealed class BotwPreviewMaterial
     public bool Translucent => Options.GetValueOrDefault("gsys_renderstate") != 0;
     public string DisplayFace { get; private set; } = "both";
 
+    internal BotwPreviewMaterial Clone()
+    {
+        var copy = new BotwPreviewMaterial { DisplayFace = DisplayFace, VertexColors = VertexColors };
+        foreach (var p in Options) copy.Options[p.Key] = p.Value;
+        foreach (var p in Parameters) copy.Parameters[p.Key] = (float[])p.Value.Clone();
+        Textures.CopyTo(copy.Textures, 0); Samplers.CopyTo(copy.Samplers, 0); UvSets.CopyTo(copy.UvSets, 0);
+        return copy;
+    }
+
+    internal static float[] TextureMatrix(uint mode, float sx, float sy, float r, float tx, float ty)
+    {
+        float c = MathF.Cos(r), s = MathF.Sin(r);
+        return mode switch
+        {
+            1 => [sx*c, -sy*s, sx*s, sy*c, -sx*c*(tx+.5f)+sx*s*(ty-.5f)+.5f, sy*s*(tx+.5f)+sy*c*(ty-.5f)+.5f, 0, 0],
+            2 => [sx*c, sy*s, -sx*s, sy*c, sx*s-sx*c*tx-sx*s*ty, -sy*c-sy*s*tx+sy*c*ty+1, 0, 0],
+            _ => [sx*c, -sy*s, sx*s, sy*c, -.5f*(sx*c+sx*s-sx)-sx*tx, -.5f*(sy*c-sy*s+sy)+sy*ty+1, 0, 0]
+        };
+    }
+
     internal static void Apply(object source, VisualModelMesh mesh, Dictionary<string, VisualModelTexture> textures,
         IReadOnlyDictionary<(string Material, string Sampler), string>? overrides, List<string>? warnings)
     {
@@ -110,14 +130,7 @@ public sealed class BotwPreviewMaterial
             if (type.Contains("TexSrt", StringComparison.Ordinal) && size >= 24)
             {
                 float sx = Read(4), sy = Read(8), r = Read(12), tx = Read(16), ty = Read(20);
-                float c = MathF.Cos(r), s = MathF.Sin(r);
-                // BFRES texture transforms are authored in Maya, Max or Softimage conventions.
-                values = Word(0) switch
-                {
-                    1 => [sx*c, -sy*s, sx*s, sy*c, -sx*c*(tx+.5f)+sx*s*(ty-.5f)+.5f, sy*s*(tx+.5f)+sy*c*(ty-.5f)+.5f, 0, 0],
-                    2 => [sx*c, sy*s, -sx*s, sy*c, sx*s-sx*c*tx-sx*s*ty, -sy*c-sy*s*tx+sy*c*ty+1, 0, 0],
-                    _ => [sx*c, -sy*s, sx*s, sy*c, -.5f*(sx*c+sx*s-sx)-sx*tx, -.5f*(sy*c-sy*s+sy)+sy*ty+1, 0, 0]
-                };
+                values = TextureMatrix(Word(0), sx, sy, r, tx, ty);
             }
             else if (type.StartsWith("Float", StringComparison.Ordinal)) values = Enumerable.Range(0, size / 4).Select(i => Read(i*4)).ToArray();
             else continue;

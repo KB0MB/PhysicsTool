@@ -16,10 +16,26 @@ internal static class MeshCodecChecks
         BinaryPrimitives.WriteUInt32LittleEndian(package.AsSpan(8), (uint)expected.Length << 5);
         compressed.AsSpan(4).CopyTo(package.AsSpan(12));
         if (!TotkMeshCodec.Decode(package).SequenceEqual(expected)) throw new Exception("MeshCodec helper changed decoded bytes");
+        var roundedData = new byte[63]; "FRES"u8.CopyTo(roundedData);
+        BinaryPrimitives.WriteUInt32LittleEndian(roundedData.AsSpan(28), 63);
+        var roundedFrame = compressor.Wrap(roundedData).ToArray();
+        var rounded = new byte[12 + roundedFrame.Length - 4]; "MCPK"u8.CopyTo(rounded);
+        rounded[4] = rounded[5] = 1;
+        BinaryPrimitives.WriteUInt32LittleEndian(rounded.AsSpan(8), (4u << 5) | 4);
+        roundedFrame.AsSpan(4).CopyTo(rounded.AsSpan(12));
+        var roundedOutput = TotkMeshCodec.Decode(rounded);
+        if (roundedOutput.Length != 64 || !roundedOutput.AsSpan(0,63).SequenceEqual(roundedData) || roundedOutput[63] != 0)
+            throw new Exception("Valid rounded mod package was not preserved");
         var wrongVersion = (byte[])package.Clone(); wrongVersion[5] = 2;
         var wrappedSize = (byte[])package.Clone(); BinaryPrimitives.WriteUInt32LittleEndian(wrappedSize.AsSpan(8), uint.MaxValue);
         var tooLong = (byte[])package.Clone(); BinaryPrimitives.WriteUInt32LittleEndian(tooLong.AsSpan(8), 128u << 5);
         var malformed = new List<byte[]> { new byte[8], wrongVersion, wrappedSize, tooLong };
+        BinaryPrimitives.WriteUInt32LittleEndian(roundedData.AsSpan(28), 62);
+        var incompleteFrame = compressor.Wrap(roundedData).ToArray();
+        var incomplete = new byte[12 + incompleteFrame.Length - 4];
+        rounded.AsSpan(0,12).CopyTo(incomplete);
+        incompleteFrame.AsSpan(4).CopyTo(incomplete.AsSpan(12));
+        malformed.Add(incomplete);
         for (var length = 12; length < package.Length; length++) malformed.Add(package[..length]);
         // The BFRES requests a mesh section, but its trailing FMSH header is absent or invalid.
         var header = new byte[256]; "FRES"u8.CopyTo(header); header[0xee] = 8;

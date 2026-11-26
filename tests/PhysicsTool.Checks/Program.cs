@@ -18,6 +18,148 @@ internal static class Program
     {
         try
         {
+            if(args.Length>=4 && args[0]=="--native-face-study") { NativeFaceChecks.Inspect(args[1],args[2],args[3]); return 0; }
+            if(args.Length>=2 && args[0]=="--raul-hide-study") { IconRaulVisibilityChecks.Inspect(args[1],args.Skip(2).ToArray()); return 0; }
+            if(args.Length>=4 && args[0]=="--head-shadow-study")
+            {
+                IconHeadShadowChecks.Root=args[1]; IconHeadShadowChecks.Output=args[2]; IconHeadShadowChecks.Dump=args[3];
+                AppBuilder.Configure<IconHeadShadowChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconHeadShadowChecks.Result;
+            }
+            if(args.Length>=4 && args[0]=="--zelda-pose-study") { ZeldaPoseChecks.Study(args[1],args[2],args[3]); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-character-materials") { IconZeldaChecks.Inspect(args[1],args[2]); return 0; }
+            if (args.Length >= 5 && args[0] == "--icon-zelda-gpu")
+            {
+                IconZeldaChecks.Root=args[1]; IconZeldaChecks.Output=args[2]; IconZeldaChecks.Dump=args[3]; IconZeldaChecks.Botw=args[4];
+                AppBuilder.Configure<IconZeldaChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconZeldaChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-ear-checks") { IconEarChecks.Inspect(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-texture-checks") { IconTextureChecks.Run(args[1], args[2], args.Contains("--inspect")); return 0; }
+            if (args.Length >= 4 && args[0] == "--icon-capture-export-checks")
+            {
+                IconCaptureExportChecks.Root = args[1]; IconCaptureExportChecks.Actor = args[2]; IconCaptureExportChecks.Output = args[3];
+                AppBuilder.Configure<IconCaptureExportChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconCaptureExportChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--icon-aamp")
+            {
+                string[] names = ["Name","Group","Enable","Color","DiffuseColor","SpecularColor","Intensity","Direction","SkyColor","GroundColor","HemiSkyColor","HemiGroundColor","Latitude","Longitude","Diffuse","Specular","name","group","enable","color","intensity","direction","diffuse_color","specular_color","sky_color","ground_color","upper_color","lower_color","light_color","DirLight","DirectionalLight","HemisphereLight","HemiLight"];
+                var known = names.ToDictionary(BotwAampWriter.Crc32);
+                string Label(uint h) => known.GetValueOrDefault(h) ?? h.ToString("X8");
+                void Dump(AampReadList list, string indent)
+                {
+                    Console.WriteLine(indent + "LIST " + Label(list.Hash));
+                    foreach (var obj in list.Objects)
+                    {
+                        Console.WriteLine(indent + " OBJECT " + Label(obj.Hash));
+                        foreach (var p in obj.Parameters)
+                        {
+                            object value = p.Type switch { 0 => p.AsBoolean(), 1 => p.AsSingle(), 2 => p.AsInt32(), 3 => new Vector2(BitConverter.ToSingle(p.Bytes,0),BitConverter.ToSingle(p.Bytes,4)), 4 => p.AsVector3(), 5 or 6 or 16 => p.AsVector4(), 7 or 8 or 15 or 20 => p.AsString(), _ => Convert.ToHexString(p.Bytes) };
+                            Console.WriteLine(indent + "  " + Label(p.Hash) + " [" + p.Type + "] = " + value);
+                        }
+                    }
+                    foreach (var child in list.Children) Dump(child, indent + " ");
+                }
+                Dump(BotwAampReader.Read(args[1]).Root, ""); return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-env-archive")
+            {
+                var data = File.ReadAllBytes(args[1]);
+                if (args[1].EndsWith(".zs")) data = new TotkResourceCompression().Decode(data, [args[2]]);
+                Console.WriteLine("HEADER " + Convert.ToHexString(data.AsSpan(0, 32)));
+                var archive = BotwSarcArchive.Parse(data);
+                foreach (var entry in archive.Entries)
+                {
+                    Console.WriteLine("ENTRY " + entry.Name);
+                    if (!entry.Name.Contains("capture", StringComparison.OrdinalIgnoreCase)) continue;
+                    var raw = archive.Read(entry).ToArray();
+                    Console.WriteLine("HEADER " + Convert.ToHexString(raw.AsSpan(0, Math.Min(32,raw.Length))));
+                    File.WriteAllBytes(Path.Combine(Path.GetTempPath(), "icon-env-" + Path.GetFileName(entry.Name)), raw);
+                    Console.WriteLine(string.Join("\n", System.Text.RegularExpressions.Regex.Matches(System.Text.Encoding.Latin1.GetString(raw), "[ -~]{5,}").Select(m=>m.Value)));
+                }
+                return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--icon-light-study")
+            {
+                foreach (string path in args.Skip(1))
+                    Console.WriteLine(path + "\n" + BymlLibrary.Byml.FromBinary(File.ReadAllBytes(path)).ToYaml());
+                return 0;
+            }
+            if (args.Length >= 4 && args[0] == "--icon-browser-checks")
+            {
+                IconBrowserChecks.Botw = args[1]; IconBrowserChecks.Totk = args[2]; IconBrowserChecks.Output = args[3];
+                AppBuilder.Configure<IconBrowserChecks>().UsePlatformDetect().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconBrowserChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-preset-checks")
+            {
+                IconPresetChecks.Root = args[1]; IconPresetChecks.Output = args[2];
+                AppBuilder.Configure<IconPresetChecks>().UsePlatformDetect().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconPresetChecks.Result;
+            }
+            if (args.Length >= 4 && args[0] == "--icon-library-audit") { IconLibraryAudit.Run(args[1], args[2], args[3]); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-neck-study") { IconNeckStudy.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 4 && args[0] == "--icon-neck-inset") { IconNeckStudy.Inset(args[1], args[2], float.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture)); return 0; }
+            if (args.Length >= 5 && args[0] == "--icon-character-gpu")
+            {
+                IconCharacterChecks.Root = args[1]; IconCharacterChecks.Output = args[2];
+                IconCharacterChecks.Dump = args[3]; IconCharacterChecks.Botw = args[4];
+                AppBuilder.Configure<IconCharacterChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconCharacterChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-props-gpu")
+            {
+                IconPropsChecks.Root = args[1]; IconPropsChecks.Output = args[2];
+                IconPropsChecks.BotwRoot = args.Length > 3 ? args[3] : args[1];
+                AppBuilder.Configure<IconPropsChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconPropsChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-dyes-gpu")
+            {
+                IconDyeChecks.Root = args[1]; IconDyeChecks.Output = args[2];
+                AppBuilder.Configure<IconDyeChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconDyeChecks.Result;
+            }
+            if (args.Length >= 3 && (args[0] == "--icon-workflow-gpu" || args[0] == "--icon-candidate-gpu" && args.Contains("--recovered")))
+            {
+                IconWorkflowChecks.Root = args[1]; IconWorkflowChecks.Output = args[2];
+                IconWorkflowChecks.BotwRoot = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
+                AppBuilder.Configure<IconWorkflowChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconWorkflowChecks.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-candidate-gpu")
+            {
+                IconCandidateGpuStudy.Root = args[1]; IconCandidateGpuStudy.Output = args[2];
+                AppBuilder.Configure<IconCandidateGpuStudy>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconCandidateGpuStudy.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-lower-study")
+            {
+                IconLowerStudy.Root = args[1]; IconLowerStudy.Output = args[2];
+                IconLowerStudy.Before = args.Length > 3 ? args[3] : null;
+                AppBuilder.Configure<IconLowerStudy>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconLowerStudy.Result;
+            }
+            if (args.Length >= 3 && args[0] == "--icon-native-study") { IconNativeAssetStudy.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-pose-export") { IconPoseRecoveryStudy.Export(args[1], args[2]); return 0; }
+            if (args.Length >= 2 && args[0] == "--icon-belt-inspect") { IconPoseRecoveryStudy.InspectBelt(args[1]); return 0; }
+            if (args.Length >= 4 && args[0] == "--icon-waist-trim") { IconPoseRecoveryStudy.TrimWaist(args[1],args[2],float.Parse(args[3],System.Globalization.CultureInfo.InvariantCulture)); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-reference-study") { IconReferenceStudy.Run(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-presets-export") { IconCaptureLibrary.Extract(args[1], args[2]); return 0; }
+            if (args.Length >= 3 && args[0] == "--icon-tool-gpu")
+            {
+                IconToolChecks.Root = args[1]; IconToolChecks.Output = args[2];
+                AppBuilder.Configure<IconToolChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return IconToolChecks.Result;
+            }
+            if (args.Length >= 2 && args[0] == "--auto-materials") { AutoMaterialChecks.Run(args[1]); return 0; }
+            if (args.Length >= 3 && args[0] == "--auto-materials-gpu")
+            {
+                AutoMaterialGpuChecks.Root = args[1]; AutoMaterialGpuChecks.Output = args[2];
+                AppBuilder.Configure<AutoMaterialGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
+                return AutoMaterialGpuChecks.Result;
+            }
             if (args.Length >= 4 && args[0] == "--helper-poses-gpu")
             {
                 HelperPoseGpuChecks.Physics = args[1]; HelperPoseGpuChecks.Model = args[2]; HelperPoseGpuChecks.Output = args[3];
@@ -191,6 +333,11 @@ internal static class Program
                 AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
                 UiLanguage.Initialize("en"); ShrineSceneChecks.Run(args[1], args[2]); return 0;
             }
+            if (args.Length >= 1 && args[0] == "--viewport-defaults")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                WorkspaceNavigationChecks.Defaults(); return 0;
+            }
             if (args.Length >= 2 && args[0] == "--workspace-navigation")
             {
                 AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
@@ -235,6 +382,13 @@ internal static class Program
                 UiLanguage.Initialize("en");
                 foreach (var path in args.Skip(1)) TimelineScrubbingChecks.Native(path);
                 return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--equipment-state-inspect") { EquipmentStateChecks.Inspect(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--equipment-state-check") { EquipmentStateChecks.Check(args[1]); return 0; }
+            if (args.Length >= 2 && args[0] == "--equipment-playback-ui")
+            {
+                AppBuilder.Configure<App>().UseSkia().WithInterFont().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+                EquipmentStateChecks.Ui(args[1]); return 0;
             }
             if (args.Length >= 2 && args[0] == "--player-weapons-check") { PlayerWeaponChecks.Synthetic(); PlayerWeaponChecks.Native(args[1]); return 0; }
             if (args.Length >= 2 && args[0] == "--player-armor-check") { PlayerArmorChecks.Native(args[1], args.ElementAtOrDefault(2)); return 0; }
@@ -304,6 +458,15 @@ internal static class Program
                     app.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Wgl] });
                 app.StartWithClassicDesktopLifetime([]);
                 return BotwShaderGpuChecks.Result;
+            }
+            if (args.FirstOrDefault() == "--totk-native-gpu")
+            {
+                if (args.Length >= 3) { TotkNativeGpuChecks.Root = args[1]; TotkNativeGpuChecks.Output = args[2]; }
+                var app = AppBuilder.Configure<TotkNativeGpuChecks>().UsePlatformDetect().UsePhysicsToolRendering();
+                if (OperatingSystem.IsWindows() && args.Contains("--desktop-gl"))
+                    app.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Wgl] });
+                app.StartWithClassicDesktopLifetime([]);
+                return TotkNativeGpuChecks.Result;
             }
             if (args.Length >= 2 && args[0] == "--totk-shader-gpu")
             {
@@ -561,6 +724,8 @@ internal static class Program
             Require(window.DonorSession.Path == currentPath, "UI swap not wired"); window.SwapFiles();
             window.ShowEditor(); Dispatcher.UIThread.RunJobs();
             Require(!window.GetVisualDescendants().OfType<Button>().Any(b => Equals(b.Content, "Swap files") && b.IsEffectivelyVisible), "Swap available inside editor");
+            foreach (var toggle in window.GetVisualDescendants().OfType<CheckBox>().Where(c => c.Name is "ViewportParticles" or "ViewportColliders"))
+                toggle.IsChecked = true;
             NavigationChecks.Run(window);
             ShrineSceneChecks.Shortcuts();
             ColliderChecks.Run(output);

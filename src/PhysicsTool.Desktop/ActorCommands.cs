@@ -15,6 +15,7 @@ public sealed partial class MainWindow
     private VisualModelData? _savedEditorModel;
     private bool _savedBoneVisibility, _actorPlaying, _actorSimulating, _updatingTimeline;
     private double _actorFrame, _actorLastTick;
+    private bool _automaticMaterialsFailed;
     private readonly Stopwatch _actorClock = new();
     private readonly PreviewStepClock _actorSteps = new();
     private readonly DispatcherTimer _actorTimer = ViewportFrameRate.CreateTimer();
@@ -45,16 +46,24 @@ public sealed partial class MainWindow
         {
             if (_updatingTimeline) return;
             if (_actorScene == null) { SelectEditorAnimation(_animations.SelectedIndex - 1); return; }
-            _actorPlaying = false; SeekActor(0); UpdateActorPlayback();
+            if (ActorAnimation == null) _actorPlaying = false;
+            SeekActor(0); UpdateActorPlayback();
         };
-        _timeline.ValueChanged += (_, _) => { if (!_updatingTimeline) SeekActor(_timeline.Value); };
+        _timeline.ValueChanged += (_, _) => { if (!_updatingTimeline) RequestTimelineSeek(_timeline.Value); };
         _actorTimer.Tick += (_, _) =>
         {
             try
             {
-            if (_actorScene == null || _timelineScrubbing) return;
+            if (_actorScene == null || _timelineScrubbing || IsToolWorkspaceVisible) { _actorTimer.Stop(); return; }
             var now = _actorClock.Elapsed.TotalSeconds;
-            var count = _actorSteps.Advance(now - _actorLastTick, SimulationOptions.PlaybackSpeed); _actorLastTick = now;
+            var elapsed = now - _actorLastTick;
+            var count = _actorSteps.Advance(elapsed, SimulationOptions.PlaybackSpeed); _actorLastTick = now;
+            if (_actorScene.HasAutomaticMaterials && !_automaticMaterialsFailed)
+            {
+                _actorScene.AdvanceAutomaticMaterials(Math.Clamp(elapsed, 0, .25) * SimulationOptions.PlaybackSpeed);
+                ModelSurface?.RequestNextFrameRendering();
+            }
+            if (!_actorPlaying && !_actorSimulating) return;
             for (int i = 0; i < count; i++)
             {
                 if (_actorPlaying && ActorAnimation is { } animation)
@@ -72,6 +81,7 @@ public sealed partial class MainWindow
             }
             catch (Exception ex)
             {
+                _automaticMaterialsFailed = true;
                 _actorPlaying = _actorSimulating = false; _actorTimer.Stop(); UpdateActions(); UpdateActorPlayback();
                 _status.Text = UserFacingExceptionFormatter.Format(ex);
             }
@@ -110,7 +120,7 @@ public sealed partial class MainWindow
             }
             else { _actorTimer.Stop(); _actorScene.Dispose(); }
             ClearActorAnimations();
-            _actorScene = scene; _actorFrame = 0; _actorPlaying = _actorSimulating = false;
+            _actorScene = scene; _actorFrame = 0; _actorPlaying = _actorSimulating = _automaticMaterialsFailed = false;
             _updatingTimeline = true;
             _animations.ItemsSource = new[] { "Rest pose" }.Concat(scene.Animations.Select(a => a.Name)).ToArray();
             _animations.SelectedIndex = 0; _updatingTimeline = false;
@@ -154,7 +164,9 @@ public sealed partial class MainWindow
         if (_actorScene == null) return;
         _actorScene.WindEnabled = _wind.IsChecked == true; _actorScene.WindSpeed = SimulationOptions.WindSpeed;
         _actorScene.ConfigureSimulation(SimulationOptions.ApplyTo);
-        _viewport.SetModelPose(_actorScene.Update(ActorAnimation, _actorFrame, _actorSimulating, seconds, reset));
+        bool deferPhysics = _timelineScrubbing && !_viewport.ShowParticles && !_viewport.ShowColliders && !_viewport.ShowBones;
+        _timelinePhysicsDeferred |= deferPhysics;
+        _viewport.SetModelPose(_actorScene.Update(ActorAnimation, _actorFrame, _actorSimulating, seconds, reset, deferPhysics: deferPhysics));
         _viewport.Data = _actorScene.Overlay;
         _updatingTimeline = true;
         _timeline.Maximum = Math.Max(1, ActorAnimation?.FrameCount ?? 1); _timeline.Value = _actorFrame;
@@ -174,9 +186,10 @@ public sealed partial class MainWindow
         if (_actorPlay.Content is not Lucide.Avalonia.LucideIcon icon || icon.Kind != kind)
             _actorPlay.Content = new Lucide.Avalonia.LucideIcon { Kind = kind, Size = 18 };
         _actorPlay.IsEnabled = ActorAnimation != null; _timeline.IsEnabled = ActorAnimation != null;
-        if (_timelineScrubbing) { _actorTimer.Stop(); return; }
-        if ((_actorPlaying || _actorSimulating) && !_actorTimer.IsEnabled)
+        if (_timelineScrubbing || IsToolWorkspaceVisible) { _actorTimer.Stop(); return; }
+        bool running = _actorPlaying || _actorSimulating || _actorScene?.HasAutomaticMaterials == true && !_automaticMaterialsFailed;
+        if (running && !_actorTimer.IsEnabled)
         { _actorSteps.Reset(); _actorClock.Restart(); _actorLastTick = 0; _actorTimer.Start(); }
-        else if (!_actorPlaying && !_actorSimulating) _actorTimer.Stop();
+        else if (!running) _actorTimer.Stop();
     }
 }

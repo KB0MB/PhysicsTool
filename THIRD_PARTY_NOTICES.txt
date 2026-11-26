@@ -188,6 +188,11 @@ Licenses/MeshCodec-source.zip. Build instructions are in that archive's README.
 
 TotK material and texture preview
 --------------------------------
+The reverse-engineered TotK GLSL material shaders were supplied by Killz.
+The original source is preserved under Rendering/Shaders/TotkNative; see
+Licenses/Killz-TotK-Shaders.txt and docs/totk-shaders.md for attribution and
+integration details. Thank you to Killz for the BotW and TotK shader work.
+
 TOTK.frag and TexToGo/material handling are adapted from Switch Toolbox.
 The managed ASTC decoder is copied from its ASTC directory, retaining the
 Ryujinx namespace and FasTC source reference. Source attribution and Toolbox's

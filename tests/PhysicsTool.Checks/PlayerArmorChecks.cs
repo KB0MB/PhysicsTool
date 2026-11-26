@@ -14,15 +14,21 @@ internal static class PlayerArmorChecks
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }
     public static void Ui(string path, string output)
     {
+        PlayerWeaponChecks.Synthetic();
         Directory.CreateDirectory(output);
-        var catalog = new PlayerArmorCatalog(new(path));
-        Require(catalog.Entries.Any(e => e.Name == "Armor_1151_Head") && catalog.RightHandPath != null, "Default head alternative or arm actor missing");
-        var equipped = Enum.GetValues<PlayerArmorSlot>().ToDictionary(s => s, PlayerArmorCatalog.DefaultName);
+        var resources = new BotwActorResources(path, actorEntry: Path.GetFileName(path) == "TitleBG.pack" ? "Actor/Pack/GameROMPlayer.sbactorpack" : null);
+        var catalog = new PlayerArmorCatalog(resources);
+        Require(catalog.Entries.Select(e => e.ModelKey).Where(k => k.Length > 0).Distinct().Count() == catalog.Entries.Count(e => e.ModelKey.Length > 0), "Duplicate model variants remain");
+        Require(catalog.Find(PlayerArmorSlot.Upper, "Armor_002_Upper").Name == "Armor_002_Upper", "Upgrade actor alias cannot be loaded");
+        Require(catalog.VisibleEntry(PlayerArmorSlot.Upper, "Armor_002_Upper")?.Name == "Armor_001_Upper", "Upgrade not mapped to its base model");
+        Console.WriteLine($"DEDUP: {catalog.Entries.Count} distinct armor entries");
+        if (resources.IsTotk) Require(catalog.Entries.Any(e => e.Name == "Armor_1151_Head") && catalog.RightHandPath != null, "Default head alternative or arm actor missing");
+        var equipped = Enum.GetValues<PlayerArmorSlot>().ToDictionary(s => s, catalog.DefaultActorName);
         foreach (var language in new[] { "en", "fr", "es", "ja" })
         {
             UiLanguage.Initialize(language);
             var calls = new List<Dictionary<PlayerArmorSlot, string>>();
-            var weapons = new PlayerWeaponCatalog(new(path));
+            var weapons = new PlayerWeaponCatalog(resources);
             var weaponCalls = new List<Dictionary<PlayerWeaponKind, PlayerWeaponSelection>>();
             var window = new PlayerArmorWindow(catalog, equipped, (choice, _) => { calls.Add(new(choice)); return Task.CompletedTask; }, weapons, null,
                 (choice, gear, _) => { calls.Add(new(choice)); weaponCalls.Add(new(gear)); return Task.CompletedTask; });
@@ -33,16 +39,20 @@ internal static class PlayerArmorChecks
             Require(!accept.IsEnabled, "Unchanged armor can be applied");
             var upper = selectors.Single(s => s.Name == "PlayerArmorUpper");
             upper.Focus();
-            upper.RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = "116" });
+            upper.RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = catalog.Find(PlayerArmorSlot.Upper, "Armor_001_Upper").DisplayName });
             Dispatcher.UIThread.RunJobs();
-            Require(upper.SelectedItem is PlayerArmorEntry typed && typed.Name == "Armor_116_Upper", "Typing the armor number does not jump to it");
+            Require(upper.SelectedItem is PlayerArmorEntry typed && typed.Name == "Armor_001_Upper", "Typing the armor name does not jump to it");
             Require(upper.Items.Cast<PlayerArmorEntry>().All(e => e.Slot == PlayerArmorSlot.Upper), "Wrong armor in upper slot");
-            var numbers = upper.Items.Cast<PlayerArmorEntry>().Select(e => PlayerArmorCatalog.SortNumber(e.Name)).ToArray();
-            Require(numbers.SequenceEqual(numbers.Order()), "Armor dropdown reverted to alphabetical ordering");
+            foreach (var selector in selectors)
+            {
+                var names = selector.Items.Cast<PlayerArmorEntry>().Select(e => e.DisplayName).ToArray();
+                Require(names.SequenceEqual(names.Order(StringComparer.OrdinalIgnoreCase)), "Armor dropdown is not alphabetical");
+                Require(names.Distinct(StringComparer.OrdinalIgnoreCase).Count() == names.Length, "Armor variants have ambiguous labels");
+            }
             upper.SelectedItem = catalog.Find(PlayerArmorSlot.Upper, "Armor_001_Upper");
             Require(accept.IsEnabled, "Changed armor cannot be applied");
             accept.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
-            Require(calls.Count == 1 && calls[0][PlayerArmorSlot.Head] == "Armor_999_Head" && calls[0][PlayerArmorSlot.Upper] == "Armor_001_Upper" && !accept.IsEnabled, "Armor picker changed unselected slots or failed to apply");
+            Require(calls.Count == 1 && calls[0][PlayerArmorSlot.Head] == equipped[PlayerArmorSlot.Head] && calls[0][PlayerArmorSlot.Upper] == "Armor_001_Upper" && !accept.IsEnabled, "Armor picker changed unselected slots or failed to apply");
             using (var image = window.CaptureRenderedFrame()!) image.Save(Path.Combine(output, "armor-" + language + ".png"));
             var defaults = window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, UiLanguage.Text("Defaults")));
             defaults.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
@@ -54,10 +64,33 @@ internal static class PlayerArmorChecks
             ComboBox Actor(PlayerWeaponKind kind) => combos["PlayerWeapon" + kind];
             ComboBox State(PlayerWeaponKind kind) => combos["PlayerWeaponState" + kind];
             Require(panel.Selection.Count == 0 && Enum.GetValues<PlayerWeaponKind>().All(k => !State(k).IsEnabled && State(k).SelectedIndex == 0), "Weapons not empty/unequipped by default");
+            Require(combos.ContainsKey("PlayerArrowType") == !resources.IsTotk, "Arrow selector game filter wrong");
+            if (!resources.IsTotk) Require(!combos["PlayerArrowType"].IsEnabled && combos["PlayerArrowType"].Items.Count == 6, "Arrow types missing or enabled without bow");
+            foreach (var kind in Enum.GetValues<PlayerWeaponKind>())
+            {
+                var names = Actor(kind).Items.OfType<PlayerWeaponEntry>().Select(e => e.DisplayName).ToArray();
+                Require(names.SequenceEqual(names.Order(StringComparer.OrdinalIgnoreCase)), "Weapon dropdown is not alphabetical");
+                Require(Actor(kind).IsTextSearchEnabled, "Weapon keyboard jumping is disabled");
+            }
+            Actor(PlayerWeaponKind.Shield).Focus(); Dispatcher.UIThread.RunJobs();
+            Actor(PlayerWeaponKind.Shield).RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = "Hylian Shield" });
+            Require(Actor(PlayerWeaponKind.Shield).SelectedItem is PlayerWeaponEntry { Name: "Weapon_Shield_030" }, "Shield name jumping failed: " + Actor(PlayerWeaponKind.Shield).SelectedItem + "; expected " + weapons.Find(PlayerWeaponKind.Shield, "Weapon_Shield_030").DisplayName);
+            Actor(PlayerWeaponKind.Shield).SelectedIndex = 0;
+            Actor(PlayerWeaponKind.Sword).Focus(); Dispatcher.UIThread.RunJobs();
+            Actor(PlayerWeaponKind.Sword).RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = "Master Sword" });
+            Require(Actor(PlayerWeaponKind.Sword).SelectedItem is PlayerWeaponEntry { Name: "Weapon_Sword_070" }, "Sword name jumping failed");
             Actor(PlayerWeaponKind.Sword).SelectedItem = weapons.Find(PlayerWeaponKind.Sword, "Weapon_Sword_070");
             State(PlayerWeaponKind.Sword).SelectedIndex = 1;
             Actor(PlayerWeaponKind.Bow).SelectedItem = weapons.Find(PlayerWeaponKind.Bow, "Weapon_Bow_001");
             State(PlayerWeaponKind.Bow).SelectedIndex = 1;
+            if (!resources.IsTotk)
+            {
+                var arrows = combos["PlayerArrowType"];
+                Require(arrows.IsEnabled && arrows.IsTextSearchEnabled, "Arrow selector cannot be used");
+                arrows.Focus();
+                arrows.RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = "Shock Arrow" });
+                Require(panel.Selection[PlayerWeaponKind.Bow].Arrow == "ElectricArrow", "Arrow name jumping did not select shock arrows");
+            }
             Require(State(PlayerWeaponKind.Sword).SelectedIndex == 0 && panel.Selection[PlayerWeaponKind.Bow].Equipped, "Bow did not free both hands");
             Actor(PlayerWeaponKind.LSword).SelectedItem = weapons.Find(PlayerWeaponKind.LSword, "Weapon_LSword_001");
             Require(!panel.Selection.ContainsKey(PlayerWeaponKind.Sword), "Melee types stack in same slot");

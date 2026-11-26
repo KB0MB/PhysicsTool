@@ -60,6 +60,22 @@ internal static class BotwShaderSource
         }
         source = Regex.Replace(source, @"^\s*#version[^\r\n]*", "", RegexOptions.Multiline);
         source = Regex.Replace(source, @"layout\s*\([^)]*\)\s*", "");
+        // These scene samplers all use constant fallback textures in this viewer.
+        // Share identical fallbacks at compile time as well as at binding time;
+        // otherwise emissive variants can exceed a 16-sampler fragment limit.
+        var fallbacks = new Dictionary<string, (string Type, string Name)>();
+        source = Regex.Replace(source, @"uniform\s+(sampler\w+)\s+(\w+)\s*;", match =>
+        {
+            string type = match.Groups[1].Value, sampler = match.Groups[2].Value;
+            if (Regex.IsMatch(sampler, @"^cTexture[0-5]$") || sampler == "cGSys07_DepthShadowCascade") return match.Value;
+            string color = sampler.Contains("LightAnalyzed", StringComparison.Ordinal) ? "LightAnalyzed" :
+                sampler.Contains("Shadow", StringComparison.Ordinal) || sampler.Contains("Occlusion", StringComparison.Ordinal) ? "Shadow" : "Black";
+            fallbacks[sampler] = (type, "ptGlobal" + color + "_" + type);
+            return "";
+        });
+        foreach (var (sampler, fallback) in fallbacks)
+            source = Regex.Replace(source, @"\b" + Regex.Escape(sampler) + @"\b", fallback.Name);
+        source = string.Join("\n", fallbacks.Values.Distinct().Select(f => $"uniform {f.Type} {f.Name};")) + "\n" + source;
         source = Regex.Replace(source, @"uniform\s+(\w+)([^\{;]*)\{(.*?)\}\s*(\w+)\s*;",
             m => $"struct {m.Groups[1]} {{{m.Groups[3]}}}; uniform {m.Groups[1]} {m.Groups[4]};", RegexOptions.Singleline);
         if (name.EndsWith(".frag", StringComparison.Ordinal))
@@ -67,7 +83,7 @@ internal static class BotwShaderSource
             source = Regex.Replace(source, @"\bvoid\s+main\s*\(", "void BotwMain(");
             // The game applies coverage in its z/gbuffer pass. This forward viewport
             // needs that same alpha test in both its depth and color draws.
-            source += "\nvoid main() { BotwMain(); AlphaTest(GetSourceChannel(uking_transparency_color,uking_transparency_channel).w); vec3 c=max(oColor.rgb,vec3(0)); oColor.rgb=mix(12.92*c,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c)); }\n";
+            source += "\nuniform float ptBrightness;\nvoid main() { BotwMain(); AlphaTest(GetSourceChannel(uking_transparency_color,uking_transparency_channel).w); vec3 c=max(oColor.rgb,vec3(0))*ptBrightness; oColor.rgb=mix(12.92*c,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c)); }\n";
         }
         return (es ? "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2DArray;\nprecision highp sampler2DArrayShadow;\nprecision highp sampler3D;\n" : "#version 150\n#extension GL_ARB_shader_bit_encoding : require\n")
             + "#define fma(a,b,c) ((a)*(b)+(c))\n" + defines + source;

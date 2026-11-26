@@ -1,0 +1,13 @@
+TotK material shaders
+Author: Killz
+
+The GLSL supplied by Killz in TOTK.zip is preserved in
+src/PhysicsTool.Desktop/Rendering/Shaders/TotkNative.
+PhysicsTool provides the desktop shader adapter, material bindings and preview
+lighting. Killz's original shader sources are not authored by PhysicsTool.
+
+These sources were supplied for integration into PhysicsTool. No separate
+license text accompanied the archive; this notice does not assign an additional
+license to Killz's files.
+
+Thank you to Killz for reverse-engineering and sharing the TotK shaders.

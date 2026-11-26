@@ -118,8 +118,14 @@ bool DecompressMC(void* dst, size_t dstSize, const void* src, size_t srcSize, vo
     const size_t decodedBytes = decompressedSize - remainingOutput;
     if (decodedBytes < sizeof(BinaryFileHeader) || std::memcmp(dst, "FRES", 4) != 0)
         return false;
-    if (decodedBytes <= 0xee || !HasFMSHSection(dst))
-        return decodedBytes == decompressedSize;
+    if (decodedBytes <= 0xee || !HasFMSHSection(dst)) {
+        if (decodedBytes == decompressedSize) return true;
+        // Repacked models can round the package allocation up to its size quantum.
+        // Accept only a complete BFRES and less than one quantum of unused space.
+        const auto file = reinterpret_cast<const BinaryFileHeader*>(dst);
+        const size_t quantum = size_t(1) << (header->flags & 15);
+        return file->fileSize == decodedBytes && decompressedSize - decodedBytes < quantum;
+    }
 
     auto fileHeader = reinterpret_cast<const BinaryFileHeader*>(dst);
 

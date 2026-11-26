@@ -1,5 +1,6 @@
 using BymlLibrary;
 using System.Buffers.Binary;
+using System.Numerics;
 
 namespace HKCLTool;
 
@@ -69,6 +70,8 @@ internal sealed partial class BotwActorResources
     {
         var actor = TotkParameters($"Actor/{ActorName}.engine__actor__ActorParam.bgyml");
         var components = actor["Components"].GetMap();
+        if (components.TryGetValue("ArmorRef", out var armorRef) && !string.IsNullOrWhiteSpace(armorRef.GetString()))
+            ArmorEarRotationDegrees = ReadTotkEarRotation(TotkParameters(armorRef.GetString()), Warnings);
         if (!components.TryGetValue("ModelInfoRef", out var modelRef)) throw new InvalidDataException("This TotK actor has no model reference.");
         var model = TotkParameters(modelRef.GetString());
         var project = model["ModelProjectName"].GetString();
@@ -100,6 +103,25 @@ internal sealed partial class BotwActorResources
         if (!physics.TryGetValue("ControllerSetPath", out var controllerPath) || string.IsNullOrWhiteSpace(controllerPath.GetString())) return;
         var controller = TotkParameters(controllerPath.GetString());
         PhysicsFiles.AddRange(ResolveTotkPhysicsFiles(controller, TotkParametersForReference));
+    }
+
+    internal static Vector3 ReadTotkEarRotation(IReadOnlyDictionary<string, Byml> armor, List<string> warnings)
+    {
+        if (!armor.TryGetValue("HeadEarBoneOffset", out var offset)) return Vector3.Zero;
+        if (offset.Type == BymlNodeType.Map)
+        {
+            var map = offset.GetMap();
+            float Axis(string key) => !map.TryGetValue(key, out var value) ? 0 : value.Type switch
+            {
+                BymlNodeType.Float => value.GetFloat(),
+                BymlNodeType.Int => value.GetInt(),
+                _ => float.NaN
+            };
+            var degrees = new Vector3(Axis("X"), Axis("Y"), Axis("Z"));
+            if (float.IsFinite(degrees.X) && float.IsFinite(degrees.Y) && float.IsFinite(degrees.Z)) return degrees;
+        }
+        warnings.Add("Ignored invalid ArmorParam.HeadEarBoneOffset.");
+        return Vector3.Zero;
     }
 
     private Dictionary<string, Byml> TotkParametersForReference(string path) => TotkParameters(path);

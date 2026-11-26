@@ -29,6 +29,17 @@ public sealed partial class MainWindow
         try
         {
             var progress = new Progress<string>(message => { if (request == _modelRequest) _status.Text = message; });
+            var sameArmor = armor.Count == old.EquippedArmor.Count && armor.All(p =>
+                old.EquippedArmor.TryGetValue(p.Key, out var current) &&
+                old.ArmorCatalog.VisibleEntry(p.Key, current)?.Name == old.ArmorCatalog.VisibleEntry(p.Key, p.Value)?.Name);
+            if (sameArmor)
+            {
+                await Task.Run(() => old.ChangeWeapons(weapons, progress, cancellation), cancellation);
+                _viewport.HiddenMeshes.Clear(); _viewport.Selected.Clear();
+                PoseActor(false, 0); UpdateActions();
+                _status.Text = "Equipment updated. " + string.Join(" / ", old.Weapons.Values.Select(w => w.Name));
+                return;
+            }
             replacement = await Task.Run(() => BotwActorScene.Load(old.Resources.SourcePath, old.Resources.Roots,
                 progress, cancellation, old.Resources.SourceEntry, armor, weapons), cancellation);
             cancellation.ThrowIfCancellationRequested();

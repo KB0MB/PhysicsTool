@@ -52,7 +52,7 @@ internal sealed class BotwShaderGpuChecks : Application
                 model.Meshes.Add(mesh);
                 byte[] Sample(bool emission = false)
                 {
-                    renderer.Draw(model, new HashSet<int>(), Matrix4x4.Identity, Vector3.UnitZ, 32, 32, background: Vector3.Zero, emission: emission);
+                    renderer.Draw(model, new HashSet<int>(), Matrix4x4.Identity, Vector3.UnitZ, 32, 32, background: Vector3.Zero, emission: emission, brightness: 1);
                     var pixel = new byte[4]; fixed(byte* p = pixel) gl.ReadPixels(8,8,1,1,PixelFormat.Rgba,PixelType.UnsignedByte,p);
                     var error = gl.GetError(); if (error != GLEnum.NoError) throw new Exception("BotW GPU error: " + error);
                     return pixel;
@@ -125,6 +125,7 @@ internal sealed class BotwShaderGpuChecks : Application
                 if (linearPixel[0] < srgbPixel[0] + 30)
                     throw new Exception("Linear data texture was incorrectly sRGB-decoded.");
                 Console.WriteLine($"PASS: sRGB midgray matches linear reference ({string.Join(',', srgbPixel)}); linear data remains unchanged ({string.Join(',', linearPixel)}).");
+                CaptureEdgeChecks.Run(gl, context.Version?.Contains("OpenGL ES") == true);
                 Dispatcher.UIThread.Post(() => Finished?.Invoke(null));
             }
             catch (Exception e) { Dispatcher.UIThread.Post(() => Finished?.Invoke(e.ToString())); }

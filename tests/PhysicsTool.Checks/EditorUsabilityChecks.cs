@@ -30,7 +30,11 @@ internal static class EditorUsabilityChecks
         Require(window.IsEditorVisible, "Two clicks on an unselected cloth did not open the editor");
         window.Session.Undo(); window.Refresh();
         window.Width = 1440; window.Height = 900; Dispatcher.UIThread.RunJobs();
-        var view = window.Viewport; view.SetView(CameraView.Front, false); view.Fit();
+        var view = window.Viewport;
+        foreach (var toggle in window.GetVisualDescendants().OfType<CheckBox>().Where(c => c.Name is "ViewportParticles" or "ViewportColliders"))
+            toggle.IsChecked = true;
+        Require(view.ShowParticles && view.ShowColliders, "Editing overlays were not enabled for selection checks");
+        view.SetView(CameraView.Front, false); view.Fit();
         view.SelectRectangle(new Rect(0, 0, view.Bounds.Width, view.Bounds.Height), SelectionOperation.Replace);
         var before = window.Session.Document.CaptureState();
         var origin = view.TranslatePoint(default, window)!.Value;

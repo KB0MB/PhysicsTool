@@ -4,7 +4,7 @@ A tool for editing and previewing cloth, helper-bone, ragdoll and collision data
 
 Available for Windows, Linux and macOS with an Avalonia interface.
 
-Download **2.2.1** from [Releases](https://github.com/KB0MB/PhysicsTool/releases/tag/PT2.2.1). Extract the whole ZIP before running the app; the .NET runtime is included. See the [release notes](docs/RELEASE_2.2.1.md) for platform requirements and known limitations.
+Download **2.2.2** from [Releases](https://github.com/KB0MB/PhysicsTool/releases/tag/PT2.2.2). Extract the whole ZIP before running the app; the .NET runtime is included. See the [release notes](docs/RELEASE_2.2.2.md) and [platform requirements](docs/RELEASING.md#platform-checks).
 
 ## Features
 
@@ -12,8 +12,9 @@ Download **2.2.1** from [Releases](https://github.com/KB0MB/PhysicsTool/releases
 - Pose-based BotW support-bone and TotK helper-bone editing, with live previews, captured poses and advanced response curves. BPHYSSB/BPHHB conversion remains available.
 - HKRG ragdoll editing and collision generation, including TotK polytopes.
 - BotW/TotK actor viewing with BFRES models, textures, animations, physics export and equipment previews for Link in both games.
+- Icon Tool for BotW, TotK and PNG exports, with item presets, armor dyes and batch export, mesh controls, custom mannequins and BFSKA pose import.
 - Experimental OoT actor viewing, animation playback, all-cloth simulation and helper-bone editing.
-- BotW rendering using Killz's reverse-engineered shaders, including native material parameters, UV selection and texture color-space handling.
+- BotW and TotK rendering using Killz's reverse-engineered material shaders, including material parameters, UV selection and texture color-space handling. TotK variants not covered by the supplied shaders retain the compatibility renderer.
 - BPHYSICS editing and mass-aware wind settings for converted cloths.
 - Map Editing for TotK shrines and MainField scenes, including terrain, water, caves, wells and actor links. Add Static/Dynamic actors or edit placements with undo/redo; existing GroundControl and supported collision editing remain available.
 - English, French, Spanish and Japanese interfaces, with translated in-app documentation.
@@ -48,6 +49,7 @@ Build, test and native-dependency details are in the [build guide](docs/RELEASIN
 - [banan039 / totkbits](https://github.com/banan039/totkbits) for foundational BPHCL reverse-engineering work.
 - [Switch Toolbox](https://github.com/KillzXGaming/Switch-Toolbox), KillzXGaming, Syroot and its contributors for model, texture and material support.
 - **Killz** for reverse-engineering and sharing the BotW shaders, and approving their inclusion in the repository and release ZIPs. See the [shader credit and provenance](Licenses/Killz-BotW-Shaders.txt).
+- **Killz** for the TotK GLSL material shaders. See the [shader credit](Licenses/Killz-TotK-Shaders.txt) and [integration notes](docs/totk-shaders.md).
 - [Max Bebok (HailToDodongo) / Ice-Hail](https://gitlab.com/ice-hail/ice-hail) for the collision-generation foundation.
 - [HKX2](https://github.com/krenyy/HKX2) and [Json.NET](https://www.newtonsoft.com/json) for supporting libraries.
 

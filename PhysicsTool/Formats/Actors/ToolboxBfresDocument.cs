@@ -91,13 +91,14 @@ internal sealed class ToolboxBfresDocument
 internal sealed class ToolboxActorModel
 {
     private sealed record Bone(string Name, int Parent, Vector3 Position, Vector4 Rotation, Vector3 Scale, bool Euler, bool SegmentScale, bool Rigid);
-    private sealed record Mesh(VisualModelMesh Visual, Vector3[] Positions, Vector3[] Normals, int[][] Bones, float[][] Weights);
+    private sealed record Mesh(VisualModelMesh Visual, Vector3[] Positions, Vector3[] Normals, int[][] Bones, float[][] Weights, int SkinCount);
     private readonly Bone[] _bones;
     private readonly Matrix4x4[] _restWorld;
     private readonly Matrix4x4[] _inverseRest;
     private readonly List<Mesh> _meshes = new();
     public string Name { get; }
     public VisualModelData RestPose { get; }
+    internal ToolboxAutoMaterialAnimation AutoMaterials { get; }
 
     public ToolboxActorModel(ToolboxBfresDocument document, string name, Dictionary<string, VisualModelTexture> textures,
         IReadOnlyDictionary<(string Material, string Sampler), string>? textureOverrides = null, List<string>? warnings = null,
@@ -106,6 +107,7 @@ internal sealed class ToolboxActorModel
         dynamic model = document.Models.FirstOrDefault(m => (string)m.Name == name)
             ?? throw new InvalidDataException($"BFRES does not contain the referenced model '{name}'. Available: {string.Join(", ", document.Models.Select(m => (string)m.Name))}");
         Name = name;
+        AutoMaterials = new(document, name, warnings);
         var boneObjects = ToolboxBfresDocument.Items((object)model.Skeleton.Bones);
         _bones = boneObjects.Select(b => new Bone((string)b.Name, (int)b.ParentIndex, V3(b.Position), V4(b.Rotation), V3(b.Scale),
             b.FlagsRotation.ToString().Contains("Euler"), b.FlagsTransform.ToString().Contains("SegmentScaleCompensate"), (int)b.RigidMatrixIndex >= 0)).ToArray();
@@ -177,8 +179,9 @@ internal sealed class ToolboxActorModel
             ToolboxBotwMaterial.Apply((object)material, visual, visual.Material.Botw == null ? warnings : null);
             if (visual.Material.Botw is { } botw)
                 botw.VertexColors = Enumerable.Range(0, count).Select(v => Attribute("_c0", v, Vector4.One)).ToArray();
-            ToolboxTotkMaterial.Apply((object)material, visual, textures);
+            ToolboxTotkMaterial.Apply((object)material, visual, textures, textureOverrides);
             ToolboxOotMaterial.Apply((object)material, visual, textures);
+            AutoMaterials.Bind((string)material.Name, visual);
             if (visual.Material.Totk is { } totk)
                 totk.VertexColors = Enumerable.Range(0, count).Select(v => Attribute("_c0", v, Vector4.One)).ToArray();
             if (attributes.ContainsKey("_t0"))
@@ -198,9 +201,32 @@ internal sealed class ToolboxActorModel
                     visual.Tangents[v] = new(t, Vector3.Dot(Vector3.Cross(normals[v], t), b) < 0 ? -1 : 1);
                 }
             }
-            _meshes.Add(new(visual, sourcePositions, normals, indices, weights));
+            _meshes.Add(new(visual, sourcePositions, normals, indices, weights, skinCount));
         }
+        AutoMaterials.Sample(0);
         RestPose = Pose(null, 0);
+    }
+
+    internal void OverrideMaterial(string name, VisualModelMesh appearance)
+    {
+        foreach (var mesh in _meshes.Select(m=>m.Visual).Concat(RestPose.Meshes).Where(m=>m.Name.EndsWith("__"+name,StringComparison.Ordinal)))
+        {
+            var colors = mesh.Material.Totk?.VertexColors ?? mesh.Material.Botw?.VertexColors ?? [];
+            mesh.Texture=appearance.Texture; mesh.SpecularTexture=appearance.SpecularTexture;
+            mesh.NormalTexture=appearance.NormalTexture; mesh.AmbientOcclusionTexture=appearance.AmbientOcclusionTexture;
+            mesh.AuxiliaryTexture=appearance.AuxiliaryTexture; mesh.EyeGlintTexture=appearance.EyeGlintTexture;
+            mesh.Material=appearance.Material.Clone();
+            if (appearance.Material.Totk is {} native)
+            {
+                mesh.Material.Totk = native.Clone();
+                mesh.Material.Totk.VertexColors = colors;
+            }
+            if (appearance.Material.Botw is {} botw)
+            {
+                mesh.Material.Botw = botw.Clone();
+                mesh.Material.Botw.VertexColors = colors;
+            }
+        }
     }
 
     private static VisualModelMesh MakeMaterial(string shape, dynamic material, Dictionary<string, VisualModelTexture> textures, float[] vertices, uint[] indices,
@@ -258,6 +284,7 @@ internal sealed class ToolboxActorModel
         {
             var vertices = (float[])mesh.Visual.Vertices.Clone();
             var tangents = new Vector4[mesh.Visual.Tangents.Length];
+            var shadowOffsets = ToolboxShadowGeometry.Offsets(mesh.Visual);
             for (var v = 0; v < mesh.Positions.Length; v++)
             {
                 var p = Vector3.Zero; var n = Vector3.Zero; var t = Vector3.Zero; var b = Vector3.Zero;
@@ -270,6 +297,13 @@ internal sealed class ToolboxActorModel
                     if (weight != 0) blended += delta[mesh.Bones[v][j]] * weight;
                 }
                 p = Vector3.Transform(mesh.Positions[v], blended); n = Vector3.TransformNormal(mesh.Normals[v], blended);
+                if (shadowOffsets.Length > v)
+                {
+                    var offset = shadowOffsets[v];
+                    if (mesh.SkinCount == 0 || mesh.SkinCount == 1 && _bones[mesh.Bones[v][0]].Rigid)
+                        offset = Vector3.TransformNormal(offset, _restWorld[mesh.Bones[v][0]]);
+                    shadowOffsets[v] = Vector3.TransformNormal(offset, blended);
+                }
                 if (tangents.Length > v) { t = Vector3.TransformNormal(restT, blended); b = Vector3.TransformNormal(restB, blended); }
                 n = SafeNormal(n);
                 if (tangents.Length > v) { t = SafeNormal(t - n * Vector3.Dot(n, t)); tangents[v] = new(t, Vector3.Dot(Vector3.Cross(n, t), b) < 0 ? -1 : 1); }
@@ -279,7 +313,7 @@ internal sealed class ToolboxActorModel
             }
             var src = mesh.Visual;
             pose.Meshes.Add(new() { Name = src.Name, Vertices = vertices, Indices = src.Indices, BaseColor = src.BaseColor, CullingMode = src.CullingMode,
-                Tangents = tangents, TangentUvSet = src.TangentUvSet,
+                Tangents = tangents, TangentUvSet = src.TangentUvSet, ShadowOffsets = shadowOffsets,
                 UseMissingTextureFallback = src.UseMissingTextureFallback,
                 Texture = src.Texture, SpecularTexture = src.SpecularTexture, NormalTexture = src.NormalTexture, AmbientOcclusionTexture = src.AmbientOcclusionTexture,
                 EyeGlintTexture = src.EyeGlintTexture, UvSets = src.UvSets, Material = src.Material });

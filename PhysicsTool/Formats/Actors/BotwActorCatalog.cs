@@ -144,7 +144,7 @@ internal sealed class BotwActorCatalog
             result.Add(new(path.EndsWith(".pack.zs", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileName(path)[..^8] : System.IO.Path.GetFileNameWithoutExtension(entry ?? path), path, entry, root, pack.LittleEndian, cloth, support));
     }
 
-    private static IReadOnlyList<string> FindResourceRoots(IEnumerable<string> folders, List<string> warnings, CancellationToken cancellation)
+    internal static IReadOnlyList<string> FindResourceRoots(IEnumerable<string> folders, List<string> warnings, CancellationToken cancellation)
     {
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

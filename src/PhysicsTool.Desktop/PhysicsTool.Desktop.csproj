@@ -6,10 +6,10 @@
     <RootNamespace>PhysicsTool.Desktop</RootNamespace>
     <Product>PhysicsTool</Product>
     <Title>PhysicsTool</Title>
-    <Version>2.2.1</Version>
+    <Version>2.2.2</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
-    <AssemblyVersion>2.2.1.0</AssemblyVersion>
-    <FileVersion>2.2.1.0</FileVersion>
+    <AssemblyVersion>2.2.2.0</AssemblyVersion>
+    <FileVersion>2.2.2.0</FileVersion>
     <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
     <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -27,6 +27,7 @@
     <PackageReference Include="Lucide.Avalonia" Version="0.2.20" />
     <EmbeddedResource Include="Rendering/Shaders/*" />
     <EmbeddedResource Include="Rendering/Shaders/BotwNative/*" />
+    <EmbeddedResource Include="Rendering/Shaders/TotkNative/*" />
     <EmbeddedResource Include="../../PhysicsTool/Languages/*.json" Link="Languages/%(Filename)%(Extension)" />
     <EmbeddedResource Include="Languages/*.json" WithCulture="false" />
     <EmbeddedResource Include="../../PhysicsTool/Resources/VisualModel/*.png" Link="Textures/%(Filename)%(Extension)" />

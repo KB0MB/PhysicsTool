@@ -13,5 +13,6 @@
     <Reference Include="Syroot.NintenTools.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.Bfres.dll</HintPath></Reference>
     <Reference Include="Syroot.NintenTools.NSW.Bfres"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bfres.dll</HintPath></Reference>
     <Reference Include="Syroot.NintenTools.NSW.Bntx"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.NintenTools.NSW.Bntx.dll</HintPath></Reference>
+    <Reference Include="Syroot.Maths"><HintPath>../../PhysicsTool/ThirdParty/Toolbox/Syroot.Maths.dll</HintPath></Reference>
   </ItemGroup>
 </Project>

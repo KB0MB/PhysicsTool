@@ -1,6 +1,6 @@
 # MeshCodec Source and Local Changes
 
-Updated 2026-11-04.
+Updated 2026-11-24.
 
 The decoder is dt-12345/MeshCodec, licensed under GPL-2.0 as stated in its
 upstream README. Reference revision: b3600954872dbc2893a1bcc9e851c1e364f303ab
@@ -22,7 +22,9 @@ Local changes to upstream files:
   backreference copying. Native regression fixtures are in Native/attribute_checks.cpp.
 - mc_MeshCodec.cpp: package length, output-size, FRES/FMSH header, alignment,
   mesh-output and workspace checks; automatic Zstandard context cleanup;
-  cave chunk output-region and compressed-block bounds checks.
+  cave chunk output-region and compressed-block bounds checks. Repacked BFRES
+  files without an FMSH section may have less than one size quantum of unused
+  allocation, provided their declared file size matches the decoded byte count.
 - mc_Codec.cpp: partial lossless blocks use the remaining buffer size;
   compressed-size varints and input cursor advancement are corrected.
 - mc_Float.cpp: compiler/CPU-specific floating-point control handling.

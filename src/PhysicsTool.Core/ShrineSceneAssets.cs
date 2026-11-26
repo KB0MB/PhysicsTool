@@ -182,6 +182,7 @@ internal sealed record ShrineSceneAssets(ShrineSceneDocument Scene, VisualModelD
         var indices = mesh.Indices;
         if (mirrored) { indices = (uint[])indices.Clone(); for (int i = 0; i + 2 < indices.Length; i += 3) (indices[i + 1], indices[i + 2]) = (indices[i + 2], indices[i + 1]); }
         model.Meshes.Add(new() { Name = name, Vertices = vertices, Indices = indices, Tangents = tangents,
+            ShadowOffsets = mesh.ShadowOffsets.Select(offset => Vector3.TransformNormal(offset, transform)).ToArray(),
             TangentUvSet = mesh.TangentUvSet, UvSets = mesh.UvSets, Material = mesh.Material, BaseColor = mesh.BaseColor,
             CullingMode = mesh.CullingMode, Texture = mesh.Texture, SpecularTexture = mesh.SpecularTexture,
             NormalTexture = mesh.NormalTexture, AmbientOcclusionTexture = mesh.AmbientOcclusionTexture,

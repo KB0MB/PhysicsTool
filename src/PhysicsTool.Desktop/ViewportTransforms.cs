@@ -21,6 +21,10 @@ public sealed partial class PhysicsViewport
     private Point _transformStart;
     private Vector3 _transformPivot;
     private Matrix4x4 _transformDelta = Matrix4x4.Identity;
+    internal Func<(Vector3 Pivot, Matrix4x4 Rotation, double PixelsPerUnit)?>? ModelTransformContext { get; set; }
+    internal Func<Vector3, Point>? ModelTransformProjection { get; set; }
+    private (Vector3 Pivot, Matrix4x4 Rotation, double PixelsPerUnit)? _modelTransform;
+    internal void TrackTransformPointer(Point point) { _last = point; if (TransformActive) MoveTransform(point); }
 
     private IEnumerable<(int Index, Vector3 Position)> SelectionPoints() => SelectionKind switch {
         PhysicsSelectionKind.Bones => Data.Bones.Where(b => ShowBones && b.IsSelectable && !b.IsReference).Select(b => (b.Index, BonePosition(b))),
@@ -52,9 +56,13 @@ public sealed partial class PhysicsViewport
             }
             return true;
         }
-        if (!CanTransform || !CanSelect || !ShowPhysics || !IsTransformShortcut(e)) return false;
+        if (!CanTransform || !IsTransformShortcut(e)) return false;
+        _modelTransform = ModelTransformContext?.Invoke();
+        if (ModelTransformContext != null && (_modelTransform == null || e.Key == Key.S)) return false;
+        if (_modelTransform == null && (!CanSelect || !ShowPhysics)) return false;
         if (TranslationOnly && e.Key != Key.G) return false;
-        var points = SelectionPoints().Where(p => ActiveSelection.Contains(p.Index)).Select(p => p.Position).ToArray();
+        var points = _modelTransform is { } model ? new[] { model.Pivot }
+            : SelectionPoints().Where(p => ActiveSelection.Contains(p.Index)).Select(p => p.Position).ToArray();
         if (points.Length == 0) return false;
         EndGesture(); CancelCameraTransition();
         _transformPivot = points.Aggregate(Vector3.Zero, (a, b) => a + b) / points.Length;
@@ -64,30 +72,33 @@ public sealed partial class PhysicsViewport
     private void MoveTransform(Point point)
     {
         var d = point - _transformStart;
-        var axis = _transformAxis switch { Key.X => Vector3.UnitX, Key.Y => Vector3.UnitY, Key.Z => Vector3.UnitZ, _ => ViewDirection };
+        var rotation = _modelTransform?.Rotation ?? Rotation;
+        var pixelsPerUnit = _modelTransform?.PixelsPerUnit ?? PixelsPerUnit;
+        var viewDirection = _modelTransform == null ? ViewDirection : Vector3.TransformNormal(Vector3.UnitZ, Matrix4x4.Transpose(rotation));
+        var axis = _transformAxis switch { Key.X => Vector3.UnitX, Key.Y => Vector3.UnitY, Key.Z => Vector3.UnitZ, _ => viewDirection };
         Matrix4x4 transform;
         if (_transformKey == Key.G)
         {
-            var movement = Vector3.TransformNormal(new((float)(d.X / PixelsPerUnit), (float)(-d.Y / PixelsPerUnit), 0), Matrix4x4.Transpose(Rotation));
+            var movement = Vector3.TransformNormal(new((float)(d.X / pixelsPerUnit), (float)(-d.Y / pixelsPerUnit), 0), Matrix4x4.Transpose(rotation));
             if (_transformAxis != Key.None)
             {
                 if (_transformPlane)
                 {
                     // Intersect the orthographic pointer ray with the constraint plane.
                     // Near edge-on views use the visible planar component to avoid huge jumps.
-                    var facing = Vector3.Dot(ViewDirection, axis);
+                    var facing = Vector3.Dot(viewDirection, axis);
                     movement = Math.Abs(facing) > .1f
-                        ? movement - ViewDirection * (Vector3.Dot(movement, axis) / facing)
+                        ? movement - viewDirection * (Vector3.Dot(movement, axis) / facing)
                         : movement - axis * Vector3.Dot(movement, axis);
                     movement -= axis * Vector3.Dot(movement, axis);
                 }
                 else
                 {
-                    var screenAxis = Vector3.TransformNormal(axis, Rotation);
+                    var screenAxis = Vector3.TransformNormal(axis, rotation);
                     var length = screenAxis.X * screenAxis.X + screenAxis.Y * screenAxis.Y;
                     var distance = length > .01f
-                        ? (float)((d.X * screenAxis.X - d.Y * screenAxis.Y) / (PixelsPerUnit * length))
-                        : (float)(-d.Y / PixelsPerUnit);
+                        ? (float)((d.X * screenAxis.X - d.Y * screenAxis.Y) / (pixelsPerUnit * length))
+                        : (float)(-d.Y / pixelsPerUnit);
                     movement = axis * distance;
                 }
             }
@@ -108,7 +119,8 @@ public sealed partial class PhysicsViewport
 
     private void DrawTransformGuides(DrawingContext context)
     {
-        var pivot = Project(_transformPivot);
+        Point ProjectGuide(Vector3 point) => ModelTransformProjection?.Invoke(point) ?? Project(point);
+        var pivot = ProjectGuide(_transformPivot);
         var length = Math.Sqrt(Bounds.Width * Bounds.Width + Bounds.Height * Bounds.Height) +
             Math.Abs(pivot.X) + Math.Abs(pivot.Y);
         foreach (var key in TransformGuideAxes)
@@ -116,7 +128,7 @@ public sealed partial class PhysicsViewport
             var axis = key switch { Key.X => Vector3.UnitX, Key.Y => Vector3.UnitY, _ => Vector3.UnitZ };
             var color = key switch { Key.X => ViewportColor("#EF7378", "#B33745"), Key.Y => ViewportColor("#79CD8F", "#237841"), _ => ViewportColor("#74ACF0", "#226EAC") };
             var pen = new Pen(new SolidColorBrush(color), 1.5);
-            var direction = Project(_transformPivot + axis) - pivot;
+            var direction = ProjectGuide(_transformPivot + axis) - pivot;
             var projectedLength = Math.Sqrt(direction.X * direction.X + direction.Y * direction.Y);
             if (projectedLength > .01)
             {
@@ -130,6 +142,7 @@ public sealed partial class PhysicsViewport
     {
         if (!TransformActive) return;
         _transformKey = Key.None;
+        _modelTransform = null;
         TransformFinished?.Invoke(commit ? _transformDelta : null);
         InvalidateVisual();
     }

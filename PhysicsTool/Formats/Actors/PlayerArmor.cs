@@ -6,8 +6,8 @@ internal enum PlayerArmorSlot { Head, Upper, Lower }
 
 internal sealed record PlayerArmorEntry(PlayerArmorSlot Slot, string Name, string Path, string? ArchiveEntry = null)
 {
-    public string DisplayName => Name.StartsWith("Armor_", StringComparison.Ordinal) && Name.EndsWith("_" + Slot, StringComparison.Ordinal)
-        ? Name[6..^(Slot.ToString().Length + 1)] : Name;
+    public string DisplayName { get; init; } = Name;
+    public string ModelKey { get; init; } = "";
     public override string ToString() => DisplayName;
 }
 
@@ -16,6 +16,7 @@ internal sealed class PlayerArmorCatalog
     public IReadOnlyList<PlayerArmorEntry> Entries { get; }
     public string? RightHandPath { get; }
     private readonly bool _totk;
+    private readonly Dictionary<string, PlayerArmorEntry> _entries;
     internal PlayerEquipmentSources Sources { get; }
     public static bool Supports(BotwActorResources resources) => resources.IsTotk ? resources.ActorName == "Player" : resources.ActorName == "GameROMPlayer";
 
@@ -33,7 +34,25 @@ internal sealed class PlayerArmorCatalog
             foreach (var slot in Enum.GetValues<PlayerArmorSlot>())
                 if (name.EndsWith("_" + slot, StringComparison.Ordinal)) entries.TryAdd(name, new(slot, name, source.Path, source.ArchiveEntry));
         }
-        Entries = entries.Values.OrderBy(e => SortNumber(e.Name)).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        foreach (var entry in entries.Values.ToArray())
+        {
+            try
+            {
+                var resources = Sources.Find(entry.Name)!.Open(player.Roots);
+                string modelKey = System.Text.Json.JsonSerializer.Serialize(new { entry.Slot, resources.Models,
+                    resources.VariationMatAnim, resources.VariationMatAnimFrame,
+                    Ear = new[] { resources.ArmorEarRotationDegrees.X, resources.ArmorEarRotationDegrees.Y, resources.ArmorEarRotationDegrees.Z } });
+                entries[entry.Name] = entry with { ModelKey = modelKey };
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or KeyNotFoundException)
+            { player.Warnings.Add($"Armor identity {entry.Name}: {ex.Message}"); }
+        }
+        _entries = entries.ToDictionary(p => p.Key, p => p.Value with { DisplayName = PlayerEquipmentNames.Name(p.Key, _totk) }, StringComparer.OrdinalIgnoreCase);
+        var visible = entries.Values.OrderBy(e => SortNumber(e.Name)).ThenBy(e => e.Name, StringComparer.Ordinal)
+            .DistinctBy(e => string.IsNullOrEmpty(e.ModelKey) ? e.Name : e.ModelKey).ToArray();
+        var labels = PlayerEquipmentNames.Labels(visible.Select(e => e.Name), _totk);
+        Entries = visible.Select(e => e with { DisplayName = labels[e.Name] })
+            .OrderBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     internal static int SortNumber(string name) => name.StartsWith("Armor_", StringComparison.Ordinal) &&
@@ -42,8 +61,14 @@ internal sealed class PlayerArmorCatalog
     public string DefaultActorName(PlayerArmorSlot slot) => _totk ? DefaultName(slot) : "Armor_Default_" + slot;
     public PlayerArmorEntry? Default(PlayerArmorSlot slot) => Entries.FirstOrDefault(e => e.Name == DefaultActorName(slot));
     public static string DefaultName(PlayerArmorSlot slot) => slot == PlayerArmorSlot.Head ? "Armor_999_Head" : "Armor_Default_" + slot;
-    public PlayerArmorEntry Find(PlayerArmorSlot slot, string name) => Entries.FirstOrDefault(e => e.Slot == slot && e.Name == name)
-        ?? throw new InvalidDataException($"Armor '{name}' is not available in the {slot} slot of this game dump.");
+    public PlayerArmorEntry Find(PlayerArmorSlot slot, string name) => _entries.GetValueOrDefault(name) is { } entry && entry.Slot == slot
+        ? Entries.FirstOrDefault(e => e.Name == entry.Name) ?? entry
+        : throw new InvalidDataException($"Armor '{name}' is not available in the {slot} slot of this game dump.");
+    public PlayerArmorEntry? VisibleEntry(PlayerArmorSlot slot, string? name)
+    {
+        if (name == null || !_entries.TryGetValue(name, out var entry) || entry.Slot != slot) return null;
+        return Entries.FirstOrDefault(e => e.Name == name || !string.IsNullOrEmpty(entry.ModelKey) && e.ModelKey == entry.ModelKey);
+    }
 }
 
 internal sealed class ActorEquipmentVisibility

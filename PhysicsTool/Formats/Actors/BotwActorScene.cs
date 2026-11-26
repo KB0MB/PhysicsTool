@@ -30,6 +30,8 @@ internal sealed class BotwActorScene : IDisposable
     public PlayerWeaponCatalog? WeaponCatalog { get; private set; }
     public Dictionary<PlayerWeaponKind, PlayerWeaponSelection> Weapons { get; } = new();
     internal Dictionary<int, PlayerEquipmentAttachment> EquipmentAttachments { get; } = new();
+    private readonly Dictionary<int, PlayerEquipmentState> _equipmentStates = new();
+    private int _equipmentModelStart, _equipmentResourceStart, _physicsBoneCount;
     private readonly List<BotwActorResources> _outfitResources = new();
     private readonly List<BotwActorResources> _exportResources = new();
     public IReadOnlyList<BotwActorResources> ExportResources => _exportResources;
@@ -46,6 +48,14 @@ internal sealed class BotwActorScene : IDisposable
     public int SupportCount => _supportGroups.Values.Sum(g => g.Count);
     public int RagdollCount => _layers.Count(l => l.Source.RagdollConstraints.Count > 0);
     public int TextureCount { get; private set; }
+    private double _materialSeconds;
+    public bool HasAutomaticMaterials => _models.Any(m => m.AutoMaterials.HasTracks);
+    public void AdvanceAutomaticMaterials(double seconds)
+    {
+        if (!double.IsFinite(seconds) || seconds < 0) throw new ArgumentOutOfRangeException(nameof(seconds));
+        _materialSeconds += seconds;
+        foreach (var model in _models) model.AutoMaterials.Sample(_materialSeconds);
+    }
     public bool WindEnabled { get; set; }
     public float WindSpeed { get; set; } = HkclPreviewSimulator.DefaultWindSpeed;
     public bool HasBphysicsWind => _layers.Any(layer => layer.Solver.WindProfile != null);
@@ -69,6 +79,7 @@ internal sealed class BotwActorScene : IDisposable
                 foreach (var (kind, choice) in weapons)
                 {
                     var entry = scene.WeaponCatalog.Find(kind, choice.Name);
+                    if (kind == PlayerWeaponKind.Bow) scene.WeaponCatalog.ArrowActor(choice.Arrow);
                     scene.Weapons.Add(kind, choice with { Name = entry.Name });
                 }
             scene.Load(progress, cancellation); return scene;
@@ -80,6 +91,8 @@ internal sealed class BotwActorScene : IDisposable
         var visibility = _outfitResources.Select(r => ArmorCatalog == null ? new ActorEquipmentVisibility() : r.ReadEquipmentVisibility()).ToArray();
         for (int i = 0; i < _outfitResources.Count; i++)
             LoadModels(_outfitResources[i], visibility[i].HiddenBy(visibility.Where((_, n) => n != i)), progress, cancellation);
+        _equipmentModelStart = _models.Count;
+        _equipmentResourceStart = _exportResources.Count;
         LoadWeapons(progress, cancellation);
         for (var i = 0; i < _models.Count; i++)
         {
@@ -97,6 +110,13 @@ internal sealed class BotwActorScene : IDisposable
         foreach (var resources in _outfitResources) LoadPhysics(resources, progress, cancellation);
         foreach (var warning in _outfitResources.Skip(1).SelectMany(r => r.Warnings).Distinct())
             if (!Resources.Warnings.Contains(warning)) Resources.Warnings.Add(warning);
+        _physicsBoneCount = Overlay.Bones.Count;
+        RefreshDisplayBones();
+        CurrentModel = Update(null, 0, false, 0, true);
+    }
+    private void RefreshDisplayBones()
+    {
+        Overlay.Bones.RemoveRange(_physicsBoneCount, Overlay.Bones.Count - _physicsBoneCount);
         var displayedNames = Overlay.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().Index, StringComparer.OrdinalIgnoreCase);
         var nextBone = Next(Overlay.Bones.Select(b => b.Index));
         var additional = RestModel.Bones.Where(b => !displayedNames.ContainsKey(b.Name)).DistinctBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -106,7 +126,53 @@ internal sealed class BotwActorScene : IDisposable
             Overlay.Bones.Add(new() { Index = displayedNames[bone.Name],
                 ParentIndex = restByIndex.TryGetValue(bone.ParentIndex, out var parent) ? displayedNames[parent.Name] : -1, Name = bone.Name,
                 Position = bone.Position, AxisX = bone.AxisX, AxisY = bone.AxisY, AxisZ = bone.AxisZ, IsSelectable = false });
-        CurrentModel = Update(null, 0, false, 0, true);
+    }
+    internal void ChangeWeapons(IReadOnlyDictionary<PlayerWeaponKind, PlayerWeaponSelection> weapons,
+        IProgress<string>? progress = null, CancellationToken cancellation = default)
+    {
+        if (WeaponCatalog == null) throw new InvalidOperationException("This actor has no equipment catalog.");
+        using var prepared = new BotwActorScene(Resources) { WeaponCatalog = WeaponCatalog };
+        foreach (var (kind, choice) in weapons)
+        {
+            WeaponCatalog.Find(kind, choice.Name);
+            if (kind == PlayerWeaponKind.Bow) WeaponCatalog.ArrowActor(choice.Arrow);
+            prepared.Weapons.Add(kind, choice);
+        }
+        prepared.LoadWeapons(progress, cancellation);
+        cancellation.ThrowIfCancellationRequested();
+        foreach (var attachment in prepared.EquipmentAttachments.Values)
+            if (!_models.Take(_equipmentModelStart).Any(m => m.RestPose.Bones.Any(b => b.Name == attachment.Bone)))
+                throw new InvalidDataException($"Equipment {attachment.Actor}: attachment bone '{attachment.Bone}' was not found.");
+        var previousMeshes = _meshes.ToArray();
+        _models.RemoveRange(_equipmentModelStart, _models.Count - _equipmentModelStart);
+        _modelReferences.RemoveRange(_equipmentModelStart, _modelReferences.Count - _equipmentModelStart);
+        _attachments.RemoveRange(_equipmentModelStart, _attachments.Count - _equipmentModelStart);
+        _exportResources.RemoveRange(_equipmentResourceStart, _exportResources.Count - _equipmentResourceStart);
+        _models.AddRange(prepared._models);
+        _modelReferences.AddRange(prepared._modelReferences);
+        _exportResources.AddRange(prepared._exportResources);
+        EquipmentAttachments.Clear(); _equipmentStates.Clear();
+        foreach (var (index, attachment) in prepared.EquipmentAttachments) EquipmentAttachments.Add(index + _equipmentModelStart, attachment);
+        foreach (var (index, state) in prepared._equipmentStates) _equipmentStates.Add(index + _equipmentModelStart, state);
+        for (int i = _equipmentModelStart; i < _models.Count; i++)
+        {
+            var bone = _modelReferences[i].BindBone;
+            _attachments.Add((_models.FindIndex(m => m.RestPose.Bones.Any(b => b.Name == bone)), bone));
+        }
+        Weapons.Clear();
+        foreach (var pair in prepared.Weapons) Weapons.Add(pair.Key, pair.Value);
+        RestModel = Pose(null, 0, null, false);
+        _meshes.Clear();
+        var oldByName = previousMeshes.GroupBy(m => m.Name).ToDictionary(g => g.Key, g => new Queue<BotwActorMesh>(g));
+        foreach (var mesh in RestModel.Meshes)
+        {
+            var entry = new BotwActorMesh(_meshes.Count, mesh.Name, mesh.Indices.Length / 3);
+            if (oldByName.TryGetValue(mesh.Name, out var old) && old.TryDequeue(out var previous))
+            { entry.Visible = previous.Visible; entry.Deleted = previous.Deleted; }
+            _meshes.Add(entry);
+        }
+        RefreshDisplayBones();
+        AdvanceAutomaticMaterials(0);
     }
     private void PrepareOutfit(IReadOnlyDictionary<PlayerArmorSlot, string>? armor, CancellationToken cancellation)
     {
@@ -133,14 +199,14 @@ internal sealed class BotwActorScene : IDisposable
     private void LoadWeapons(IProgress<string>? progress, CancellationToken cancellation)
     {
         if (WeaponCatalog == null) return;
-        void Add(string actor, string bone, Matrix4x4 offset, BotwActorResources? resources = null)
+        void Add(string actor, string bone, Matrix4x4 offset, BotwActorResources? resources = null, bool? equipped = null)
         {
             cancellation.ThrowIfCancellationRequested();
             var source = WeaponCatalog.ActorSource(actor);
             if (source == null) { Resources.Warnings.Add($"Missing equipment actor {actor}."); return; }
             resources ??= source.Open(Resources.Roots);
             var first = _models.Count;
-            LoadModels(resources, new HashSet<string>(), progress, cancellation);
+            LoadModels(resources, new HashSet<string>(), progress, cancellation, equipped);
             for (int i = first; i < _models.Count; i++)
             {
                 _modelReferences[i] = _modelReferences[i] with { BindBone = bone };
@@ -154,7 +220,7 @@ internal sealed class BotwActorScene : IDisposable
             var entry = WeaponCatalog.Find(kind, choice.Name);
             var resources = new BotwActorResources(entry.Path, Resources.Roots, entry.ArchiveEntry);
             var parameters = resources.ReadWeaponParameters(kind);
-            Add(entry.Name, PlayerWeaponParameters.Bone(kind, choice.Equipped), parameters.Offset(choice.Equipped), resources);
+            Add(entry.Name, PlayerWeaponParameters.Bone(kind, choice.Equipped), parameters.Offset(choice.Equipped), resources, choice.Equipped);
             if (!string.IsNullOrEmpty(parameters.Sheath))
                 Add(parameters.Sheath, "Pod_A", parameters.Offset(false));
             if (kind != PlayerWeaponKind.Bow) continue;
@@ -174,10 +240,10 @@ internal sealed class BotwActorScene : IDisposable
                     else Add(parameters.Quiver, "Pod_B", quiver.ReadWeaponParameters(kind).Offset(false), quiver);
                 }
             }
-            if (choice.Equipped) Add("NormalArrow", "Weapon_R", Matrix4x4.Identity);
+            if (choice.Equipped) Add(WeaponCatalog.ArrowActor(choice.Arrow), "Weapon_R", Matrix4x4.Identity, equipped: true);
         }
     }
-    private void LoadModels(BotwActorResources resources, IReadOnlySet<string> hiddenMaterials, IProgress<string>? progress, CancellationToken cancellation)
+    private void LoadModels(BotwActorResources resources, IReadOnlySet<string> hiddenMaterials, IProgress<string>? progress, CancellationToken cancellation, bool? equipped = null)
     {
         _exportResources.Add(resources);
         var documents = new Dictionary<string, ToolboxBfresDocument>();
@@ -200,6 +266,31 @@ internal sealed class BotwActorScene : IDisposable
             if (ReferenceEquals(resources, Resources)) AddAnimations(document, name);
         }
         TextureCount += textures.Count - previousTextureCount;
+        PlayerEquipmentState? state = null;
+        if (equipped.HasValue || ReferenceEquals(resources, Resources))
+        {
+            foreach (var name in resources.AnimationResources.Except(documents.Keys).ToArray())
+            {
+                cancellation.ThrowIfCancellationRequested();
+                progress?.Report($"Loading animations: {name}");
+                if (resources.ReadModel(name) is { } bytes)
+                {
+                    try
+                    {
+                        var document = new ToolboxBfresDocument(bytes);
+                        documents[name] = document;
+                        if (ReferenceEquals(resources, Resources)) AddAnimations(document, name);
+                    }
+                    catch (Exception ex) { resources.Warnings.Add($"Animation resource {name}: {ex.GetType().Name}"); }
+                }
+                else resources.Warnings.Add($"Missing animation resource Model/{name}.sbfres");
+            }
+        }
+        if (equipped.HasValue)
+        {
+            state = new(resources, documents, equipped.Value);
+            hiddenMaterials = hiddenMaterials.Concat(state.HiddenMaterials).ToHashSet(StringComparer.Ordinal);
+        }
         var hasAppearance = false;
         foreach (var reference in resources.Models)
         {
@@ -207,21 +298,15 @@ internal sealed class BotwActorScene : IDisposable
             var document = documents[reference.Resource];
             var appearance = ToolboxActorAppearance.Read(document, resources.VariationMatAnim, resources.VariationMatAnimFrame, resources.Warnings);
             hasAppearance |= appearance.Count > 0;
-            _models.Add(new ToolboxActorModel(document, reference.Model, textures, appearance, resources.Warnings, hiddenMaterials));
+            var model = new ToolboxActorModel(document, reference.Model, textures, appearance, resources.Warnings, hiddenMaterials);
+            foreach (var animationDocument in documents.Values.Where(d => !ReferenceEquals(d, document)))
+                model.AutoMaterials.AddAutomatic(animationDocument, resources.Warnings);
+            if (state != null) { state.ApplyMaterials(model, resources.Warnings); _equipmentStates.Add(_models.Count, state); }
+            _models.Add(model);
             _modelReferences.Add(reference);
         }
         if (!hasAppearance && !string.IsNullOrWhiteSpace(resources.VariationMatAnim) && resources.VariationMatAnim != "Dummy")
             resources.Warnings.Add($"Texture variation {resources.VariationMatAnim} could not be resolved; default material textures are shown.");
-        if (!ReferenceEquals(resources, Resources)) return;
-        foreach (var name in Resources.AnimationResources.Except(documents.Keys))
-        {
-            cancellation.ThrowIfCancellationRequested();
-            progress?.Report($"Loading animations: {name}");
-            var bytes = Resources.ReadModel(name);
-            if (bytes == null) { Resources.Warnings.Add($"Missing animation resource Model/{name}.sbfres"); continue; }
-            try { AddAnimations(new ToolboxBfresDocument(bytes), name); }
-            catch (Exception ex) { Resources.Warnings.Add($"Animation resource {name}: {ex.GetType().Name}"); }
-        }
     }
     private void LoadPhysics(BotwActorResources resources, IProgress<string>? progress, CancellationToken cancellation)
     {
@@ -357,8 +442,17 @@ internal sealed class BotwActorScene : IDisposable
                 var transform = equipment.Offset * parent.Value;
                 // Equipment follows the attachment, not same-named character animation
                 // tracks or cloth overrides. Keep its skeleton out of Link's name map.
-                var pose = skeletonOnly ? _models[index].SkeletonPose(null, 0, null, null, transform)
-                    : _models[index].Pose(null, 0, null, null, transform);
+                _equipmentStates.TryGetValue(index, out var state);
+                var equipmentPose = state?.PoseFor(animation, frame) ?? (null, 0d);
+                var pose = skeletonOnly ? _models[index].SkeletonPose(equipmentPose.Item1, equipmentPose.Item2, null, null, transform)
+                    : _models[index].Pose(equipmentPose.Item1, equipmentPose.Item2, null, null, transform);
+                if (!skeletonOnly && state?.ArrowEffect is { } effect)
+                {
+                    var bone = pose.Bones.FirstOrDefault(b => b.Name == effect.Binding.Bone)
+                        ?? throw new InvalidDataException($"Ancient Arrow effect bone '{effect.Binding.Bone}' was not found.");
+                    pose.Meshes.Add(effect.Pose(bone.WorldMatrix, state.EffectFrameFor(animation, frame)));
+                    pose.TriangleCount += 2;
+                }
                 for (int b = 0; b < pose.Bones.Count; b++)
                 {
                     var bone = pose.Bones[b];
@@ -374,12 +468,17 @@ internal sealed class BotwActorScene : IDisposable
         return Merge(Enumerable.Range(0, _models.Count).Select(Visit));
     }
 
-    public VisualModelData Update(ToolboxActorAnimation? animation, double frame, bool simulate, float seconds, bool reset = false)
+    public VisualModelData Update(ToolboxActorAnimation? animation, double frame, bool simulate, float seconds, bool reset = false,
+        IReadOnlyDictionary<string, VisualBoneOverride>? inputPose = null, bool deferPhysics = false)
     {
+        if (deferPhysics) simulate = false;
         var looped = simulate && _previousSimulating && !reset && animation != null &&
             ReferenceEquals(animation, _previousAnimation) && frame < _previousFrame;
         var overrides = new Dictionary<string, VisualBoneOverride>(StringComparer.OrdinalIgnoreCase);
-        var clean = Skeleton(animation, frame, null, simulate);
+        if (inputPose != null)
+            foreach (var (name, pose) in inputPose)
+                if (!simulate || !_clothDriven.Contains(name)) overrides[name] = pose;
+        var clean = Skeleton(animation, frame, overrides, simulate);
         foreach (var service in _supports)
         {
             var evaluation = service.EvaluateSidecarPose(clean.Bones, RestModel.Bones, _supportGroups[service]);
@@ -393,7 +492,7 @@ internal sealed class BotwActorScene : IDisposable
         // simulation, clean contains input animation/helpers but no cloth feedback.
         var restBones = RestModel.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var currentBones = clean.Bones.GroupBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-        foreach (var layer in _layers)
+        foreach (var layer in deferPhysics ? Enumerable.Empty<Layer>() : _layers)
         {
             var deltas = new Dictionary<int, Matrix4x4>();
             foreach (var bone in layer.Source.Bones)

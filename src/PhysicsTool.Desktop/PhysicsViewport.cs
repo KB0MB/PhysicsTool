@@ -141,7 +141,7 @@ public sealed partial class PhysicsViewport : Control
         }
         if (_selecting && _selectionRect.Width > 3 && _selectionRect.Height > 3)
             context.DrawRectangle(new SolidColorBrush(Color.FromArgb(35, 98, 174, 235)), new Pen(new SolidColorBrush(Color.Parse("#78B7E8")), 1), _selectionRect);
-        if (!ShowPhysics) { ClearColliderDrawing(); return; }
+        if (!ShowPhysics) { ClearColliderDrawing(); DrawTransformGuides(context); return; }
         if (ShowColliders) { PrepareColliderDrawing(); DrawColliderSurfaces(context); }
         else ClearColliderDrawing();
         _projectedParticles.Clear();

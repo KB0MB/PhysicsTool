@@ -9,10 +9,12 @@ internal sealed class PlayerWeaponsPanel : Grid
 {
     private readonly Dictionary<PlayerWeaponKind, (ComboBox Actor, ComboBox State)> _rows = new();
     private bool _updating;
+    private readonly ComboBox? _arrows;
     internal event Action? Changed;
     internal Dictionary<PlayerWeaponKind, PlayerWeaponSelection> Selection => _rows
         .Where(p => p.Value.Actor.SelectedItem is PlayerWeaponEntry)
-        .ToDictionary(p => p.Key, p => new PlayerWeaponSelection(((PlayerWeaponEntry)p.Value.Actor.SelectedItem!).Name, p.Value.State.SelectedIndex == 1));
+        .ToDictionary(p => p.Key, p => new PlayerWeaponSelection(((PlayerWeaponEntry)p.Value.Actor.SelectedItem!).Name, p.Value.State.SelectedIndex == 1,
+            p.Key == PlayerWeaponKind.Bow && _arrows?.SelectedItem is PlayerArrowEntry arrow ? arrow.Name : "NormalArrow"));
 
     internal PlayerWeaponsPanel(PlayerWeaponCatalog catalog, IReadOnlyDictionary<PlayerWeaponKind, PlayerWeaponSelection> selected)
     {
@@ -40,11 +42,26 @@ internal sealed class PlayerWeaponsPanel : Grid
             row.Actor.SelectionChanged += (_, _) => Update(kind, true);
             row.State.SelectionChanged += (_, _) => Update(kind, false);
         }
+        if (catalog.SupportsArrowTypes)
+        {
+            RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            var label = new TextBlock { Text = "Arrows", VerticalAlignment = VerticalAlignment.Center };
+            _arrows = new ComboBox { Name = "PlayerArrowType", ItemsSource = catalog.Arrows, MaxDropDownHeight = 360,
+                HorizontalAlignment = HorizontalAlignment.Stretch, IsTextSearchEnabled = true,
+                SelectedItem = catalog.Arrows.FirstOrDefault(a => a.Name == (selected.GetValueOrDefault(PlayerWeaponKind.Bow)?.Arrow ?? "NormalArrow")),
+                IsEnabled = _rows[PlayerWeaponKind.Bow].Actor.SelectedItem is PlayerWeaponEntry };
+            SetRow(label, 5); Children.Add(label); SetRow(_arrows, 5); SetColumn(_arrows, 1); Children.Add(_arrows);
+            _arrows.SelectionChanged += (_, _) => { if (!_updating) Changed?.Invoke(); };
+        }
     }
     internal void Clear()
     {
         _updating = true;
-        try { foreach (var row in _rows.Values) { row.Actor.SelectedIndex = 0; row.State.SelectedIndex = 0; row.State.IsEnabled = false; } }
+        try
+        {
+            foreach (var row in _rows.Values) { row.Actor.SelectedIndex = 0; row.State.SelectedIndex = 0; row.State.IsEnabled = false; }
+            if (_arrows != null) { _arrows.SelectedItem = _arrows.Items.OfType<PlayerArrowEntry>().FirstOrDefault(a => a.Name == "NormalArrow"); _arrows.IsEnabled = false; }
+        }
         finally { _updating = false; }
         Changed?.Invoke();
     }
@@ -55,6 +72,7 @@ internal sealed class PlayerWeaponsPanel : Grid
         try
         {
             var row = _rows[kind];
+            if (_arrows != null) _arrows.IsEnabled = _rows[PlayerWeaponKind.Bow].Actor.SelectedItem is PlayerWeaponEntry;
             row.State.IsEnabled = row.Actor.SelectedItem is PlayerWeaponEntry;
             if (!row.State.IsEnabled) row.State.SelectedIndex = 0;
             else

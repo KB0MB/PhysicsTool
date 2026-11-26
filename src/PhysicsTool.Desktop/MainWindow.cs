@@ -25,7 +25,7 @@ public sealed partial class MainWindow : Window
     public EditorSession DonorSession { get; } = new();
     private readonly Button _swap, _file;
     private readonly MenuItem _save, _saveAs, _export;
-    private readonly PhysicsViewport _viewport = new();
+    private readonly PhysicsViewport _viewport = new() { ShowParticles = false, ShowColliders = false, ShowEmission = true };
     public PhysicsViewport Viewport => _viewport;
     public ModelGlControl? ModelSurface { get; }
     private readonly Button _loadModel, _clearModel, _meshes;
@@ -103,6 +103,7 @@ public sealed partial class MainWindow : Window
         Add(toolbar, "Open Actor", async () => await OpenActorBrowser());
         Add(toolbar, "Collision", () => ShowCollision(graphics));
         Add(toolbar, "Map Editing", ShowShrineScene).Name = "MapEditing";
+        Add(toolbar, "Icon Tool", ShowIconTool).Name = "IconTool";
         _swap = _overview.SwapButton;
         _save = MenuCommand("Save", () => SaveDocument()); _save.Name = "SavePhysics";
         _saveAs = MenuCommand("Save as...", () => SaveDocument(true));
@@ -148,13 +149,13 @@ public sealed partial class MainWindow : Window
         ToolTip.SetShowOnDisabled(_simulate, true);
         _wind.Margin = new Thickness(10, 4); viewbar.Children.Add(_wind);
         _options = Add(viewbar, "Options", async () => await ShowPreviewOptions());
-        var emission = new CheckBox { Name = "ViewportEmission", Content = "Emission", IsChecked = false, Margin = new Thickness(10, 4) };
+        var emission = new CheckBox { Name = "ViewportEmission", Content = "Emission", IsChecked = _viewport.ShowEmission, Margin = new Thickness(10, 4) };
         emission.IsCheckedChanged += (_, _) => { _viewport.ShowEmission = emission.IsChecked == true; ModelSurface?.RequestNextFrameRendering(); };
         viewbar.Children.Add(emission);
-        var particles = _particlesToggle = new CheckBox { Name = "ViewportParticles", Content = "Particles", IsChecked = true, Margin = new Thickness(10, 4) };
+        var particles = _particlesToggle = new CheckBox { Name = "ViewportParticles", Content = "Particles", IsChecked = _viewport.ShowParticles, Margin = new Thickness(10, 4) };
         particles.IsCheckedChanged += (_, _) => { _viewport.ShowParticles = particles.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(particles);
         var bones = _bonesToggle = new CheckBox { Name = "ViewportBones", Content = "Bones", IsChecked = true, Margin = new Thickness(10, 4) }; bones.IsCheckedChanged += (_, _) => { _viewport.ShowBones = bones.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(bones);
-        var colliders = _collidersToggle = new CheckBox { Name = "ViewportColliders", Content = "Colliders", IsChecked = true, Margin = new Thickness(10, 4) }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
+        var colliders = _collidersToggle = new CheckBox { Name = "ViewportColliders", Content = "Colliders", IsChecked = _viewport.ShowColliders, Margin = new Thickness(10, 4) }; colliders.IsCheckedChanged += (_, _) => { _viewport.ShowColliders = colliders.IsChecked == true; _viewport.InvalidateVisual(); }; viewbar.Children.Add(colliders);
         DockPanel.SetDock(viewbar, Dock.Bottom); center.Children.Add(viewbar);
         ConfigureActorBar(center);
         var scene = new Grid();
@@ -724,17 +725,5 @@ public sealed partial class MainWindow : Window
             FileTypeFilter = new[] { new FilePickerFileType("BFRES models") { Patterns = new[] { "*.bfres", "*.sbfres", "*.bfres.zs" } } } });
         if (files.FirstOrDefault()?.TryGetLocalPath() is { } path) await LoadModelPathAsync(path);
     }
-    private async Task ShowMeshes()
-    {
-        if (_viewport.Model is not { } model) return;
-        var panel = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
-        for (int i = 0; i < model.Meshes.Count; i++)
-        {
-            var index = i;
-            var check = new CheckBox { Content = new TextBlock { Text = model.Meshes[i].Name, TextWrapping = TextWrapping.Wrap }, IsChecked = !_viewport.HiddenMeshes.Contains(i) };
-            check.IsCheckedChanged += (_, _) => _viewport.SetMeshVisible(index, check.IsChecked == true); panel.Children.Add(check);
-        }
-        var content = new StackPanel(); content.Children.Add(new ScrollViewer { Content = panel, MaxHeight = 500 });
-        await Dialogs.Show(this, "Meshes", content);
-    }
+    private Task ShowMeshes() => MeshVisibilityDialog.Show(this, _viewport);
 }

@@ -18,6 +18,8 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
     private readonly Dictionary<string, ProgramState> _programs = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Type, uint Color), uint> _fallbacks = new();
     private ProgramState? _program;
+    private uint _iconAnalyzedLight;
+    private float _iconAnalyzedAmbient = float.NaN;
     private readonly bool _diagnostics = Environment.GetEnvironmentVariable("PHYSICSTOOL_SHADER_DIAGNOSTICS") == "1";
     private void Check(string phase)
     {
@@ -32,7 +34,7 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
     }
 
     internal void Bind(BotwPreviewMaterial material, uint[] textures, Matrix4x4 camera, Vector3 direction,
-        Vector3 center, float radius, Vector3 keyLight, int width, int height, bool emission)
+        Vector3 center, float radius, Vector3 keyLight, int width, int height, bool emission, float directIntensity = 1, float ambientIntensity = 1, float brightness = 1, BotwLightingEnvironment? environment = null, IconShadowMap? shadow = null)
     {
         var hash = new HashCode();
         foreach (var option in material.Options) { hash.Add(option.Key, StringComparer.Ordinal); hash.Add(option.Value); }
@@ -50,6 +52,7 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
         _program = program;
         Check("program creation");
         gl.UseProgram(program.Id);
+        Scalar("ptBrightness", brightness);
         hash = new HashCode();
         foreach (var parameter in material.Parameters) { hash.Add(parameter.Key, StringComparer.Ordinal); foreach (float value in parameter.Value) hash.Add(value); }
         int parameterHash = hash.ToHashCode();
@@ -77,6 +80,7 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
             view = new(x.X, y.X, z.X, 0, x.Y, y.Y, z.Y, 0, x.Z, y.Z, z.Z, 0, camera.M41/sx, camera.M42/sy, -camera.M44, 1);
         }
         Matrix4x4.Invert(view, out var invView);
+        var projection = invView * camera;
         Matrix("context.cView", view, true); Matrix("context.cViewInv", invView, true);
         Matrix("context.cViewProj", camera, false); Matrix("context.cProj", invView * camera, false);
         Matrix("shape.cTransform", Matrix4x4.Identity, true);
@@ -84,18 +88,31 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
         Vector("context.cScreen", width, height, 1f/width, 1f/height);
         Vector("context.cf", width, height, 1f/width, 1f/height);
         Vector("context.cNearFar", .01f, 10000, 100, .0001f);
-        Vector("context.cFovParams", 1, 1, 1, 1);
+        bool perspective = Math.Abs(camera.M44 - 1) > 1e-5f || Math.Abs(camera.M14) + Math.Abs(camera.M24) + Math.Abs(camera.M34) > 1e-5f;
+        var fov = perspective ? new Vector4(1 / Math.Abs(projection.M11), 1 / Math.Abs(projection.M22), Math.Abs(projection.M11), Math.Abs(projection.M22)) : Vector4.One;
+        Vector("context.cFovParams", fov.X, fov.Y, fov.Z, fov.W);
         Vector("shape.cShapeParam", 1, 1, 1, 1);
         var light = Vector3.TransformNormal(-keyLight, view);
         Vector("env.cLightDirection0", light.X, light.Y, light.Z, 0);
         Vector("env.LightDirection0World", -keyLight.X, -keyLight.Y, -keyLight.Z, 0);
-        Vector("env.cLightColor", 1.1f, 1.05f, 1, 1);
-        Vector("env.cLightSpecColor", 1, 1, 1, 1);
-        Vector("env.cHemiSkyColor", .3f, .32f, .36f, 1);
-        Vector("env.cHemiGroundColor", .18f, .18f, .18f, 1);
+        environment ??= BotwLightingEnvironment.Preview;
+        var direct = environment.Direct * directIntensity; var specular = environment.Specular * directIntensity;
+        var sky = environment.Sky * ambientIntensity; var ground = environment.Ground * ambientIntensity;
+        Vector("env.cLightColor", direct.X, direct.Y, direct.Z, 1);
+        Vector("env.cLightSpecColor", specular.X, specular.Y, specular.Z, 1);
+        Vector("env.cHemiSkyColor", sky.X, sky.Y, sky.Z, 1);
+        Vector("env.cHemiGroundColor", ground.X, ground.Y, ground.Z, 1);
         Vector("sceneMat.uking_dynamic_toon_light_adjust_for_demo", 1, 1, 1, 1);
         foreach (var name in new[] { "depth_shadow", "proj_shadow", "world_shadow", "skyocclusion" })
             Scalar("sceneMat.uking_dynamic_" + name + "_off", 1);
+        Scalar("sceneMat.uking_dynamic_depth_shadow_off", shadow == null ? 1 : 0);
+        Scalar("sceneMat.uking_dynamic_depth_shadow_scale", 1);
+        Vector("env.cShadowFade", 0, 0, 100000, 100000);
+        Vector("context.cShadowParam1", 100000, 100000, 0, 0);
+        // The native cascade consumes view-space positions and row-dot matrices.
+        var shadowTransform = shadow == null ? Matrix4x4.Identity : invView * shadow.Camera *
+            Matrix4x4.CreateScale(.5f) * Matrix4x4.CreateTranslation(.5f, .5f, .5f);
+        for (int i = 0; i < 4; i++) Matrix("context.cCascadeMtx[" + i + "]", shadowTransform, false);
         // Captured game weather and fog do not belong to an isolated actor preview.
         Vector("env.cSkyFogDistance", 0, 0, 0, 0);
         Vector("env.cSkyHeightParam", 0, 0, 0, 0);
@@ -115,7 +132,10 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
         foreach (var binding in program.Globals)
         {
             gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + binding.Unit));
-            gl.BindTexture(binding.Target, binding.Texture);
+            uint texture = binding.Name == "cGSys07_DepthShadowCascade" && shadow != null ? shadow.Texture : binding.Texture;
+            if (environment == BotwLightingEnvironment.IconCapture && binding.Name.Contains("LightAnalyzed", StringComparison.Ordinal))
+                texture = IconAnalyzedLight(ambientIntensity);
+            gl.BindTexture(binding.Target, texture);
             gl.Uniform1(Location(binding.Name), binding.Unit);
         }
         Check("samplers");
@@ -124,6 +144,30 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
             gl.ValidateProgram(program.Id); gl.GetProgram(program.Id, ProgramPropertyARB.ValidateStatus, out int valid);
             if (valid == 0) throw new InvalidOperationException("BotW validation: " + gl.GetProgramInfoLog(program.Id));
         }
+    }
+    private uint IconAnalyzedLight(float ambient)
+    {
+        // Slot 0 is control data, not a color. Integrate a neutral hemisphere
+        // approximation from the capture palette until native light analysis is available.
+        if (_iconAnalyzedLight != 0 && _iconAnalyzedAmbient == ambient) return _iconAnalyzedLight;
+        _iconAnalyzedAmbient = ambient;
+        if (_iconAnalyzedLight == 0) _iconAnalyzedLight = gl.GenTexture();
+        gl.BindTexture(TextureTarget.Texture2D, _iconAnalyzedLight);
+        Span<float> pixels = stackalloc float[12 * 4];
+        var environment = BotwLightingEnvironment.IconCapture;
+        var fill = (environment.Sky + environment.Ground) * (.5f * 80f / 255 * ambient);
+        for (int i = 0; i < 12; i++)
+        {
+            var value = i == 0 ? Vector3.One : fill;
+            pixels[i * 4] = value.X; pixels[i * 4 + 1] = value.Y; pixels[i * 4 + 2] = value.Z;
+            pixels[i * 4 + 3] = 1;
+        }
+        fixed (float* p = pixels) gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba32f, 12, 1, 0, PixelFormat.Rgba, PixelType.Float, p);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Nearest);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Nearest);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+        return _iconAnalyzedLight;
     }
     private int Location(string name)
     {
@@ -231,6 +275,7 @@ internal sealed unsafe class BotwNativeRenderer(GL gl, bool es) : IDisposable
     {
         foreach (var p in _programs.Values) gl.DeleteProgram(p.Id);
         foreach (uint t in _fallbacks.Values) gl.DeleteTexture(t);
+        if (_iconAnalyzedLight != 0) gl.DeleteTexture(_iconAnalyzedLight);
         _programs.Clear(); _fallbacks.Clear();
     }
 }

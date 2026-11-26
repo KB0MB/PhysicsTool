@@ -10,10 +10,12 @@ public sealed unsafe class ModelGlRenderer : IDisposable
 {
     private readonly GL _gl;
     private readonly bool _es;
-    private readonly uint _standardProgram, _botwProgram, _totkProgram, _ootProgram, _wireProgram;
+    private readonly uint _standardProgram, _botwProgram, _totkProgram, _ootProgram, _wireProgram, _particleProgram;
     private uint _program;
     private readonly GridGlRenderer _grid;
     private readonly BotwNativeRenderer _botwNative;
+    private readonly TotkNativeRenderer _totkNative;
+    private IconShadowMap? _iconShadow;
     private readonly Dictionary<(uint Program, string Name), int> _locations = new();
     private readonly Dictionary<(VisualModelTexture Texture, bool Srgb, BotwPreviewSampler? Sampler), uint> _textures = new();
     private readonly List<GpuMesh> _meshes = new();
@@ -22,6 +24,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         internal Vector3 Minimum { get; init; }
         internal Vector3 Maximum { get; init; }
         internal float[]? PackedPose { get; set; }
+        internal uint ShadowVbo { get; set; }
     }
     private int[] _sceneOrder = [];
     public int LastVisibleMeshes { get; private set; }
@@ -51,6 +54,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     {
         _gl = gl; _es = es;
         _botwNative = new(gl, es);
+        _totkNative = new(gl, es);
         _standardProgram = CreateProgram("Model.frag", es);
         try
         {
@@ -58,6 +62,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             _totkProgram = CreateProgram("TOTK.frag", es);
             _ootProgram = CreateProgram("OOT.frag", es);
             _wireProgram = CreateProgram("Wireframe.frag", es);
+            _particleProgram = CreateProgram("BotwParticle.frag", es);
             _grid = new GridGlRenderer(gl, es);
         }
         catch
@@ -67,6 +72,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             if (_totkProgram != 0) gl.DeleteProgram(_totkProgram);
             if (_ootProgram != 0) gl.DeleteProgram(_ootProgram);
             if (_wireProgram != 0) gl.DeleteProgram(_wireProgram);
+            if (_particleProgram != 0) gl.DeleteProgram(_particleProgram);
             throw;
         }
     }
@@ -93,6 +99,15 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         var assembly = typeof(ModelGlRenderer).Assembly;
         using var stream = assembly.GetManifestResourceStream(assembly.GetManifestResourceNames().Single(n => n.EndsWith("." + name)))!;
         var source = new StreamReader(stream).ReadToEnd();
+        if (name is "Model.frag" or "BOTW.frag" or "TOTK.frag" or "OOT.frag")
+        {
+            string output = name is "TOTK.frag" or "OOT.frag" ? "fragColor" : "FragColor";
+            source = Regex.Replace(source, @"\bvoid\s+main\s*\(", "void MaterialMain(");
+            // Apply exposure in linear space without changing alpha or the default render.
+            source += "\nuniform float ptBrightness;\nvoid main() { MaterialMain(); if(ptBrightness != 1.0) { vec3 c=max(" + output + ".rgb,vec3(0)); " +
+                "c=mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(vec3(0.04045),c))*ptBrightness; " +
+                output + ".rgb=mix(12.92*c,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c)); } }\n";
+        }
         source = source.Replace("#version 330 core", es ? "#version 300 es\nprecision highp float;\nprecision highp int;" : "#version 150");
         return Regex.Replace(source, @"layout\(location = \d+\) ", "");
     }
@@ -110,15 +125,16 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     private void V(string name, Vector3 value) => _gl.Uniform3(Location(name), value.X, value.Y, value.Z);
     private void M(string name, Matrix4x4 value) => _gl.UniformMatrix4(Location(name), 1, false, (float*)&value);
 
-    public void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false, ModelDisplayMode displayMode = ModelDisplayMode.Textured, bool staticScene = false)
+    internal void Draw(VisualModelData? model, ISet<int> hidden, Matrix4x4 camera, Vector3 direction, int width, int height, IReadOnlyList<GridLine>? grid = null, Vector3? background = null, bool emission = false, ModelDisplayMode displayMode = ModelDisplayMode.Textured, bool staticScene = false, Vector3? keyLightOverride = null, Vector3? eyeOverride = null, float clearAlpha = 1, float directIntensity = 1, float ambientIntensity = 1, float brightness = 3, BotwLightingEnvironment? environment = null, bool castShadows = false)
     {
         var gl = _gl;
+        brightness = float.IsFinite(brightness) ? Math.Clamp(brightness, 0, 4) : 3;
         gl.Viewport(0, 0, (uint)width, (uint)height); gl.Disable(EnableCap.ScissorTest);
         if (_es) { gl.DepthRange(0f, 1f); gl.ClearDepth(1f); }
         else { gl.DepthRange(0d, 1d); gl.ClearDepth(1d); }
         gl.ColorMask(true, true, true, true); gl.DepthMask(true);
         var clear = background ?? new Vector3(36 / 255f, 40 / 255f, 41 / 255f);
-        gl.ClearColor(clear.X, clear.Y, clear.Z, 1); gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+        gl.ClearColor(clear.X, clear.Y, clear.Z, clearAlpha); gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
         if (grid != null) _grid.Draw(grid, camera);
         if (!ReferenceEquals(_model, model))
         {
@@ -140,7 +156,43 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         right = right.LengthSquared() > 1e-8f ? Vector3.Normalize(right) : Vector3.UnitX;
         var up = Vector3.Cross(direction, right);
         var keyLight = Vector3.Normalize(Vector3.Normalize(new(.35f, .8f, .45f)) * .28f + Vector3.Normalize(direction * .62f + right * .34f + up * .7f) * .72f);
+        if (keyLightOverride is { } suppliedLight && suppliedLight.LengthSquared() > 1e-8f) keyLight = Vector3.Normalize(suppliedLight);
         var fillLight = Vector3.Normalize(direction * .45f - right * .72f + up * .22f);
+        IconShadowMap? shadow = null;
+        if (castShadows && _meshes.Any(m => m.Source.Material.Botw != null || m.Source.Material.Totk is { IsOot: false }))
+        {
+            var target = _iconShadow ??= new IconShadowMap(gl);
+            int framebuffer = gl.GetInteger(GLEnum.FramebufferBinding);
+            var originalCamera = camera; var originalDirection = direction;
+            var originalExcluded = excluded;
+            int originalWidth = width, originalHeight = height;
+            try
+            {
+                target.Begin(model.BoundsMinimum, model.BoundsMaximum, keyLight);
+                // The comparison filter spans neighbouring texels. Offset caster
+                // depth by its raster slope so grazing faces do not shadow themselves.
+                gl.Enable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(1, 1);
+                camera = target.Camera; direction = keyLight; width = height = IconShadowMap.Size;
+                SetShadowPositions(true);
+                excluded = new HashSet<int>(hidden);
+                _program = 0;
+                // Reuse each material's alpha test, including compatibility materials.
+                // Keep shadow null here to avoid sampling the render attachment.
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => !SceneTranslucent(_meshes[i].Source)), true);
+            }
+            finally
+            {
+                SetShadowPositions(false);
+                camera = originalCamera; direction = originalDirection; width = originalWidth; height = originalHeight;
+                excluded = originalExcluded;
+                gl.Disable(EnableCap.PolygonOffsetFill);
+                gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)framebuffer);
+                gl.Viewport(0, 0, (uint)width, (uint)height);
+                gl.ColorMask(true, true, true, true); gl.Disable(EnableCap.CullFace);
+            }
+            shadow = target;
+        }
         _program = 0;
         // Match the original complete-model depth prepass to avoid hair/cloth shell artifacts.
         var edgedFaces = displayMode == ModelDisplayMode.EdgedFaces;
@@ -171,10 +223,11 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             else
             {
                 gl.DepthFunc(DepthFunction.Less); gl.ColorMask(false, false, false, false);
-                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Totk is not { IsOot: true, IsTranslucent: true } && _meshes[i].Source.Material.Botw is not { Translucent: true }));
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).Where(i => _meshes[i].Source.Material.Particle == null && _meshes[i].Source.Material.Totk is not { IsTranslucent: true } && _meshes[i].Source.Material.Botw is not { Translucent: true }));
                 gl.ColorMask(true, true, true, true); gl.DepthMask(false); gl.DepthFunc(DepthFunction.Lequal);
                 gl.Enable(EnableCap.Blend); gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-                DrawMeshes(Enumerable.Range(0, _meshes.Count).OrderBy(i => _meshes[i].Source.Material.Totk is { IsOot: true, IsTranslucent: true } || _meshes[i].Source.Material.Botw is { Translucent: true } ? 1 : 0));
+                if (clearAlpha == 0) gl.BlendFuncSeparate(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha, BlendingFactor.One, BlendingFactor.OneMinusSrcAlpha);
+                DrawMeshes(Enumerable.Range(0, _meshes.Count).OrderBy(i => _meshes[i].Source.Material.Particle != null ? 2 : _meshes[i].Source.Material.Totk is { IsTranslucent: true } || _meshes[i].Source.Material.Botw is { Translucent: true } ? 1 : 0));
             }
         }
         finally
@@ -216,7 +269,41 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                 }
                 if (m.Totk is { IsOot: true }) gl.BlendFunc(m.Totk.Additive ? BlendingFactor.One : BlendingFactor.SrcAlpha,
                     m.Totk.Additive ? BlendingFactor.One : BlendingFactor.OneMinusSrcAlpha);
+                else if (clearAlpha == 0) gl.BlendFuncSeparate(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha, BlendingFactor.One, BlendingFactor.OneMinusSrcAlpha);
                 else gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                if (m.Particle is { } particle)
+                {
+                    if (particle.Alpha <= 0) continue;
+                    _program = _particleProgram; gl.UseProgram(_program);
+                    M("uMvp", camera); M("uModel", Matrix4x4.Identity);
+                    gl.Disable(EnableCap.CullFace);
+                    void Four(string name, Vector4 value) => gl.Uniform4(Location(name), value.X, value.Y, value.Z, value.W);
+                    Four("uParticleColor0", particle.Color0); Four("uParticleColor1", particle.Color1);
+                    Four("uTexture1Srt", particle.Texture1Srt); F("uParticleAlpha", particle.Alpha);
+                    for (int t = 0; t < 2; t++)
+                    {
+                        gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + t));
+                        gl.BindTexture(TextureTarget.Texture2D, gpu.Textures[t]); I(t == 0 ? "uMask" : "uNoise", t);
+                    }
+                    gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
+                    lastTotkMaterial = null; LastMaterialUpdates++;
+                    continue;
+                }
+                if (m.Totk is {} nativeTotk && TotkShaderSource.Supports(nativeTotk))
+                {
+                    if (nativeTotk.DisplayFace is "front" or "back")
+                    {
+                        gl.Enable(EnableCap.CullFace); gl.FrontFace(FrontFaceDirection.Ccw);
+                        gl.CullFace(nativeTotk.DisplayFace == "front" ? TriangleFace.Back : TriangleFace.Front);
+                    }
+                    else gl.Disable(EnableCap.CullFace);
+                    _totkNative.Bind(nativeTotk, gpu.Textures, camera, direction, (model.BoundsMinimum + model.BoundsMaximum) * .5f,
+                        Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum), keyLight, width, height, emission,
+                        directIntensity, ambientIntensity, brightness, environment, shadow);
+                    gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
+                    _program = 0; lastTotkMaterial = null; LastMaterialUpdates++;
+                    continue;
+                }
                 if (m.Botw is {} botw && m.Totk == null)
                 {
                     if (botw.DisplayFace is "front" or "back")
@@ -226,7 +313,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                     }
                     else gl.Disable(EnableCap.CullFace);
                     _botwNative.Bind(botw, gpu.Textures, camera, direction, (model.BoundsMinimum + model.BoundsMaximum) * .5f,
-                        Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum), keyLight, width, height, emission);
+                        Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum), keyLight, width, height, emission, directIntensity, ambientIntensity, brightness, environment, shadow);
                     gl.VertexAttrib4(9, 1f, 1f, 1f, 1f);
                     gl.BindVertexArray(gpu.Vao); gl.DrawElements(PrimitiveType.Triangles, (uint)gpu.Source.Indices.Length, DrawElementsType.UnsignedInt, null);
                     gl.Disable(EnableCap.CullFace);
@@ -238,10 +325,11 @@ public sealed unsafe class ModelGlRenderer : IDisposable
                 {
                     lastTotkMaterial = null;
                     _program = program; gl.UseProgram(program);
+                    F("ptBrightness", brightness);
                     M("uMvp", camera); M("uModel", Matrix4x4.Identity); F("uOpacity", 1);
                     V("uViewDirection", direction); V("uKeyLight", keyLight); V("uFillLight", fillLight);
                     var center = (model.BoundsMinimum + model.BoundsMaximum) * .5f;
-                    var eye = center + direction * Math.Max(1, Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum) * 2);
+                    var eye = eyeOverride ?? center + direction * Math.Max(1, Vector3.Distance(model.BoundsMinimum, model.BoundsMaximum) * 2);
                     V("cameraPosition", eye); M("ootView", Matrix4x4.CreateLookAt(eye, center, Math.Abs(direction.Y) > .99f ? Vector3.UnitZ : Vector3.UnitY));
                 }
                 if (m.Totk is { } totk)
@@ -280,8 +368,8 @@ public sealed unsafe class ModelGlRenderer : IDisposable
         }
     }
 
-    internal static bool SceneTranslucent(VisualModelMesh mesh) => mesh.Material.Totk?.IsTranslucent ?? mesh.Material.Botw?.Translucent
-        ?? (mesh.Texture?.AlphaMode == VisualModelAlphaMode.Blend || mesh.Material.Tint.W < 1);
+    internal static bool SceneTranslucent(VisualModelMesh mesh) => mesh.Material.Particle != null || (mesh.Material.Totk?.IsTranslucent ?? mesh.Material.Botw?.Translucent
+        ?? (mesh.Texture?.AlphaMode == VisualModelAlphaMode.Blend || mesh.Material.Tint.W < 1));
 
     private void DrawWireframe(ISet<int> hidden, Matrix4x4 camera, Vector3 background, bool overlay = false)
     {
@@ -339,6 +427,7 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             _gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.Vbo);
             fixed (float* v = vertices) _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(vertices.Length * 4), v, BufferUsageARB.DynamicDraw);
             _meshes[i] = WithBounds(gpu with { Source = source });
+            UploadShadowPositions(_meshes[i]);
         }
     }
     private void Upload(VisualModelData model)
@@ -357,14 +446,48 @@ public sealed unsafe class ModelGlRenderer : IDisposable
             int[] sizes = !extended ? [3, 3, 2, 2, 2, 2, 2, 4] : [3, 3, 2, 2, 2, 2, 2, 4, 4]; int offset = 0;
             uint stride = !extended ? 80u : 96u;
             for (uint a = 0; a < sizes.Length; a++) { gl.VertexAttribPointer(a, sizes[a], VertexAttribPointerType.Float, false, stride, (void*)(offset * 4)); gl.EnableVertexAttribArray(a); offset += sizes[a]; }
+            UploadShadowPositions(gpu);
             VisualModelTexture?[] textures = source.Material.Totk?.Textures ?? source.Material.Botw?.Textures ?? [source.Texture ?? (source.UseMissingTextureFallback ? ModelTextures.Default : null), source.SpecularTexture, source.NormalTexture, source.AmbientOcclusionTexture, source.AuxiliaryTexture, source.EyeGlintTexture];
             for (int t = 0; t < textures.Length; t++) if (textures[t] is { } texture)
             {
                 var native = source.Material.Totk == null ? source.Material.Botw : null;
-                gpu.Textures[t] = UploadTexture(texture, native != null && texture.IsSrgb, native?.Samplers[t]);
+                var nativeTotk = source.Material.Totk is {} totk && TotkShaderSource.Supports(totk) ? totk : null;
+                gpu.Textures[t] = UploadTexture(texture, nativeTotk != null ? texture.IsSrgb || (nativeTotk.ColorTextures[t] && !texture.IsSingleChannel) : native != null && texture.IsSrgb,
+                    native?.Samplers[t] ?? nativeTotk?.Samplers[t] ?? (source.Material.Particle is { } particle && t < particle.Samplers.Length ? particle.Samplers[t] : null));
             }
         }
         _sceneOrder = Enumerable.Range(0, _meshes.Count).GroupBy(i => _meshes[i].Source.Material, ReferenceEqualityComparer.Instance).SelectMany(g => g).ToArray();
+    }
+    private void UploadShadowPositions(GpuMesh gpu)
+    {
+        var offsets = gpu.Source.ShadowOffsets;
+        if (offsets.Length == 0)
+        {
+            if (gpu.ShadowVbo != 0) _gl.DeleteBuffer(gpu.ShadowVbo);
+            gpu.ShadowVbo = 0;
+            return;
+        }
+        if (offsets.Length != gpu.Source.Vertices.Length / 8) throw new InvalidDataException("Shadow vertex count mismatch: " + gpu.Source.Name);
+        var positions = new float[offsets.Length * 3];
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            positions[i * 3] = gpu.Source.Vertices[i * 8] + offsets[i].X;
+            positions[i * 3 + 1] = gpu.Source.Vertices[i * 8 + 1] + offsets[i].Y;
+            positions[i * 3 + 2] = gpu.Source.Vertices[i * 8 + 2] + offsets[i].Z;
+        }
+        if (gpu.ShadowVbo == 0) gpu.ShadowVbo = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.ShadowVbo);
+        fixed (float* p = positions) _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(positions.Length * 4), p, BufferUsageARB.DynamicDraw);
+    }
+    private void SetShadowPositions(bool shadow)
+    {
+        foreach (var gpu in _meshes.Where(m => m.ShadowVbo != 0))
+        {
+            _gl.BindVertexArray(gpu.Vao);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, shadow ? gpu.ShadowVbo : gpu.Vbo);
+            uint stride = shadow ? 12u : gpu.Source.Material.Totk != null || gpu.Source.Material.Botw != null ? 96u : 80u;
+            _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, null);
+        }
     }
     private uint UploadTexture(VisualModelTexture texture, bool srgb = false, BotwPreviewSampler? sampler = null)
     {
@@ -394,9 +517,10 @@ public sealed unsafe class ModelGlRenderer : IDisposable
     private void ReleaseMeshes()
     {
         _botwNative.ReleaseMaterials();
-        foreach (var m in _meshes) { _gl.DeleteVertexArray(m.Vao); _gl.DeleteBuffer(m.Vbo); _gl.DeleteBuffer(m.Ebo); if (m.WireEbo != 0) _gl.DeleteBuffer(m.WireEbo); }
+        _totkNative.ReleaseMaterials();
+        foreach (var m in _meshes) { _gl.DeleteVertexArray(m.Vao); _gl.DeleteBuffer(m.Vbo); _gl.DeleteBuffer(m.Ebo); if (m.WireEbo != 0) _gl.DeleteBuffer(m.WireEbo); if (m.ShadowVbo != 0) _gl.DeleteBuffer(m.ShadowVbo); }
         foreach (var t in _textures.Values) _gl.DeleteTexture(t);
         _meshes.Clear(); _textures.Clear();
     }
-    public void Dispose() { ReleaseMeshes(); _grid.Dispose(); _botwNative.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); _gl.DeleteProgram(_ootProgram); _gl.DeleteProgram(_wireProgram); }
+    public void Dispose() { ReleaseMeshes(); _iconShadow?.Dispose(); _grid.Dispose(); _botwNative.Dispose(); _totkNative.Dispose(); _gl.DeleteProgram(_standardProgram); _gl.DeleteProgram(_botwProgram); _gl.DeleteProgram(_totkProgram); _gl.DeleteProgram(_ootProgram); _gl.DeleteProgram(_wireProgram); _gl.DeleteProgram(_particleProgram); }
 }

@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace HKCLTool;
 
 internal sealed record BotwActorModelReference(string Resource, string Model, string BindBone);
@@ -20,6 +22,7 @@ internal sealed partial class BotwActorResources
     public List<BotwActorModelReference> Models { get; } = new();
     public string VariationMatAnim { get; private set; } = "";
     public int VariationMatAnimFrame { get; private set; }
+    public Vector3 ArmorEarRotationDegrees { get; private set; }
     public List<string> AnimationResources { get; } = new();
     public List<BotwActorAnimationReference> Animations { get; } = new();
     public List<string> PhysicsFiles { get; } = new();
@@ -141,6 +144,17 @@ internal sealed partial class BotwActorResources
             ?? _entries.Keys.Where(k => k.StartsWith($"Actor/{folder}/", StringComparison.OrdinalIgnoreCase) && k.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
                 .Select(Path.GetFileNameWithoutExtension).FirstOrDefault() ?? "Dummy";
         var modelList = Parameters("ModelList", Link("ModelUser", "ModelList", ".bmodellist"), "bmodellist");
+        if (ActorName.StartsWith("Armor_", StringComparison.Ordinal) && ActorName.EndsWith("_Head", StringComparison.Ordinal))
+        {
+            var general = Parameters("GeneralParamList", Link("GParamUser", "GeneralParamList", ".bgparamlist"), "bgparamlist");
+            var ear = general?.Objects.FirstOrDefault(o => o.Hash == BotwAampWriter.Crc32("ArmorHead"))?.Find("EarRotate");
+            if (ear is { Type: 4 })
+            {
+                var degrees = ear.AsVector3();
+                if (float.IsFinite(degrees.X) && float.IsFinite(degrees.Y) && float.IsFinite(degrees.Z)) ArmorEarRotationDegrees = degrees;
+                else Warnings.Add("Ignored non-finite ArmorHead.EarRotate.");
+            }
+        }
         if (modelList != null)
         {
             var controller = modelList.Objects.FirstOrDefault(o => o.Hash == BotwAampWriter.Crc32("ControllerInfo"));

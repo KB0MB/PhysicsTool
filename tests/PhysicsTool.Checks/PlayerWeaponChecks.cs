@@ -13,12 +13,16 @@ internal static class PlayerWeaponChecks
     };
     internal static void Synthetic()
     {
-        foreach (var slot in Enum.GetValues<PlayerArmorSlot>())
-            Require(new PlayerArmorEntry(slot, "Armor_1151_" + slot, "").ToString() == "1151", "Armor prefix/suffix leaked into type-ahead text");
-        Require(new PlayerArmorEntry(PlayerArmorSlot.Upper, "Armor_Default_Upper", "").ToString() == "Default", "Default armor label lost");
+        Require(PlayerEquipmentNames.Name("Armor_001_Upper", false) == "Hylian Tunic", "BotW armor name missing");
+        Require(PlayerEquipmentNames.Name("Weapon_Shield_030", true) == "Hylian Shield", "TotK shield name missing");
+        Require(PlayerEquipmentNames.Name("Weapon_Sword_023", false) == "Ancient Short Sword", "BotW-specific weapon name missing");
+        Require(PlayerEquipmentNames.Name("Armor_Default_Upper", false) == "Default upper", "Default armor label lost");
+        Require(PlayerEquipmentNames.Name("Weapon_Sword_Mod", false) == "Weapon_Sword_Mod", "Unknown mod actor ID was lost");
+        var labels = PlayerEquipmentNames.Labels(["Armor_001_Upper", "Armor_002_Upper"], false);
+        Require(labels["Armor_001_Upper"] != labels["Armor_002_Upper"] && labels.Values.All(n => n.StartsWith("Hylian Tunic")), "Upgrade labels are ambiguous");
         foreach (var kind in Enum.GetValues<PlayerWeaponKind>())
         {
-            Require(new PlayerWeaponEntry(kind, "Weapon_" + kind + "_001", "").ToString() == "001", "Weapon label is not numeric");
+            Require(new PlayerWeaponEntry(kind, "Weapon_" + kind + "_001", "") { DisplayName = "Named item" }.ToString() == "Named item", "Weapon text search does not use its item name");
             Require(PlayerWeaponParameters.Bone(kind, false) == "Pod_A", "Stowed weapon binding changed");
             Require(PlayerWeaponParameters.Bone(kind, true) == (kind is PlayerWeaponKind.Shield or PlayerWeaponKind.Bow ? "Weapon_L" : "Weapon_R"), "Drawn hand is incorrect");
         }
@@ -26,7 +30,7 @@ internal static class PlayerWeaponChecks
         Require(Vector3.Distance(Vector3.Transform(Vector3.UnitX, p.Offset(false)), new(1, 4, 3)) < 1e-5f, "Equipment degree/SRT conversion incorrect");
         Require(p.Sheath == "Weapon_Sheath_070" && p.Quiver == "", "Actor reference parsing incorrect");
         Require(Vector3.Distance(Vector3.Transform(Vector3.UnitX, p.Offset(true)), new(2, 0, 0)) < 1e-5f, "Missing draw offsets must be zero");
-        Console.WriteLine("PASS: numeric equipment labels, default states, hand bindings, actor references and degree/SRT offsets.");
+        Console.WriteLine("PASS: equipment names, default states, hand bindings, actor references and degree/SRT offsets.");
     }
     internal static void Verify(BotwActorScene scene)
     {

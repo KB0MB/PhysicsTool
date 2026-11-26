@@ -1,4 +1,4 @@
-param([string]$Version = '2.2.1', [switch]$SkipSource)
+param([string]$Version = '2.2.2', [switch]$SkipSource)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zip-unix.ps1')
 $root = Split-Path $PSScriptRoot
@@ -41,7 +41,7 @@ foreach ($rid in @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','os
                 $entry.FullName -match '(?i)(\.pdb$|/settings\.json$|/actor-folders\.json$|/actor-catalog-[^/]+\.json$|\.(hkcl|bphcl|bphyssb|bphhb|hkrg|sbfres|bfres|pack|sbactorpack|txtg|zs)$)') { throw "Unexpected private/unsafe file: $($entry.FullName)" }
         }
         foreach ($required in @('LICENSE','THIRD_PARTY_NOTICES.txt','Licenses/Inter-OFL.txt','Licenses/DotNetRuntime/LICENSE.TXT',
-            'Licenses/DotNetRuntime/THIRD-PARTY-NOTICES.TXT','Licenses/Killz-BotW-Shaders.txt','Licenses/MeshCodec-source.zip','Licenses/Tkmm.BymlLibrary-1.2.3-source.zip')) {
+            'Licenses/DotNetRuntime/THIRD-PARTY-NOTICES.TXT','Licenses/Killz-BotW-Shaders.txt','Licenses/Killz-TotK-Shaders.txt','Licenses/MeshCodec-source.zip','Licenses/Tkmm.BymlLibrary-1.2.3-source.zip')) {
             $base = if ($required.StartsWith('Licenses/')) { $resources } else { $app }
             if (-not $zip.GetEntry($base + $required)) { throw "Missing notice or source: $rid $required" }
         }

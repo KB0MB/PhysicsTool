@@ -85,6 +85,7 @@ internal static class FileWorkflowChecks
         Require(timer.Interval == TimeSpan.FromSeconds(1d / 60), "60 FPS timer not restored");
         File.WriteAllText(prefsPath, "invalid"); Require(DesktopPreferences.Load(prefsPath) == new DesktopPreferences(), "Invalid settings did not use defaults");
         window.ShowEditor(); Dispatcher.UIThread.RunJobs(); window.Viewport.Focus();
+        window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "ViewportParticles").IsChecked = true;
         window.KeyPress(Key.A, RawInputModifiers.None, PhysicalKey.None, null); Dispatcher.UIThread.RunJobs();
         Require(window.Viewport.Selected.Count == window.Session.Document.GetParticleRows(0).Count, "A failed to select particles");
         window.KeyPress(Key.A, RawInputModifiers.Alt, PhysicalKey.None, null); Dispatcher.UIThread.RunJobs();

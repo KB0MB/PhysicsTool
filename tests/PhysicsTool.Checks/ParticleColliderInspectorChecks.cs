@@ -135,6 +135,8 @@ internal static class ParticleColliderInspectorChecks
 
     private static void CheckListTransformShortcuts(MainWindow window, ListBox items)
     {
+        foreach (var toggle in window.GetVisualDescendants().OfType<CheckBox>().Where(c => c.Name is "ViewportParticles" or "ViewportColliders"))
+            toggle.IsChecked = true;
         var viewport = window.Viewport;
         var kind = viewport.SelectionKind;
         HashSet<int> Selected() => kind switch

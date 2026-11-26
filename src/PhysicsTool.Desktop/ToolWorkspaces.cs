@@ -10,12 +10,13 @@ public sealed partial class MainWindow
     private CollisionView? _collisionView;
     private BphscView? _bphscView;
     private ShrineSceneView? _shrineView;
+    private IconToolView? _iconView;
     private BphysicsView? _bphysicsView;
     internal BphysicsView? BphysicsWorkspace => _bphysicsView;
     private Func<Task>? _compoundBack;
     private bool _confirmingClose;
     internal bool IsToolWorkspaceVisible => !ReferenceEquals(Content, _mainContent);
-    private bool ToolWorkspaceBusy => _collisionView?.Busy == true || _bphscView?.Busy == true || _shrineView?.Busy == true;
+    private bool ToolWorkspaceBusy => _collisionView?.Busy == true || _bphscView?.Busy == true || _shrineView?.Busy == true || _iconView?.Busy == true;
     internal CollisionView? CollisionWorkspace => _collisionView;
 
     private void ShowBphysics(string path)
@@ -60,6 +61,13 @@ public sealed partial class MainWindow
         ShowToolWorkspace(_shrineView, "Map scene", () => { Content = _mainContent; return Task.CompletedTask; });
     }
 
+    internal void ShowIconTool()
+    {
+        PauseEditorAnimation(); _actorPlaying = false; StopSimulation();
+        _iconView ??= new IconToolView(this, ModelSurface != null);
+        ShowToolWorkspace(_iconView, "Icon Tool", () => { Content = _mainContent; return Task.CompletedTask; });
+    }
+
     private void ShowToolWorkspace(Control view, string title, Func<Task> back)
     {
         // Detach retained controls from their old host before reusing the workspace.
@@ -74,13 +82,13 @@ public sealed partial class MainWindow
             if (returning) return;
             // A background task in a retained, hidden workspace must not swallow Back.
             bool busy = view switch { CollisionView v => v.Busy, BphscView v => v.Busy,
-                ShrineSceneView v => v.Busy, _ => false };
+                ShrineSceneView v => v.Busy, IconToolView v => v.Busy, _ => false };
             if (busy) return;
             returning = true;
-            try { await back(); }
+            try { await back(); UpdateActorPlayback(); }
             finally { returning = false; }
         };
         Grid.SetColumn(button, 1); footer.Children.Add(button); DockPanel.SetDock(footer, Dock.Bottom); shell.Children.Add(footer);
-        shell.Children.Add(view); Content = shell;
+        shell.Children.Add(view); Content = shell; UpdateActorPlayback();
     }
 }

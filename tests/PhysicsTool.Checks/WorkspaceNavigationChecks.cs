@@ -10,6 +10,27 @@ using PhysicsTool.Desktop;
 internal static class WorkspaceNavigationChecks
 {
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }
+    internal static void Defaults()
+    {
+        var window = new MainWindow(graphics: false); window.Show(); Dispatcher.UIThread.RunJobs();
+        CheckDefaults(window); window.Close();
+        AxisHoverChecks.Run();
+        Console.WriteLine("PASS: particles and colliders default off, emission defaults on; all three toggles update the viewport.");
+    }
+    private static void CheckDefaults(MainWindow window)
+    {
+        window.ShowEditor(); Dispatcher.UIThread.RunJobs();
+        var particles = window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "ViewportParticles");
+        var colliders = window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "ViewportColliders");
+        var emission = window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "ViewportEmission");
+        Require(particles.IsChecked == false && !window.Viewport.ShowParticles && colliders.IsChecked == false && !window.Viewport.ShowColliders,
+            "Particles/colliders are not hidden by default");
+        Require(emission.IsChecked == true && window.Viewport.ShowEmission, "Emission is not enabled by default");
+        particles.IsChecked = colliders.IsChecked = true; emission.IsChecked = false;
+        Require(window.Viewport.ShowParticles && window.Viewport.ShowColliders && !window.Viewport.ShowEmission, "Viewport toggles no longer update rendering");
+        particles.IsChecked = colliders.IsChecked = false; emission.IsChecked = true;
+        window.ShowOverview(); Dispatcher.UIThread.RunJobs();
+    }
     internal static void Run(string output)
     {
         UiLanguage.Initialize("en");
@@ -37,6 +58,7 @@ internal static class WorkspaceNavigationChecks
         (DesktopPreferences.Load(prefs) with { MaximizeOnStartup = false }).Save(prefs);
         Require(!DesktopPreferences.Load(prefs).MaximizeOnStartup, "Maximize preference not cleared");
         var window = new MainWindow(graphics: false); window.Show(); Dispatcher.UIThread.RunJobs();
+        CheckDefaults(window);
         var original = window.Content;
         Require(!window.GetVisualDescendants().OfType<Button>().Any(b => b.Name == "OpenUmii" || Equals(b.Content, "UMii")), "Unreleased appearance editor menu leaked into release");
         foreach (var assembly in new[] { typeof(MainWindow).Assembly, typeof(PhysicsTool.Core.EditorSession).Assembly })
@@ -98,6 +120,61 @@ internal static class WorkspaceNavigationChecks
             Require(UiLanguage.Text(topic.Body) != topic.Body, $"Map documentation translation missing: {language}");
         }
         UiLanguage.Set("en"); Back();
+        window.ShowIconTool(); Dispatcher.UIThread.RunJobs();
+        var icons = window.GetVisualDescendants().OfType<IconToolView>().Single();
+        var iconTimeout = System.Diagnostics.Stopwatch.StartNew();
+        while (icons.Busy && iconTimeout.Elapsed < TimeSpan.FromSeconds(30)) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
+        Require(!icons.Busy, "Icon catalog did not finish");
+        Require(!icons.GetVisualDescendants().OfType<TextBox>().Any(t => t.Name == "IconPresetSearch"), "Capture search bar was not removed");
+        var presetList = icons.GetVisualDescendants().OfType<ComboBox>().Single(t => t.Name == "IconCaptureMode");
+        Require(presetList.IsEffectivelyEnabled && presetList.IsTextSearchEnabled, "Capture keyboard navigation unavailable");
+        presetList.Focus();
+        presetList.RaiseEvent(new Avalonia.Input.TextInputEventArgs { RoutedEvent = Avalonia.Input.InputElement.TextInputEvent, Text = "070" });
+        Dispatcher.UIThread.RunJobs();
+        Require(presetList.SelectedItem is PhysicsTool.Core.IconCapturePreset { Name: "Weapon_Sword_070" }, "Typing 070 did not select the Master Sword preset");
+        Require(presetList.Bounds.Height < 60 && presetList.MaxDropDownHeight == 360, "Capture picker is not a compact equipment-style dropdown");
+        presetList.IsDropDownOpen = true; Dispatcher.UIThread.RunJobs();
+        Require(presetList.IsDropDownOpen, "Capture dropdown did not open");
+        using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "icon-preset-keyboard-070.png"));
+        presetList.IsDropDownOpen = false; Dispatcher.UIThread.RunJobs();
+        Require(!icons.UsesViewport, "Selecting a visible preset did not activate it");
+        presetList.SelectedItem = "Viewport";
+        Require(presetList.Items.Count > 700, "Keyboard jumping removed capture presets");
+        Require(icons.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "CaptureIcon").Content?.ToString() == "Capture icon", "Capture command missing");
+        string actorParent = Path.Combine(output, "nested-actors");
+        foreach (string relative in new[] { "Update/content/Actor/Pack", "Switch/Actor/Pack", "TotK/romfs/Pack/Actor" })
+        {
+            string folder = Path.Combine(actorParent, relative); Directory.CreateDirectory(folder);
+            File.WriteAllBytes(Path.Combine(folder, "Weapon_Sword_070" + (relative.Contains("TotK") ? ".pack.zs" : ".sbactorpack")), []);
+        }
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            icons.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Open actor")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            var dialog = window.OwnedWindows.Single();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            while (icons.Busy && watch.Elapsed < TimeSpan.FromSeconds(30)) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
+            Require(!icons.Busy, "Actor browser initial scan timed out");
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == "IconActorRoot").Text = actorParent;
+            dialog.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Scan")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            watch.Restart();
+            while (icons.Busy && watch.Elapsed < TimeSpan.FromSeconds(30)) { Dispatcher.UIThread.RunJobs(); Thread.Sleep(5); }
+            Require(!icons.Busy, "Nested actor scan timed out");
+            var actorSearch = dialog.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == "IconActorSearch");
+            actorSearch.Text = "070"; Dispatcher.UIThread.RunJobs();
+            var results = dialog.GetVisualDescendants().OfType<ListBox>().Single(t => t.Name == "IconActorResults");
+            Require(results.ItemCount == 3, "Parent folder scan lost nested game roots");
+            Require(results.Items.OfType<PhysicsTool.Core.IconActor>().Select(a => a.ResourceRoot).Distinct().Count() == 3, "Actor sources mixed across dumps");
+            using (var frame = dialog.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "icon-actor-browser.png"));
+            actorSearch.Text = "nothing-matches"; Dispatcher.UIThread.RunJobs();
+            Require(results.ItemCount == 0 && dialog.GetVisualDescendants().OfType<TextBlock>().Single(t => t.Name == "IconActorStatus").Text == "No actors match this search.", "Actor no-match status missing");
+            dialog.Close(); Dispatcher.UIThread.RunJobs();
+        }
+        using (var frame = window.CaptureRenderedFrame()!) frame.Save(Path.Combine(output, "icon-tool-workspace.png"));
+        Back(); Require(ReferenceEquals(window.Content, original), "Icon Tool Back did not return to main");
+        window.ShowIconTool(); Dispatcher.UIThread.RunJobs();
+        Require(ReferenceEquals(icons, window.GetVisualDescendants().OfType<IconToolView>().Single()), "Icon workspace state lost");
+        Back();
         window.Close();
         string placement = Path.Combine(output, "placement.json");
         var host = new Window { Width = 1050, Height = 700 };

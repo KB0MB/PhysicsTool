@@ -144,6 +144,7 @@ public sealed class VisualModelUvSet
 
 public sealed class VisualModelMaterialSettings
 {
+    public BotwParticleMaterial? Particle { get; set; }
     public TotkPreviewMaterial? Totk { get; set; }
     public BotwPreviewMaterial? Botw { get; set; }
     public bool UseBotwPreviewShader { get; set; }
@@ -173,6 +174,7 @@ public sealed class VisualModelMaterialSettings
 
     public VisualModelMaterialSettings Clone() => new()
     {
+        Particle = Particle,
         Totk = Totk,
         Botw = Botw,
         UseBotwPreviewShader = UseBotwPreviewShader,
@@ -208,6 +210,7 @@ public sealed class VisualModelMesh
     // Interleaved position, normal, and the FBX albedo UV: 3 + 3 + 2 floats.
     public float[] Vertices { get; init; } = Array.Empty<float>();
     public Vector4[] Tangents { get; set; } = [];
+    public Vector3[] ShadowOffsets { get; init; } = [];
     public string TangentUvSet { get; set; } = "";
     public uint[] Indices { get; init; } = Array.Empty<uint>();
     public Vector4 BaseColor { get; init; } = Vector4.One;

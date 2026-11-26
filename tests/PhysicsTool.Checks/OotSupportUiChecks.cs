@@ -70,6 +70,7 @@ internal static class OotSupportUiChecks
         if (main.Session.Document.CaptureState() == geometryBefore) throw new Exception("OoT position UI did not edit");
         main.Session.Undo();
         var viewport = (PhysicsViewport)typeof(MainWindow).GetField("_viewport", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+        main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "ViewportParticles").IsChecked = true;
         viewport.Selected.Clear(); viewport.Selected.Add(particle.Index);
         var baseline = main.Session.Document.CaptureState();
         if (!viewport.TransformKey(new() { Key = Avalonia.Input.Key.G }) || !viewport.TransformActive) throw new Exception("OoT particle transform not enabled");

@@ -48,12 +48,18 @@ internal static class TimelineScrubbingChecks
         {
             if (Playing() != playing) play.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Begin();
+            var beforeBurst = window.Viewport.Model;
+            for (int i = 0; i < 25; i++) timeline.Value = timeline.Maximum * (i + 1) / 26;
+            Require(ReferenceEquals(beforeBurst, window.Viewport.Model), "Drag burst evaluated every intermediate pose synchronously");
+            Dispatcher.UIThread.RunJobs();
+            Require(Math.Abs(Frame() - timeline.Value) < .001, "Drag burst did not apply latest frame");
             var origin = timeline.TranslatePoint(new(0, timeline.Bounds.Height / 2), window)!.Value;
             foreach (var fraction in new[] { .85, .12, .65, .02, .98, .3 })
             {
                 window.MouseMove(origin + new Point(timeline.Bounds.Width * fraction, 0), RawInputModifiers.LeftMouseButton);
                 // Exercise exact seeks as well as actual slider pointer movement.
                 timeline.Value = fraction * timeline.Maximum;
+                Dispatcher.UIThread.RunJobs();
                 var frame = Frame(); var points = Points();
                 Pump(70);
                 Require(window.TimelineScrubbing && Frame() == frame, "Playback fought the dragged timeline");
@@ -97,7 +103,7 @@ internal static class TimelineScrubbingChecks
     {
         var window = new MainWindow(graphics: false); window.Show();
         window.Viewport.ShowPhysics = false;
-        var load = window.LoadActorPathAsync(path);
+        var load = window.LoadActorPathAsync(path, entry: Path.GetFileName(path) == "TitleBG.pack" ? "Actor/Pack/GameROMPlayer.sbactorpack" : null);
         while (!load.IsCompleted) Pump(10);
         load.GetAwaiter().GetResult(); Dispatcher.UIThread.RunJobs();
         Console.WriteLine("SCRUB LOADED " + path);

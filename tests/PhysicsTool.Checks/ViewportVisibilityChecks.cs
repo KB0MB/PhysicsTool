@@ -85,6 +85,10 @@ internal static class ViewportVisibilityChecks
             window.ShowEditor();
             Dispatcher.UIThread.RunJobs();
             CheckBox Toggle(string name) => window.GetVisualDescendants().OfType<CheckBox>().Single(control => control.Name == name);
+            if (window.Viewport.ShowParticles || window.Viewport.ShowColliders || !window.Viewport.ShowEmission)
+                throw new Exception("Viewport defaults must hide particles/colliders and enable emission.");
+            Toggle("ViewportParticles").IsChecked = true;
+            Toggle("ViewportColliders").IsChecked = true;
             Toggle("ViewportParticles").IsChecked = false;
             if (window.Viewport.ShowParticles || !window.Viewport.ShowBones || !window.Viewport.ShowColliders)
                 throw new Exception("Particles checkbox still hides the other overlays.");

@@ -101,6 +101,7 @@ internal static class TransformPreviewChecks
     public static void RunUi(string output)
     {
         var window = new MainWindow(graphics: false); window.Show(); window.LoadPath(Path.Combine(output, "manual-0.hkcl")); window.ShowEditor(); Dispatcher.UIThread.RunJobs();
+        window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "ViewportParticles").IsChecked = true;
         window.Viewport.SelectRectangle(new Rect(0, 0, window.Viewport.Bounds.Width, window.Viewport.Bounds.Height), SelectionOperation.Replace);
         var state = window.Session.Document.CaptureState();
         var attach = window.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Attach to Bone"));

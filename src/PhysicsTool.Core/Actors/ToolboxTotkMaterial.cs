@@ -7,6 +7,11 @@ namespace HKCLTool;
 
 public sealed class TotkPreviewMaterial
 {
+    public bool Native { get; init; }
+    public Dictionary<string, long> Options { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, float[]> Parameters { get; } = new(StringComparer.Ordinal);
+    public BotwPreviewSampler?[] Samplers { get; } = new BotwPreviewSampler?[8];
+    public bool[] ColorTextures { get; } = new bool[8];
     public bool IsOot { get; init; }
     public bool Additive { get; init; }
     public bool IsSeal { get; init; }
@@ -20,6 +25,20 @@ public sealed class TotkPreviewMaterial
     public Dictionary<string, int> Integers { get; } = new();
     public Dictionary<string, float> Scalars { get; } = new();
     public Dictionary<string, Vector4> Vectors { get; } = new();
+
+    internal TotkPreviewMaterial Clone()
+    {
+        var copy = new TotkPreviewMaterial { Native = Native, IsOot = IsOot, Additive = Additive, IsSeal = IsSeal,
+            IsTranslucent = IsTranslucent, DepthWrite = DepthWrite, DisplayFace = DisplayFace, Priority = Priority, VertexColors = VertexColors };
+        foreach (var p in Options) copy.Options[p.Key] = p.Value;
+        foreach (var p in Parameters) copy.Parameters[p.Key] = (float[])p.Value.Clone();
+        foreach (var p in Integers) copy.Integers[p.Key] = p.Value;
+        foreach (var p in Scalars) copy.Scalars[p.Key] = p.Value;
+        foreach (var p in Vectors) copy.Vectors[p.Key] = p.Value;
+        Samplers.CopyTo(copy.Samplers, 0); ColorTextures.CopyTo(copy.ColorTextures, 0);
+        Textures.CopyTo(copy.Textures, 0); UvSets.CopyTo(copy.UvSets, 0);
+        return copy;
+    }
 }
 
 internal static class ToolboxTotkMaterial
@@ -48,7 +67,8 @@ internal static class ToolboxTotkMaterial
             : Math.Clamp(BinaryPrimitives.ReadInt32LittleEndian(bytes), 0, 2047);
     }
 
-    internal static void Apply(object material, VisualModelMesh mesh, Dictionary<string, VisualModelTexture> textures)
+    internal static void Apply(object material, VisualModelMesh mesh, Dictionary<string, VisualModelTexture> textures,
+        IReadOnlyDictionary<(string Material, string Sampler), string>? overrides = null)
     {
         if (material is not Res.Material m || m.ShaderAssign is not { } shader) return;
         var options = Enumerable.Range(0, shader.ShaderOptions?.Count ?? 0)
@@ -62,6 +82,7 @@ internal static class ToolboxTotkMaterial
             : r.GetValueSingles().FirstOrDefault().ToString(CultureInfo.InvariantCulture) : fallback;
         var result = new TotkPreviewMaterial
         {
+            Native = shader.ShaderArchiveName?.StartsWith("material", StringComparison.OrdinalIgnoreCase) == true,
             IsSeal = R("gsys_pass", "") == "seal",
             IsTranslucent = R("gsys_render_state_mode", "opaque") is "translucent" or "custom",
             DepthWrite = R("gsys_depth_test_write", "true") is "true" or "1",
@@ -69,6 +90,42 @@ internal static class ToolboxTotkMaterial
             Priority = int.TryParse(R("gsys_priority", "0"), out var priority) ? priority : 0
         };
         mesh.Material.Totk = result;
+        // TXTG color assets can carry UNORM storage tags. Preserve the preview's
+        // color interpretation while leaving normal maps and scalar masks linear.
+        void Color(int slot) { if (slot is >= 0 and < 8) result.ColorTextures[slot] = true; }
+        int albedoOutput = O("o_albedo_color", 0);
+        Color(albedoOutput);
+        if (B("o_enable_emission", false)) Color(O("o_emission_color", 0));
+        if (albedoOutput is >= 200 and < 300) Color(0);
+        if (options.GetValueOrDefault("o_expression_post_normal") == "3965060848") { Color(0); Color(6); Color(7); }
+        foreach (var (key, text) in options)
+        {
+            string value = text.Trim().Trim('(', ')');
+            if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long n)) result.Options[key] = n;
+            else if (bool.TryParse(value, out bool b)) result.Options[key] = b ? 1 : 0;
+        }
+        result.Options["gsys_alpha_test_enable"] = R("gsys_alpha_test_enable", "false") is "true" or "1" ? 1 : 0;
+        int alphaFunc = Array.IndexOf(new[] { "never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always" }, R("gsys_alpha_test_func", "gequal"));
+        result.Options["gsys_alpha_test_func"] = alphaFunc < 0 ? 6 : alphaFunc;
+        foreach (var p in m.ShaderParams)
+        {
+            var bytes = Parameter(m, p.Name);
+            string type = p.Type.ToString();
+            float[] values;
+            if (type.Contains("TexSrt", StringComparison.Ordinal) && bytes.Length >= 24)
+                values = BotwPreviewMaterial.TextureMatrix(BinaryPrimitives.ReadUInt32LittleEndian(bytes),
+                    BinaryPrimitives.ReadSingleLittleEndian(bytes[4..]), BinaryPrimitives.ReadSingleLittleEndian(bytes[8..]),
+                    BinaryPrimitives.ReadSingleLittleEndian(bytes[12..]), BinaryPrimitives.ReadSingleLittleEndian(bytes[16..]), BinaryPrimitives.ReadSingleLittleEndian(bytes[20..]));
+            else if (type.StartsWith("Float", StringComparison.Ordinal))
+            {
+                values = new float[bytes.Length / 4];
+                for (int j = 0; j < values.Length; j++) values[j] = BinaryPrimitives.ReadSingleLittleEndian(bytes[(j * 4)..]);
+            }
+            else continue;
+            if (values.All(float.IsFinite)) result.Parameters[p.Name] = values;
+        }
+        if (!result.Parameters.ContainsKey("gsys_alpha_test_ref_value") && float.TryParse(R("gsys_alpha_test_value", ".5"), NumberStyles.Float, CultureInfo.InvariantCulture, out float nativeAlpha))
+            result.Parameters["gsys_alpha_test_ref_value"] = [nativeAlpha];
         void I(string key, int value) => result.Integers["totk" + key] = value;
         var semantic = Enumerable.Range(0, shader.SamplerAssigns?.Count ?? 0).Select(shader.SamplerAssignDict.GetKey).ToArray();
         var assigned = shader.SamplerAssigns?.ToArray() ?? [];
@@ -85,7 +142,19 @@ internal static class ToolboxTotkMaterial
         {
             int physical = assigned.Length > 0 ? Enumerable.Range(0, m.SamplerDict.Count).FirstOrDefault(i => m.SamplerDict.GetKey(i) == Assigned(slot), -1) : slot;
             if (slot < slots && physical >= 0 && physical < m.TextureRefs.Count)
-                result.Textures[slot] = textures.GetValueOrDefault(TexToGoTexture.Key(m.TextureRefs[physical], SurfaceIndex(m)));
+            {
+                var replacement = overrides?.GetValueOrDefault((m.Name, m.SamplerDict.GetKey(physical)));
+                result.Textures[slot] = replacement != null ? textures.GetValueOrDefault(replacement)
+                    : textures.GetValueOrDefault(TexToGoTexture.Key(m.TextureRefs[physical], SurfaceIndex(m)));
+                if (physical < m.Samplers.Count)
+                {
+                    var sampler = m.Samplers[physical];
+                    static int Wrap(string value) => value is "Wrap" or "Repeat" ? 0 : value.Contains("Mirror") && !value.Contains("Clamp") ? 1 : 2;
+                    result.Samplers[slot] = new(Wrap(sampler.WrapModeU.ToString()), Wrap(sampler.WrapModeV.ToString()),
+                        sampler.ShrinkXY == Res.Sampler.ShrinkFilterModes.Linear, sampler.ExpandXY == Res.Sampler.ExpandFilterModes.Linear,
+                        (int)sampler.Mipmap, sampler.MinLOD, sampler.MaxLOD);
+                }
+            }
             I($"TextureEnabled{slot}", result.Textures[slot] == null ? 0 : 1);
             // Match Toolbox's RGB preview decode, including UNORM color assets.
             // Only color-output sampling applies this; normal/scalar inputs stay raw.
