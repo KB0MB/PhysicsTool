@@ -131,7 +131,7 @@ namespace PhysicsTool.Core
             // A custom mannequin's authored pose must drive both the armor and its
             // props. Applying Link's recovered pose afterwards breaks their fit.
             if (characterPose != null) { armorPose = characterPose; posed = true; }
-            var eyesModel = character.IsLink && headArmor && props != null && propSource != null ? IconMannequinEyes.Load(propSource) : null;
+            var eyesModel = character.IsLink && props != null && propSource != null ? IconMannequinEyes.Load(propSource) : null;
             if (props != null || headArmor && character.IsLink)
             {
                 var mannequin = props ?? IconHeadMannequin.Load(resources, botwMannequinRoot, cancellation);

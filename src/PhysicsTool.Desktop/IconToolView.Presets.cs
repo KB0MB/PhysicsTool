@@ -32,6 +32,7 @@ internal sealed partial class IconToolView
         public Vector3 Position { get; init; }
         public MeshId[] HiddenMeshes { get; init; } = [];
         public bool HasRaulSkinVisibility { get; init; }
+        public bool HasAllPropsVisibility { get; init; }
         public string ActorName { get; init; } = "";
         public string CharacterId { get; init; } = "Link";
         public override string ToString() => "Custom: " + Name;
@@ -104,7 +105,7 @@ internal sealed partial class IconToolView
             CaptureSize, _edges.IsChecked == true, _emission.IsChecked == true, _auto.IsChecked == true,
             CurrentPose(), UsesViewport ? _viewport.SaveCaptureCamera() : null)
             { Lighting = (_environment.SelectedItem as BotwLightingEnvironment)?.Name ?? "Preview", SimulateGravity = _simulateGravity.IsChecked == true, CastShadows = _castShadows.IsChecked == true,
-                Position = Get(_position), HiddenMeshes = _hiddenMeshes.ToArray(), HasRaulSkinVisibility = true, ActorName = Asset.Name, CharacterId = _selectedCharacter.Id };
+                Position = Get(_position), HiddenMeshes = _hiddenMeshes.ToArray(), HasRaulSkinVisibility = true, HasAllPropsVisibility = true, ActorName = Asset.Name, CharacterId = _selectedCharacter.Id };
         return JsonSerializer.SerializeToUtf8Bytes(preset, PresetJson);
     }
 
@@ -154,6 +155,10 @@ internal sealed partial class IconToolView
                 foreach (var optionalSkin in CaptureModel!.Meshes.Where(m => IconArmorProps.IsRaulSkin(m.Name) &&
                     Asset!.IsMeshHiddenByDefault(m.Name)))
                     _hiddenMeshes.Add(new(optionalSkin.Name, 0));
+            if (!preset.HasAllPropsVisibility)
+                foreach (var prop in CaptureModel!.Meshes.Where(m => IconArmorProps.IsProp(m.Name) &&
+                    !IconArmorProps.MatchesArmorSlot(Asset!.Name, m.Name)))
+                    _hiddenMeshes.Add(new(prop.Name, 0));
             _fov.Value = (decimal)preset.Fov; _direct.Value = (decimal)preset.Direct; _ambient.Value = (decimal)preset.Ambient;
             _brightness.Value = (decimal)preset.Brightness; _zoom.Value = (decimal)preset.Zoom; CaptureSize = preset.Size;
             _environment.SelectedItem = BotwLightingEnvironment.All.Single(e => e.Name == preset.Lighting);

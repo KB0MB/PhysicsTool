@@ -56,7 +56,8 @@ internal sealed class IconZeldaChecks : Application
                     Check(!view.Asset.ArmorPose!.UsesRecoveredIconPose, "Link pose overrides Zelda pose");
                     if(name.EndsWith("Upper")) await Task.Run(() => CheckAuthoredPose(view.Asset, profile));
                     var props=view.CaptureModel!.Meshes.Where(m=>IconArmorProps.IsProp(m.Name)).ToArray();
-                    Check(props.Length == (name.EndsWith("Head") ? 9 : name.EndsWith("Upper") ? 6 : 1), "Wrong Zelda props");
+                    Check(props.Length == 13, "Wrong Zelda props");
+                    Check(props.Where(p => !IconArmorProps.MatchesArmorSlot(name, p.Name)).All(p => view.Viewport.HiddenMeshes.Contains(view.CaptureModel!.Meshes.IndexOf(p))), "Zelda other-slot props enabled by default");
                     if(name.EndsWith("Head"))
                         foreach(var suffix in new[]{"A","B","C"})
                         {
@@ -65,7 +66,7 @@ internal sealed class IconZeldaChecks : Application
                         }
                     Check(props.All(m=>m.Texture!=null && m.Vertices.All(float.IsFinite)), "Invalid Zelda props");
                     if (name.EndsWith("Head")) Check(props.Single(m=>m.Name.EndsWith("Head_Default")).Texture!.Name=="Armor_Default_Shirt","Default shirt lost its texture");
-                    if (name.EndsWith("Lower")) Check(props.Single().NormalTexture?.Name=="Z_Skin_NRM","Wrong Zelda skin atlas");
+                    if (name.EndsWith("Lower")) Check(props.Single(p => p.Name.EndsWith("Icon_Lower_Skin")).NormalTexture?.Name=="Z_Skin_NRM","Wrong Zelda skin atlas");
                     foreach (var prop in props) Console.WriteLine(prop.Name + " albedo=" + prop.Texture?.Name + " normal=" + prop.NormalTexture?.Name);
                     var png=await view.CapturePngAsync(512);
                     using var bitmap=SKBitmap.Decode(png);

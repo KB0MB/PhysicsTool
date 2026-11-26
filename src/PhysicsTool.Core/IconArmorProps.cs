@@ -33,11 +33,20 @@ internal static class IconArmorProps
 
     internal static bool HiddenByDefault(string actor, bool totk, string mesh, IReadOnlySet<string> hiddenRaulMaterials)
     {
+        if (IsProp(mesh) && !MatchesArmorSlot(actor, mesh)) return true;
         bool hylianUpper = actor == "Armor_001_Upper";
         if (IsRaulSkin(mesh)) return !totk || hiddenRaulMaterials.Contains("Mt_" + mesh[Prefix.Length..]);
         // TotK's right-hand coverage comes from RaulSkin or the armor itself.
         if (totk && actor.EndsWith("_Upper", StringComparison.Ordinal) && mesh == Prefix + "Icon_Upper_Fingers_R") return true;
         return hylianUpper && !IsProp(mesh) && mesh.EndsWith("__Mt_Upper_Skin", StringComparison.Ordinal);
+    }
+
+    internal static bool MatchesArmorSlot(string actor, string mesh)
+    {
+        if (!mesh.StartsWith(Prefix, StringComparison.Ordinal)) return true;
+        string slot = actor.Split('_').Last();
+        return IsRaulSkin(mesh) ? slot is "Head" or "Upper" :
+            mesh.StartsWith(Prefix + "Icon_" + slot + "_", StringComparison.Ordinal);
     }
 
     internal static ToolboxActorModel? Load(BotwActorResources actor, CancellationToken cancellation, BotwActorResources? textureSource = null, IconCharacterProfile? character = null)
@@ -61,8 +70,7 @@ internal static class IconArmorProps
         dynamic model = document.Models.Single(m => ((string)m.Name).StartsWith("Armor_Icon", StringComparison.Ordinal));
         var materials = ToolboxBfresDocument.Items((object)model.Materials).ToArray();
         var names = materials.Select(m => (string)m.Name).ToArray();
-        var keep = names.Where(n => n.StartsWith("Icon_" + slot + "_", StringComparison.Ordinal) ||
-            slot is "Upper" or "Head" && n.StartsWith("Upper_Skin_RaulSkin_", StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
+        var keep = names.ToHashSet(StringComparer.Ordinal);
         var usedMaterials = new HashSet<string>(StringComparer.Ordinal);
         foreach (dynamic shape in ToolboxBfresDocument.Items((object)model.Shapes))
         {
@@ -77,7 +85,7 @@ internal static class IconArmorProps
         keep.IntersectWith(usedMaterials);
         if (keep.Count == 0)
         {
-            actor.Warnings.Add(character.Name + " has no " + slot.ToLowerInvariant() + " mannequin meshes yet.");
+            actor.Warnings.Add(character.Name + " has no mannequin meshes yet.");
             return null;
         }
         var textures = new Dictionary<string, VisualModelTexture>(StringComparer.OrdinalIgnoreCase);

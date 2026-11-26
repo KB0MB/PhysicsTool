@@ -5,6 +5,7 @@
 - Added an Icon Tool for BotW and TotK actors, including actors without physics.
 - Export icons as PNG, BotW `.sbitemico`, or TotK `.bntx` / `.bntx.zs`, directly to a mod or folder.
 - Includes item capture presets, armor poses, mannequin props and mesh visibility controls.
+- All props from the selected character's mannequin are available in every armor slot.
 - Supports armor dyes, with batch export for all colors.
 - Supports custom presets, character mannequins and BFSKA pose imports.
 - Includes gravity simulation for cloth and hair.

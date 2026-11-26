@@ -51,7 +51,8 @@ internal sealed class IconCharacterChecks : Application
                     if (view.Asset?.Name != name) Console.WriteLine(string.Join(" | ", view.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).Where(t => !string.IsNullOrWhiteSpace(t))));
                     Check(view.Asset?.Name == name && view.Asset.CharacterId == "Riju", "Riju load failed: " + name);
                     var props = view.CaptureModel!.Meshes.Where(m => IconArmorProps.IsProp(m.Name)).ToArray();
-                    Check(props.Length == (name.EndsWith("Head") ? 9 : name.EndsWith("Upper") ? 3 : 0), "Unexpected props: " + string.Join(',', props.Select(p => p.Name)));
+                    Check(props.Length == 9, "Unexpected props: " + string.Join(',', props.Select(p => p.Name)));
+                    Check(props.Where(p => !IconArmorProps.MatchesArmorSlot(name, p.Name)).All(p => view.Viewport.HiddenMeshes.Contains(view.CaptureModel!.Meshes.IndexOf(p))), "Riju other-slot props enabled by default");
                     Check(props.All(p => p.Vertices.All(float.IsFinite)), "Invalid geometry");
                     Check(!props.Any(p => p.Name.Contains("Belt") || p.Name.Contains("Fingers")), "Missing parts filled with Link geometry");
                     foreach (var prop in props)

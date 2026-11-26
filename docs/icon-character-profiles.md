@@ -34,6 +34,11 @@ those shapes will make them available through the existing Props menu.
 
 ## Authored Poses and Necklines
 
+Every armor slot lists all meshes supplied by the selected mannequin in Props.
+Slot-appropriate meshes are enabled by default; the others remain available as
+optional checkboxes, including RaulSkin on lower armor. Saved presets retain
+these choices. Older presets keep newly available, other-slot props hidden.
+
 A custom mannequin can include a skeletal animation named `Icon_Pose`. Its
 first frame drives both the armor and mannequin, replacing the generic idle and
 Link pose recovery. Imported BFSKA poses and explicit pose edits still override

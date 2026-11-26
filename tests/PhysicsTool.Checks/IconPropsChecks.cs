@@ -36,9 +36,10 @@ internal sealed class IconPropsChecks : Application
                     var model = view.CaptureModel!;
                     bool armor = name.StartsWith("Armor_");
                     var props = model.Meshes.Where(m => IconArmorProps.IsProp(m.Name)).ToArray();
-                    Check(props.Length == (!armor ? 0 : name.EndsWith("Lower") ? 2 : name.EndsWith("Head") ? 8 : 6), "Wrong prop count: " + name + " " + string.Join(',', props.Select(m => m.Name)));
+                    Check(props.Length == (armor ? 13 : 0), "Wrong prop count: " + name + " " + string.Join(',', props.Select(m => m.Name)));
+                    Check(props.Where(p => !IconArmorProps.MatchesArmorSlot(name, p.Name)).All(p => view.Viewport.HiddenMeshes.Contains(model.Meshes.IndexOf(p))), "Other-slot props were enabled by default");
                     var optionalSkin = model.Meshes.Select((m,i) => (m,i)).Where(p => IconArmorProps.IsRaulSkin(p.m.Name)).ToArray();
-                    Check(optionalSkin.Length == (name.EndsWith("Upper") || name.EndsWith("Head") ? 3 : 0), "Incorrect RaulSkin availability");
+                    Check(optionalSkin.Length == (armor ? 3 : 0), "Incorrect RaulSkin availability");
                     Check(optionalSkin.All(p => view.Viewport.HiddenMeshes.Contains(p.i) == view.Asset!.IsMeshHiddenByDefault(p.m.Name)), "Incorrect default RaulSkin visibility");
                     if (totk && name.EndsWith("Upper"))
                     {
@@ -109,6 +110,19 @@ internal sealed class IconPropsChecks : Application
                         tabs.SelectedIndex = 1; dialog.UpdateLayout();
                         var rows = dialog.GetVisualDescendants().OfType<CheckBox>().ToArray();
                         Check(rows.Length == props.Length && rows.All(c => c.Padding.Left >= 10 && c.Padding.Top >= 7), "Wrong Props rows/padding");
+                        foreach (var prop in props.Where(p => !IconArmorProps.MatchesArmorSlot(name, p.Name)))
+                        {
+                            int propIndex = model.Meshes.IndexOf(prop);
+                            rows.Single(r => (int)r.Tag! == propIndex).IsChecked = true;
+                            Check(!view.Viewport.HiddenMeshes.Contains(propIndex), "Other-slot prop cannot be enabled");
+                            var enabled = view.SavePresetBytes("All props");
+                            view.SetCaptureMeshVisible(propIndex, false); view.LoadPresetBytes(enabled);
+                            Check(!view.Viewport.HiddenMeshes.Contains(propIndex), "Preset lost other-slot prop");
+                            var legacy = System.Text.Json.Nodes.JsonNode.Parse(enabled)!.AsObject();
+                            legacy.Remove("HasAllPropsVisibility");
+                            view.LoadPresetBytes(System.Text.Encoding.UTF8.GetBytes(legacy.ToJsonString()));
+                            Check(view.Viewport.HiddenMeshes.Contains(propIndex), "Old preset enabled newly available prop");
+                        }
                         var row = rows[0]; int index = (int)row.Tag!;
                         row.IsChecked = false;
                         Check(view.Viewport.HiddenMeshes.Contains(index), "Prop checkbox did not hide mesh");
@@ -138,7 +152,7 @@ internal sealed class IconPropsChecks : Application
                     for (int i = 0; i < model.Meshes.Count; i++) view.SetCaptureMeshVisible(i, !view.Asset!.IsMeshHiddenByDefault(model.Meshes[i].Name));
                     if (props.Length > 0)
                     {
-                        var prop = props.Last(p => !IconArmorProps.IsRaulSkin(p.Name)); var before = prop.Vertices.ToArray();
+                        var prop = props.Last(p => p.Name.StartsWith(IconArmorProps.Prefix + "Icon_" + name.Split('_').Last() + "_")); var before = prop.Vertices.ToArray();
                         string bone = name.EndsWith("Lower") ? "Waist" : name.EndsWith("Head") ? "Head" : "Neck";
                         view.SetPoseAdjustment(bone, new(8, 0, 0));
                         Check(!view.CaptureModel!.Meshes.Single(m => m.Name == prop.Name).Vertices.SequenceEqual(before), "Prop did not follow pose: " + prop.Name);
