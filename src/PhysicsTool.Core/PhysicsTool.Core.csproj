@@ -8,6 +8,7 @@
     <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Presets/IconProps/*" LogicalName="PhysicsTool.IconProps.%(Filename)%(Extension)" />
     <EmbeddedResource Include="Presets/EquipmentNames.en.json" LogicalName="PhysicsTool.EquipmentNames.en.json" WithCulture="false" />
     <EmbeddedResource Include="Presets/HylianMannequinPose.json" LogicalName="PhysicsTool.HylianMannequinPose.json" />
     <None Include="Presets/TotkIconCapture.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

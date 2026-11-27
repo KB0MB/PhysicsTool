@@ -12,7 +12,7 @@ Download **2.2.2** from [Releases](https://github.com/KB0MB/PhysicsTool/releases
 - Pose-based BotW support-bone and TotK helper-bone editing, with live previews, captured poses and advanced response curves. BPHYSSB/BPHHB conversion remains available.
 - HKRG ragdoll editing and collision generation, including TotK polytopes.
 - BotW/TotK actor viewing with BFRES models, textures, animations, physics export and equipment previews for Link in both games.
-- Icon Tool for BotW, TotK and PNG exports, with item presets, armor dyes and batch export, mesh controls, custom mannequins and BFSKA pose import.
+- Icon Tool for BotW, TotK and PNG exports, with built-in Link, Riju and Zelda mannequins, item presets, armor dyes and batch export, mesh controls, custom mannequins and BFSKA pose import.
 - Experimental OoT actor viewing, animation playback, all-cloth simulation and helper-bone editing.
 - BotW and TotK rendering using Killz's reverse-engineered material shaders, including material parameters, UV selection and texture color-space handling. TotK variants not covered by the supplied shaders retain the compatibility renderer.
 - BPHYSICS editing and mass-aware wind settings for converted cloths.

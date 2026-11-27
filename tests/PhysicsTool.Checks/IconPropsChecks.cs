@@ -12,6 +12,7 @@ internal sealed class IconPropsChecks : Application
 {
     internal static string Root = "", Output = "", BotwRoot = "";
     internal static int Result = 1;
+    internal static bool BuiltInOnly;
     public override void Initialize() => Styles.Add(new FluentTheme());
     public override void OnFrameworkInitializationCompleted()
     {
@@ -23,6 +24,13 @@ internal sealed class IconPropsChecks : Application
             try
             {
                 Directory.CreateDirectory(Output);
+                if (BuiltInOnly)
+                {
+                    string missing = Path.Combine(Output, "no-local-mannequin.sbfres");
+                    Check(!File.Exists(missing), "Fresh-install mannequin path must not exist");
+                    await view.SelectCharacterAsync(IconCharacterProfile.Link with { ModelPath = missing });
+                    IconBuiltinPropsChecks.Verify();
+                }
                 var actors = IconCaptureAsset.Catalog(Root);
                 foreach (string name in new[] { "Armor_001_Upper", "Armor_005_Upper", "Armor_009_Upper", "Armor_006_Upper", "Armor_001_Lower", "Armor_009_Head", "Armor_001_Head", "Weapon_Sword_070" })
                 {

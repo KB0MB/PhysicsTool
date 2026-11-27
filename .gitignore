@@ -56,6 +56,12 @@ Thumbs.db
 *.sbactorpack
 *.zs
 *.txtg
+!/src/PhysicsTool.Core/Presets/IconProps/Armor_Icon.sbfres
+!/src/PhysicsTool.Core/Presets/IconProps/LinkEyes.bfres
+!/src/PhysicsTool.Core/Presets/IconProps/Armor_Icon_Riju.sbfres
+!/src/PhysicsTool.Core/Presets/IconProps/Armor_Icon_Zelda.sbfres
+!/src/PhysicsTool.Core/Presets/IconProps/Riju.Player.0.bfres
+!/src/PhysicsTool.Core/Presets/IconProps/Zelda.Player.0.bfres
 
 # Unreleased appearance-editor work is kept outside the release repository.
 /src/PhysicsTool.Core/Umii/

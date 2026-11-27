@@ -10,19 +10,30 @@ internal sealed record IconCharacterProfile(string Id, string Name, string Model
     public sealed record MaterialSource(string Actor, string Material);
     public Dictionary<string, MaterialSource> MaterialSources { get; init; } = new();
     public Dictionary<string, string> TextureColors { get; init; } = new();
+    internal bool IsBuiltIn { get; init; }
     internal bool IsLink => Id == "Link";
-    internal static IconCharacterProfile Link => new("Link", "Link", IconArmorProps.OverridePath, "");
+    internal static IconCharacterProfile Link => new("Link", "Link", "", "") { IsBuiltIn = true };
+    internal static IReadOnlyList<IconCharacterProfile> BuiltIns => [Link, IconBuiltinProps.Profile("Riju"), IconBuiltinProps.Profile("Zelda")];
+    internal static bool IsBuiltInId(string id) => new[] { "Link", "Riju", "Zelda" }.Contains(id, StringComparer.OrdinalIgnoreCase);
+    internal string ModelSource => IsBuiltIn ? "Built-in/" + Id : ModelPath;
+    internal byte[] ReadModel() => IsBuiltIn
+        ? IconBuiltinProps.Model(IsLink ? "Armor_Icon.sbfres" : "Armor_Icon_" + Id + ".sbfres")
+        : File.ReadAllBytes(ModelPath);
     internal static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PhysicsTool", "IconTool", "Characters");
     public override string ToString() => Name;
 
-    internal static IReadOnlyList<IconCharacterProfile> LoadAll()
+    internal static IReadOnlyList<IconCharacterProfile> LoadAll(string? folder = null)
     {
-        var profiles = new List<IconCharacterProfile> { Link };
-        if (!Directory.Exists(Folder)) return profiles;
-        foreach (var path in Directory.EnumerateFiles(Folder, "*.json").Order(StringComparer.OrdinalIgnoreCase))
+        var profiles = BuiltIns.ToList();
+        folder ??= Folder;
+        if (!Directory.Exists(folder)) return profiles;
+        foreach (var path in Directory.EnumerateFiles(folder, "*.json").Order(StringComparer.OrdinalIgnoreCase))
         {
             var profile = JsonSerializer.Deserialize<IconCharacterProfile>(File.ReadAllBytes(path))
                 ?? throw new InvalidDataException("Empty character profile: " + path);
+            // Earlier builds installed these as machine-local profiles. Built-ins
+            // take precedence without touching those original user files.
+            if (IsBuiltInId(profile.Id)) continue;
             profile.Validate();
             if (profiles.Any(p => p.Id == profile.Id)) throw new InvalidDataException("Duplicate character profile: " + profile.Id);
             profiles.Add(profile);
@@ -34,7 +45,8 @@ internal sealed record IconCharacterProfile(string Id, string Name, string Model
     {
         if (string.IsNullOrWhiteSpace(Id) || string.IsNullOrWhiteSpace(Name) ||
             Id.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || Id is "." or ".." ||
-            !Path.IsPathFullyQualified(ModelPath) || !Path.IsPathFullyQualified(TextureRoot) ||
+            (IsBuiltIn ? !IsBuiltInId(Id) || ModelPath.Length != 0 || TextureRoot.Length != 0 :
+                !Path.IsPathFullyQualified(ModelPath) || !Path.IsPathFullyQualified(TextureRoot)) ||
             TexturePrefixes == null || TexturePrefixes.Any(p => string.IsNullOrEmpty(p.Key) || string.IsNullOrEmpty(p.Value)) ||
             NeckSplices == null || NeckSplices.Any(p => string.IsNullOrEmpty(p.Key) || string.IsNullOrEmpty(p.Value)) ||
             MaterialSources == null || MaterialSources.Any(p => string.IsNullOrEmpty(p.Key) || p.Value == null || string.IsNullOrEmpty(p.Value.Actor) || string.IsNullOrEmpty(p.Value.Material)) ||
@@ -46,7 +58,7 @@ internal sealed record IconCharacterProfile(string Id, string Name, string Model
     internal void Save()
     {
         Validate();
-        if (IsLink) throw new InvalidOperationException("The default Link profile cannot be replaced.");
+        if (IsBuiltInId(Id)) throw new InvalidOperationException("Built-in characters cannot be replaced. Use a different name for a custom character.");
         Directory.CreateDirectory(Folder);
         HKCLTool.AtomicFile.WriteAllBytes(Path.Combine(Folder, Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(this, new JsonSerializerOptions { WriteIndented = true }));
     }

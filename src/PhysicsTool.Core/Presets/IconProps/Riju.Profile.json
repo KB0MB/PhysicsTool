@@ -1,0 +1,32 @@
+{
+  "Id": "Riju",
+  "Name": "Riju",
+  "ModelPath": "",
+  "TextureRoot": "",
+  "TexturePrefixes": {
+    "Link_Skin_": "Link_RaulSkin_"
+  },
+  "MaterialTextures": {
+    "Icon_Head_Bra": {
+      "_a0": "Link_RaulSkin_Alb",
+      "_n0": "Link_RaulSkin_Nrm",
+      "_s0": "Link_RaulSkin_Spm"
+    }
+  },
+  "NeckSplices": {},
+  "MaterialSources": {
+    "Icon_Head_Bra": {
+      "Actor": "Player",
+      "Material": "Mt_Upper_Skin"
+    },
+    "Icon_Head_Face": {
+      "Actor": "Player",
+      "Material": "Mt_Face"
+    },
+    "Icon_Head_Skull": {
+      "Actor": "Player",
+      "Material": "Mt_Head"
+    }
+  },
+  "TextureColors": {}
+}

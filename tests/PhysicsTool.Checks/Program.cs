@@ -18,6 +18,9 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 3 && args[0] == "--icon-builtins-check") { IconCharacterBundleChecks.Verify(args[1], args[2]); return 0; }
+            if (args.Length == 4 && args[0] == "--icon-character-bundle") { IconCharacterBundleChecks.Export(args[1], args[2], args[3]); return 0; }
+            if (args.Length == 4 && args[0] == "--icon-builtin-export") { IconBuiltinPropsChecks.Export(args[1], args[2], args[3]); return 0; }
             if(args.Length>=4 && args[0]=="--native-face-study") { NativeFaceChecks.Inspect(args[1],args[2],args[3]); return 0; }
             if(args.Length>=2 && args[0]=="--raul-hide-study") { IconRaulVisibilityChecks.Inspect(args[1],args.Skip(2).ToArray()); return 0; }
             if(args.Length>=4 && args[0]=="--head-shadow-study")
@@ -111,7 +114,8 @@ internal static class Program
             if (args.Length >= 3 && args[0] == "--icon-props-gpu")
             {
                 IconPropsChecks.Root = args[1]; IconPropsChecks.Output = args[2];
-                IconPropsChecks.BotwRoot = args.Length > 3 ? args[3] : args[1];
+                IconPropsChecks.BuiltInOnly = args.Contains("--builtin-only");
+                IconPropsChecks.BotwRoot = IconPropsChecks.BuiltInOnly ? "" : args.Length > 3 ? args[3] : args[1];
                 AppBuilder.Configure<IconPropsChecks>().UsePlatformDetect().UsePhysicsToolRendering().WithInterFont().StartWithClassicDesktopLifetime([]);
                 return IconPropsChecks.Result;
             }

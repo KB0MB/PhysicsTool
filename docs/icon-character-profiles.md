@@ -1,14 +1,22 @@
 # Icon Character Profiles
 
-The Icon Tool's Character dropdown defaults to Link. Add another character with
-the adjacent plus button, selecting an icon mannequin BFRES and the mod folder
-containing its `romfs/TexToGo` textures. Missing mannequin slots remain absent;
-they are not filled using Link geometry. Armor models still come from Open actor
-or Open mod actor.
+The Icon Tool includes Link, Riju and Zelda in the Character dropdown on every
+installation. Each includes its mannequin geometry, prop textures, material
+settings and authored pose, where supplied. Armor models still come from Open
+actor or Open mod actor. Missing mannequin parts remain absent; they are not
+filled using another character's geometry.
 
-Profiles are local JSON files in `%LOCALAPPDATA%/PhysicsTool/IconTool/Characters`.
-They reference user-owned assets; the models and mod textures are not included
-in the repository or release packages. Each file has `Id`, `Name`, `ModelPath`,
+The built-in characters do not depend on local Downloads, AppData profiles or
+character mod folders. TotK captures do not require a separate BotW dump for
+these props. Old local Riju/Zelda profiles are ignored in favor of the built-in
+entries, without modifying the original files.
+
+Use the adjacent plus button to add a different custom character by selecting
+an icon mannequin BFRES and its mod folder containing `romfs/TexToGo` textures.
+The built-in names are reserved; a custom variant must use a different name.
+
+Custom profiles are local JSON files in `%LOCALAPPDATA%/PhysicsTool/IconTool/Characters`.
+They reference the selected custom character assets. Each file has `Id`, `Name`, `ModelPath`,
 `TextureRoot`, and an optional `TexturePrefixes` dictionary. Prefix mappings are
 explicit: for example, a mannequin authored with `Link_Skin_` references can map
 that prefix to a mod's `Link_RaulSkin_` textures. Longer prefixes take precedence.
@@ -51,7 +59,7 @@ the cap follows the skinned boundary. This is useful for open collars needing
 more chest coverage than a short neck prop. The original source files are not
 modified. The named skin mesh is transferred to the prop rather than drawn twice.
 
-Zelda's local RotG profile uses `Mt_Skin_Upper__Mt_Upper_Skin` for
+Zelda's built-in configuration uses `Mt_Skin_Upper__Mt_Upper_Skin` for
 `Armor_001_Upper`. GPU tests cover head, uppers 001/005/009 and lower 005; the
 001 splice additionally verifies native collar topology and positions, cap
 attachment, dye retention and pose overrides.
@@ -75,7 +83,7 @@ unadjusted casters and verify capture-state restoration.
 
 Link's face and skull automatically use `Mt_Face` and `Mt_Head` from the loaded
 game's native player actor (`GameROMPlayer` in BotW, `Player` in TotK). Riju's
-local profile binds those materials from her mod's `Player` actor. Their face
+built-in materials were imported from her mod's `Player` actor. Their face
 casters use the authored multiply-only formula, not Zelda's multiply-add
 offset. Link's supplied mannequin retains its painted mask; Riju's supplied
 mask is entirely white and therefore produces zero shadow displacement.
@@ -92,7 +100,7 @@ choices saved in a custom capture preset still override these defaults.
 `TextureColors` maps an exact texture name to an eight-digit sRGB RGBA hex base
 colour. It replaces RGB in a private decoded texture copy, preserves cutout alpha
 (scaled by the supplied alpha), and leaves normal/specular maps and source files
-untouched. Zelda's local hair override is `7E5C00FF`; other characters are unchanged.
+untouched. Zelda's hair override is `7E5C00FF`; other characters are unchanged.
 
 Ear rotation is always resolved from the currently loaded actor's
 `ArmorHead.EarRotate` (BotW) or `ArmorParam.HeadEarBoneOffset` (TotK), including

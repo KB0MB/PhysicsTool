@@ -125,13 +125,11 @@ namespace PhysicsTool.Core
             bool headMannequin = false;
             ToolboxActorModel? mannequinModel = null;
             bool headArmor = resources.ActorName.StartsWith("Armor_", StringComparison.Ordinal) && resources.ActorName.EndsWith("_Head", StringComparison.Ordinal);
-            var propSource = character.IsLink && resources.ActorName.StartsWith("Armor_", StringComparison.Ordinal)
-                ? IconHeadMannequin.ResolveSource(resources, botwMannequinRoot, cancellation) : null;
-            var props = IconArmorProps.Load(resources, cancellation, out var characterPose, propSource, character);
+            var props = IconArmorProps.Load(resources, cancellation, out var characterPose, character: character);
             // A custom mannequin's authored pose must drive both the armor and its
             // props. Applying Link's recovered pose afterwards breaks their fit.
             if (characterPose != null) { armorPose = characterPose; posed = true; }
-            var eyesModel = character.IsLink && props != null && propSource != null ? IconMannequinEyes.Load(propSource) : null;
+            var eyesModel = character.IsLink && props != null ? IconMannequinEyes.Load(resources.Warnings) : null;
             if (props != null || headArmor && character.IsLink)
             {
                 var mannequin = props ?? IconHeadMannequin.Load(resources, botwMannequinRoot, cancellation);

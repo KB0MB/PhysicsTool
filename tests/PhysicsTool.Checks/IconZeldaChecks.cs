@@ -87,9 +87,9 @@ internal sealed class IconZeldaChecks : Application
     }
     private static void CheckAuthoredPose(IconCaptureAsset asset, IconCharacterProfile profile)
     {
-        var document = new ToolboxBfresDocument(File.ReadAllBytes(profile.ModelPath));
+        var document = new ToolboxBfresDocument(profile.ReadModel());
         var source = new ToolboxActorModel(document, (string)document.Models[0].Name, new());
-        var animation = new ToolboxActorAnimation((object)document.SkeletalAnimations.Single(a => (string)a.Name == "Icon_Pose"), profile.ModelPath);
+        var animation = new ToolboxActorAnimation((object)document.SkeletalAnimations.Single(a => (string)a.Name == "Icon_Pose"), profile.ModelSource);
         var expected = source.Pose(animation, 0);
         var actual = asset.ArmorPose!.Apply(new Dictionary<string, Vector3>(), recoveredPose:true);
         foreach(var name in new[]{"Icon_Upper_Neck","Icon_Upper_Fingers_L","Icon_Upper_Fingers_R"})

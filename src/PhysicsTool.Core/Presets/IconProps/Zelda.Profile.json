@@ -1,0 +1,38 @@
+{
+  "Id": "Zelda",
+  "Name": "Zelda",
+  "ModelPath": "",
+  "TextureRoot": "",
+  "TexturePrefixes": {
+    "Link_Head_Alb": "Npc_Zelda_Face_Alb",
+    "Link_Head_Nrm": "CmnTex_6fb4a8a1e634941f0cec60bddc6acc80",
+    "Link_Head_Spm": "CmnTex_dea2c569e87d3f1a6344ec30a0427739",
+    "Link_Skin_Alb": "ZSKIN",
+    "Link_Skin_Nrm": "Z_Skin_NRM",
+    "Link_Skin_Spm": "Z_Skin_SPM",
+    "Link_Skin_AO": "Z_RaulSkin_AO"
+  },
+  "MaterialTextures": {
+    "Icon_Head_Default": {
+      "_a0": "Armor_Default_Shirt",
+      "_n0": "Armor_Default_Shirt_Nrm",
+      "_s0": "Armor_Default_Shirt_Spm"
+    }
+  },
+  "NeckSplices": {
+    "Armor_001_Upper": "Mt_Skin_Upper__Mt_Upper_Skin"
+  },
+  "MaterialSources": {
+    "Icon_Head_Default": {
+      "Actor": "Player",
+      "Material": "Mt_Default"
+    },
+    "Icon_Head_Face": {
+      "Actor": "Player",
+      "Material": "Mt_Face"
+    }
+  },
+  "TextureColors": {
+    "CmnTex_b6f8b9cacf6a944e5a03d6fd339c69a7": "7E5C00FF"
+  }
+}

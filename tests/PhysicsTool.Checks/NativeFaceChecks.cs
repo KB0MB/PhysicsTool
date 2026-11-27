@@ -23,7 +23,7 @@ internal static class NativeFaceChecks
                 }
             }
             var profile=item.Item1=="Riju"?IconCharacterProfile.LoadAll().Single(p=>p.Id=="Riju"):IconCharacterProfile.Link;
-            var propDoc=new ToolboxBfresDocument(File.ReadAllBytes(profile.ModelPath));
+            var propDoc=new ToolboxBfresDocument(profile.ReadModel());
             var props=new ToolboxActorModel(propDoc,(string)propDoc.Models[0].Name,new());
             foreach(var face in props.RestPose.Meshes.Where(m=>m.Name.StartsWith("Icon_Head_Face__")||m.Name.StartsWith("Icon_Head_Skull__"))) Dump(item.Item1+" prop",face);
             var loaded = IconArmorProps.Load(armor, CancellationToken.None, character: profile)!;

@@ -4,6 +4,33 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 $excludedFeature = '(?i)(^|/)(umii[^/]*|[^/]*miiicons[^/]*)(/|$)'
 $directory = Join-Path $root "artifacts/releases/$Version"
+$iconResources = @('Armor_Icon.sbfres','LinkEyes.bfres','Textures.json.gz',
+    'Armor_Icon_Riju.sbfres','Riju.Profile.json','Riju.Textures.json.gz','Riju.NativeTextures.json.gz','Riju.Materials.json','Riju.Player.0.bfres',
+    'Armor_Icon_Zelda.sbfres','Zelda.Profile.json','Zelda.Textures.json.gz','Zelda.NativeTextures.json.gz','Zelda.Materials.json','Zelda.Player.0.bfres')
+function Test-IconResources([byte[]]$Bytes, [string]$Rid) {
+    $stream = [IO.MemoryStream]::new($Bytes, $false)
+    $pe = [System.Reflection.PortableExecutable.PEReader]::new($stream)
+    try {
+        $metadata = [System.Reflection.Metadata.PEReaderExtensions]::GetMetadataReader($pe)
+        $block = [byte[]]$pe.GetSectionData($pe.PEHeaders.CorHeader.ResourcesDirectory.RelativeVirtualAddress).GetContent()
+        $found = @{}
+        foreach ($handle in $metadata.ManifestResources) {
+            $resource = $metadata.GetManifestResource($handle)
+            $name = $metadata.GetString($resource.Name)
+            if (-not $name.StartsWith('PhysicsTool.IconProps.')) { continue }
+            if (-not $resource.Implementation.IsNil) { throw "External icon resource in $Rid : $name" }
+            $length = [BitConverter]::ToInt32($block, [int]$resource.Offset)
+            $data = [byte[]]::new($length)
+            [Array]::Copy($block, [int]$resource.Offset + 4, $data, 0, $length)
+            $found[$name.Substring('PhysicsTool.IconProps.'.Length)] = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($data))
+        }
+        foreach ($name in $iconResources) {
+            $expected = (Get-FileHash -LiteralPath (Join-Path $root "src/PhysicsTool.Core/Presets/IconProps/$name") -Algorithm SHA256).Hash
+            if ($found[$name] -ne $expected) { throw "Missing or different built-in icon resource: $Rid $name" }
+        }
+        Write-Output "PASS: $Rid embeds matching Link, Riju and Zelda assets, textures and definitions."
+    } finally { $pe.Dispose(); $stream.Dispose() }
+}
 function Read-Entry($Archive, [string]$Name) {
     $entry = $Archive.GetEntry($Name)
     if ($null -eq $entry) { throw "Archive entry missing: $Name" }
@@ -62,6 +89,9 @@ foreach ($rid in @('win-x64','win-arm64','linux-x64','linux-arm64','osx-x64','os
         }
         foreach ($binary in @('PhysicsTool.dll', 'PhysicsTool.Core.dll', "Tools/MeshCodec/$rid/PhysicsTool.MeshCodec$suffix")) {
             $text = [Text.Encoding]::UTF8.GetString((Read-Entry $zip ($app + $binary)))
+            if ($binary -eq 'PhysicsTool.Core.dll') {
+                Test-IconResources (Read-Entry $zip ($app + $binary)) $rid
+            }
             if ($binary -in @('PhysicsTool.dll', 'PhysicsTool.Core.dll') -and $text -match '(?i)(UmiiView|UmiiPreview|UmiiDocument|UmiiIcons|UmiiGame|UmiiAppearance)') {
                 throw "Unreleased appearance-editor code/resource in $rid $binary"
             }
@@ -82,9 +112,18 @@ $source = [IO.Compression.ZipFile]::OpenRead((Join-Path $directory "PhysicsTool-
 try {
     foreach ($entry in $source.Entries) {
         if ($entry.FullName -match $excludedFeature) { throw "Unreleased feature in source archive: $($entry.FullName)" }
-        if ($entry.FullName -match '/(\.git|artifacts|bin|obj|VCRuntime|NativeFbx)/' -or $entry.FullName -match '\.(pdb|log|hkcl|bphcl|sbfres|sbactorpack)$') { throw "Unexpected source archive file: $($entry.FullName)" }
+        $propBase = "PhysicsTool-$Version-source/src/PhysicsTool.Core/Presets/IconProps/"
+        $builtInProp = $entry.FullName.StartsWith($propBase) -and $entry.FullName.Substring($propBase.Length) -in @(
+            'Armor_Icon.sbfres','LinkEyes.bfres','Armor_Icon_Riju.sbfres','Armor_Icon_Zelda.sbfres','Riju.Player.0.bfres','Zelda.Player.0.bfres')
+        if ($entry.FullName -match '/(\.git|artifacts|bin|obj|VCRuntime|NativeFbx)/' -or
+            (-not $builtInProp -and $entry.FullName -match '\.(pdb|log|hkcl|bphcl|bfres|sbfres|sbactorpack)$')) { throw "Unexpected source archive file: $($entry.FullName)" }
     }
     if (-not $source.GetEntry("PhysicsTool-$Version-source/PhysicsTool.slnx")) { throw 'Primary solution missing from source archive.' }
+    foreach ($name in $iconResources) {
+        $data = Read-Entry $source ("PhysicsTool-$Version-source/src/PhysicsTool.Core/Presets/IconProps/" + $name)
+        $expected = (Get-FileHash -LiteralPath (Join-Path $root "src/PhysicsTool.Core/Presets/IconProps/$name") -Algorithm SHA256).Hash
+        if ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($data)) -ne $expected) { throw "Source icon resource mismatch: $name" }
+    }
 } finally { $source.Dispose() }
 }
 foreach ($line in Get-Content (Join-Path $directory 'SHA256SUMS.txt')) {
